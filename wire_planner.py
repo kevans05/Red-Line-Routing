@@ -1280,7 +1280,7 @@ class WirePlannerApp(tk.Tk):
         self.project_var = tk.StringVar()
         ttk.Entry(tb1,textvariable=self.project_var,width=22).pack(side="left",padx=(4,10))
         for label,jtype,color in [
-            ("+ Remove","REMOVE","#c0392b"),("+ Add","ADD","#27ae60"),("+ Move","MOVE","#2980b9"),
+            ("+ Remove","REMOVE","#c0392b"),("+ Add","ADD","#27ae60"),
             ("+ Block","BLOCK","#d35400"),("+ Unblock","UNBLOCK","#16a085"),
             ("+ Testing","TESTING","#6c3483")]:
             tk.Button(tb1,text=label,fg="white",bg=color,relief="flat",padx=7,pady=3,
@@ -1292,14 +1292,9 @@ class WirePlannerApp(tk.Tk):
             ttk.Button(rf,text=label,command=cmd).pack(side="left",padx=2)
 
         tb2 = ttk.Frame(self,padding=(6,0,6,4)); tb2.pack(fill="x")
-        tk.Button(tb2,text="Combine 2 → Move",fg="white",bg="#7d3c98",relief="flat",
-                  padx=7,pady=3,cursor="hand2",command=self._combine_jobs).pack(side="left",padx=2)
-        ttk.Label(tb2,text="(Ctrl+click 2)",foreground="grey").pack(side="left",padx=(0,6))
-        tk.Button(tb2,text="Split Move → 2",fg="white",bg="#7f8c8d",relief="flat",
-                  padx=7,pady=3,cursor="hand2",command=self._split_job).pack(side="left",padx=2)
-        ttk.Button(tb2,text="Swap ↔ Start/End",command=self._swap_endpoints).pack(side="left",padx=(8,2))
-        tk.Button(tb2,text="Auto-Group by Device",fg="white",bg="#1a6b8a",relief="flat",
-                  padx=7,pady=3,cursor="hand2",command=self._auto_group).pack(side="left",padx=2)
+        ttk.Button(tb2,text="Swap ↔ Start/End",command=self._swap_endpoints).pack(side="left",padx=2)
+        ttk.Button(tb2,text="Auto-Group by Device",command=self._auto_group,
+                   state="disabled").pack(side="left",padx=2)
         ttk.Button(tb2,text="HTML / PDF",  command=self._export_html).pack(side="right",padx=2)
         ttk.Button(tb2,text="Export CSV",  command=self._export_csv).pack(side="right",padx=2)
         ttk.Button(tb2,text="Export Table",command=self._export_table).pack(side="right",padx=2)
@@ -1484,42 +1479,6 @@ class WirePlannerApp(tk.Tk):
         if idx is None or idx>=len(self.jobs)-1: return
         self.jobs[idx],self.jobs[idx+1]=self.jobs[idx+1],self.jobs[idx]
         self._refresh_list(); self.tree.selection_set(str(idx+1)); self._on_select()
-
-    # ── Combine / Split ──────────────────────────────────────────
-
-    def _combine_jobs(self):
-        idxs = self._selected_indices()
-        if len(idxs)!=2:
-            messagebox.showinfo("Combine → Move","Hold Ctrl and click exactly 2 jobs, then press Combine."); return
-        ja,jb = self.jobs[idxs[0]],self.jobs[idxs[1]]
-        if ja["type"] in ("MOVE","BLOCK","UNBLOCK") or jb["type"] in ("MOVE","BLOCK","UNBLOCK"):
-            messagebox.showwarning("Combine → Move","Only REMOVE and ADD jobs can be combined."); return
-        if ja["type"]=="ADD" and jb["type"]=="REMOVE": ja,jb=jb,ja
-        combined = " / ".join(filter(None,[ja.get("description",""),jb.get("description","")]))
-        move_job={"type":"MOVE","description":combined,
-                  "start":deepcopy(ja.get("start",empty_endpoint())),"wire":ja.get("wire",""),
-                  "end":deepcopy(ja.get("end",empty_endpoint())),
-                  "add_start":deepcopy(jb.get("start",empty_endpoint())),"add_wire":jb.get("wire",""),
-                  "add_end":deepcopy(jb.get("end",empty_endpoint()))}
-        insert_at = idxs[0]
-        for idx in reversed(idxs): self.jobs.pop(idx)
-        self.jobs.insert(insert_at,move_job); self._refresh_list()
-        self.tree.selection_set(str(insert_at)); self._on_select()
-        self.status_var.set(f"Jobs #{idxs[0]+1} and #{idxs[1]+1} combined into MOVE #{insert_at+1}.")
-
-    def _split_job(self):
-        idx = self._selected_idx()
-        if idx is None: messagebox.showinfo("Split","Select a MOVE job to split."); return
-        job = self.jobs[idx]
-        if job["type"]!="MOVE": messagebox.showinfo("Split","Only MOVE jobs can be split."); return
-        desc = job.get("description","")
-        remove_job={"type":"REMOVE","description":desc,"start":deepcopy(job.get("start",empty_endpoint())),
-                    "wire":job.get("wire",""),"end":deepcopy(job.get("end",empty_endpoint()))}
-        add_job={"type":"ADD","description":desc,"start":deepcopy(job.get("add_start",empty_endpoint())),
-                 "wire":job.get("add_wire",""),"end":deepcopy(job.get("add_end",empty_endpoint()))}
-        self.jobs.pop(idx); self.jobs.insert(idx,add_job); self.jobs.insert(idx,remove_job)
-        self._refresh_list(); self.tree.selection_set(str(idx)); self._on_select()
-        self.status_var.set(f"MOVE split into REMOVE #{idx+1} and ADD #{idx+2}.")
 
     # ── Swap start ↔ end ─────────────────────────────────────────
 
