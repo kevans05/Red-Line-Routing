@@ -43,12 +43,14 @@ def empty_endpoint():
 
 def empty_protection():
     return {"equipment": "", "location": "", "panel": "", "notes": "",
-            "drawings": [], "iso_points": [], "mb_enabled": False, "mb_remote": ""}
+            "drawings": [], "iso_points": [], "mb_enabled": False, "mb_remote": "", "mb_notes": ""}
 
 
 def empty_job(job_type="REMOVE"):
     if job_type in ("BLOCK", "UNBLOCK"):
         return {"type": job_type, "description": "", "protection": empty_protection()}
+    if job_type == "TESTING":
+        return {"type": "TESTING", "description": "", "notes": ""}
     job = {"type": job_type, "description": "", "wire": "",
            "start": empty_endpoint(), "end": empty_endpoint()}
     if job_type == "MOVE":
@@ -545,12 +547,21 @@ class ProtectionFrame(ttk.LabelFrame):
         self.mb_remote_var = tk.StringVar()
         ttk.Entry(mb_outer, textvariable=self.mb_remote_var, width=32).grid(
             row=1, column=1, sticky="ew", pady=2)
+
+        ttk.Label(mb_outer, text="Action / notes:").grid(
+            row=2, column=0, sticky="e", padx=(0, 4), pady=2)
+        self.mb_notes_var = tk.StringVar()
+        ttk.Entry(mb_outer, textvariable=self.mb_notes_var, width=32,
+                  ).grid(row=2, column=1, sticky="ew", pady=2)
+        ttk.Label(mb_outer, text='e.g. "block input", "block comms", "disable channel 1"',
+                  foreground="grey", font=("", 8)).grid(
+            row=3, column=0, columnspan=2, sticky="w", padx=(0, 4), pady=(0, 2))
         mb_outer.columnconfigure(1, weight=1)
 
         # Warning banner (visible only when MB checkbox is ticked)
         action = "BLOCK MB INPUT" if self.job_type == "BLOCK" else "UNBLOCK MB INPUT"
         self._mb_banner = tk.Frame(mb_outer, bg="#fff3cd", relief="solid", bd=1)
-        self._mb_banner.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(4, 0))
+        self._mb_banner.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(4, 0))
         self._mb_banner_label = tk.Label(
             self._mb_banner,
             text=f"⚠  Also required:  {action}  on the remote relay",
@@ -574,6 +585,7 @@ class ProtectionFrame(ttk.LabelFrame):
         result["iso_points"] = self.multi_iso.get()
         result["mb_enabled"] = self.mb_var.get()
         result["mb_remote"]  = self.mb_remote_var.get().strip()
+        result["mb_notes"]   = self.mb_notes_var.get().strip()
         return result
 
     def set(self, data):
@@ -583,6 +595,7 @@ class ProtectionFrame(ttk.LabelFrame):
         self.multi_iso.set(data.get("iso_points", []))
         self.mb_var.set(bool(data.get("mb_enabled", False)))
         self.mb_remote_var.set(data.get("mb_remote", ""))
+        self.mb_notes_var.set(data.get("mb_notes", ""))
         self._update_mb_state()
 
 
@@ -592,7 +605,7 @@ class ProtectionFrame(ttk.LabelFrame):
 
 class JobDialog(tk.Toplevel):
     TYPE_COLOR = {"REMOVE":"#c0392b","ADD":"#27ae60","MOVE":"#2980b9",
-                  "BLOCK":"#d35400","UNBLOCK":"#16a085"}
+                  "BLOCK":"#d35400","UNBLOCK":"#16a085","TESTING":"#6c3483"}
 
     def __init__(self, parent, job_type, existing=None, registry=None, history=None):
         super().__init__(parent)
@@ -641,7 +654,7 @@ class JobDialog(tk.Toplevel):
         ttk.Button(btn_row, text="Cancel", command=self.destroy).pack(side="right", padx=2)
         ttk.Button(btn_row, text="Save",   command=self._save).pack(side="right", padx=2)
 
-        self.geometry("660x600" if self.job_type in ("BLOCK","UNBLOCK") else "960x640")
+        self.geometry("660x600" if self.job_type in ("BLOCK","UNBLOCK","TESTING") else "960x640")
 
     def _section_label(self, parent, row, text, color):
         ttk.Separator(parent, orient="horizontal").grid(
@@ -722,6 +735,15 @@ class JobDialog(tk.Toplevel):
             self.ep_prot.grid(row=row, column=0, columnspan=2, sticky="ew", pady=2)
             self.ep_prot.set(ex.get("protection",{}))
 
+        elif self.job_type == "TESTING":
+            self._section_label(f, row, "── TESTING / NOTE ──", color); row += 2
+            ttk.Label(f, text="Notes:").grid(row=row, column=0, sticky="ne", padx=(0,6), pady=2)
+            self.test_notes_var = tk.StringVar(value=ex.get("notes",""))
+            notes_txt = tk.Text(f, width=58, height=6, wrap="word", font=("",9))
+            notes_txt.grid(row=row, column=0, columnspan=2, sticky="ew", pady=2)
+            notes_txt.insert("1.0", ex.get("notes",""))
+            self._test_notes_widget = notes_txt
+
         f.columnconfigure(0, weight=1)
         f.columnconfigure(1, weight=1)
 
@@ -749,6 +771,8 @@ class JobDialog(tk.Toplevel):
             eq = self.ep_prot.vars.get("equipment", tk.StringVar()).get().strip() or "?"
             action = "Block" if jt == "BLOCK" else "Unblock"
             desc = f"{action} protection on {eq}"
+        elif jt == "TESTING":
+            return  # no auto-fill for free-form notes
         else:
             return
         self.desc_var.set(desc)
@@ -768,6 +792,8 @@ class JobDialog(tk.Toplevel):
             job["add_end"]   = self.ep_add_end.get()
         elif self.job_type in ("BLOCK","UNBLOCK"):
             job["protection"] = self.ep_prot.get()
+        elif self.job_type == "TESTING":
+            job["notes"] = self._test_notes_widget.get("1.0","end").strip()
         self.result = job
         self.destroy()
 
@@ -860,13 +886,14 @@ def _prot_block(prot, label):
     if prot.get("mb_enabled"):
         lines.append("")
         remote = f"  Remote: {prot['mb_remote']}" if prot.get("mb_remote") else ""
-        lines.append(f"  *** MIRRORED BIT — also required: MB INPUT block/unblock{remote} ***")
+        notes  = f"  ({prot['mb_notes']})"        if prot.get("mb_notes")  else ""
+        lines.append(f"  *** MIRRORED BIT — also required: MB INPUT block/unblock{remote}{notes} ***")
     return "\n".join(lines)
 
 def format_job(index, job):
     jtype = job["type"]
     labels = {"REMOVE":"REMOVE WIRE","ADD":"ADD WIRE","MOVE":"MOVE WIRE",
-              "BLOCK":"BLOCK PROTECTION","UNBLOCK":"UNBLOCK PROTECTION"}
+              "BLOCK":"BLOCK PROTECTION","UNBLOCK":"UNBLOCK PROTECTION","TESTING":"TESTING / NOTE"}
     lines = [_bar(), f"  JOB #{index+1}   [{labels.get(jtype,jtype)}]", _bar()]
     if job.get("description"):
         lines += ["","  DESCRIPTION", f"    {job['description']}"]
@@ -886,6 +913,9 @@ def format_job(index, job):
     elif jtype in ("BLOCK","UNBLOCK"):
         lbl = "BLOCK PROTECTION" if jtype=="BLOCK" else "UNBLOCK PROTECTION"
         lines += ["",_prot_block(job.get("protection",{}), lbl)]
+    elif jtype == "TESTING":
+        if job.get("notes"):
+            lines += ["","  NOTES", *[f"    {ln}" for ln in job["notes"].splitlines()]]
     lines.append("")
     return "\n".join(lines)
 
@@ -938,8 +968,9 @@ def _prot_summary(prot):
         equip = f" ({p['equipment']})" if p.get("equipment") else ""
         parts.append(f"{p.get('iso_type','ISO')} {p.get('reference','')}{equip}")
     if prot.get("mb_enabled"):
-        remote = f" [{prot['mb_remote']}]" if prot.get("mb_remote") else ""
-        parts.append(f"⚠ MB INPUT req.{remote}")
+        remote = f" [{prot['mb_remote']}]"  if prot.get("mb_remote") else ""
+        notes  = f" {prot['mb_notes']}"     if prot.get("mb_notes")  else ""
+        parts.append(f"⚠ MB INPUT req.{remote}{notes}")
     return "  |  ".join(parts)
 
 def generate_table(jobs, project="", drawing_registry=None):
@@ -961,7 +992,7 @@ def generate_table(jobs, project="", drawing_registry=None):
         lines += ["",""]
     lines += [hdr, div]
     type_labels = {"REMOVE":"REMOVE WIRE","ADD":"ADD WIRE","MOVE":"MOVE WIRE",
-                   "BLOCK":"BLOCK PROT.","UNBLOCK":"UNBLOCK PROT."}
+                   "BLOCK":"BLOCK PROT.","UNBLOCK":"UNBLOCK PROT.","TESTING":"TESTING"}
     seq = 1
     for job in jobs:
         jtype = job["type"]; desc = job.get("description",""); tl = type_labels.get(jtype,jtype)
@@ -972,6 +1003,8 @@ def generate_table(jobs, project="", drawing_registry=None):
             lines.append(row(seq,"MOVE — ADD",desc,_ep_summary(job.get("add_start",{})),job.get("add_wire",""),_ep_summary(job.get("add_end",{})))); seq+=1
         elif jtype in ("BLOCK","UNBLOCK"):
             lines.append(row(seq,tl,desc,_prot_summary(job.get("protection",{})),"","")); seq+=1
+        elif jtype == "TESTING":
+            lines.append(row(seq,tl,desc,job.get("notes",""),"","")); seq+=1
         lines.append(div)
     return "\n".join(lines)
 
@@ -983,7 +1016,7 @@ def generate_csv(jobs, project="", drawing_registry=None):
     w.writerow([])
     w.writerow(["#","Type","Description","Start Point / Device","Wire","End Point / Device"])
     type_labels = {"REMOVE":"REMOVE WIRE","ADD":"ADD WIRE","MOVE":"MOVE WIRE",
-                   "BLOCK":"BLOCK PROTECTION","UNBLOCK":"UNBLOCK PROTECTION"}
+                   "BLOCK":"BLOCK PROTECTION","UNBLOCK":"UNBLOCK PROTECTION","TESTING":"TESTING"}
     seq = 1
     for job in jobs:
         jtype = job["type"]; desc = job.get("description",""); tl = type_labels.get(jtype,jtype)
@@ -994,6 +1027,8 @@ def generate_csv(jobs, project="", drawing_registry=None):
             w.writerow([seq,"MOVE — ADD",desc,_ep_summary(job.get("add_start",{})),job.get("add_wire",""),_ep_summary(job.get("add_end",{}))]); seq+=1
         elif jtype in ("BLOCK","UNBLOCK"):
             w.writerow([seq,tl,desc,_prot_summary(job.get("protection",{})),"",""]); seq+=1
+        elif jtype == "TESTING":
+            w.writerow([seq,tl,desc,job.get("notes",""),"",""]); seq+=1
     return buf.getvalue()
 
 
@@ -1008,6 +1043,7 @@ _ROW_STYLE = {
     "MOVE-ADD":    ("background:#fefbe6","color:#7d6608;font-weight:bold"),
     "BLOCK":       ("background:#fef3e6","color:#a04000;font-weight:bold"),
     "UNBLOCK":     ("background:#e6f6f3","color:#0e6655;font-weight:bold"),
+    "TESTING":     ("background:#f5eef8","color:#6c3483;font-weight:bold"),
 }
 
 def _esc(t):
@@ -1049,10 +1085,11 @@ def _prot_html(prot):
                      f"{_esc(p.get('reference',''))}{equip}{notes}</span>")
     if prot.get("mb_enabled"):
         remote = f" &nbsp;<i>[{_esc(prot['mb_remote'])}]</i>" if prot.get("mb_remote") else ""
+        notes  = f" &nbsp;{_esc(prot['mb_notes'])}"            if prot.get("mb_notes")  else ""
         parts.append(
             f'<span style="background:#fff3cd;color:#7d4e00;font-weight:bold;'
             f'padding:1px 5px;border-radius:3px">'
-            f'&#9888; MB INPUT — also required: block/unblock{remote}</span>')
+            f'&#9888; MB INPUT — also required: block/unblock{remote}{notes}</span>')
     return "<br>".join(parts)
 
 def generate_html_table(jobs, project="", drawing_registry=None):
@@ -1107,6 +1144,9 @@ def generate_html_table(jobs, project="", drawing_registry=None):
         elif jtype in ("BLOCK","UNBLOCK"):
             job_rows += tr(jtype, type_labels[jtype],
                            _prot_html(job.get("protection",{})), "", "")
+        elif jtype == "TESTING":
+            job_rows += tr("TESTING", type_labels.get("TESTING","Testing"),
+                           _esc(job.get("notes","")), "", "")
 
     def _leg_span(k, lbl):
         bg = _ROW_STYLE[k][0]
@@ -1116,7 +1156,8 @@ def generate_html_table(jobs, project="", drawing_registry=None):
         _leg_span(k, lbl)
         for k,lbl in [("REMOVE","Remove Wire"),("ADD","Add Wire"),
                       ("MOVE-REMOVE","Move — Remove"),("MOVE-ADD","Move — Add"),
-                      ("BLOCK","Block Protection"),("UNBLOCK","Unblock Protection")])
+                      ("BLOCK","Block Protection"),("UNBLOCK","Unblock Protection"),
+                      ("TESTING","Testing")])
 
     return f"""<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"><title>{_esc(title)}</title>
@@ -1130,9 +1171,24 @@ td{{padding:4px 7px;border:1px solid #ccc;vertical-align:top;font-size:8pt;line-
 a{{color:#1a5276}}
 .legend{{display:flex;gap:8px;margin:6px 0 12px;flex-wrap:wrap;font-size:7.5pt}}
 .leg{{padding:2px 7px;border-radius:3px;border:1px solid #ccc}}
-@media print{{body{{margin:8mm}}a{{color:#000;text-decoration:none}}
-@page{{size:A3 landscape;margin:8mm}}}}
+.print-header{{display:none;font-size:7.5pt;color:#555;border-bottom:1px solid #ccc;padding:3px 0 3px;margin-bottom:6px}}
+.print-footer{{display:none}}
+@media print{{
+  body{{margin-top:18mm;margin-bottom:14mm}}
+  .print-header{{display:flex;position:fixed;top:0;left:0;right:0;background:#fff;
+    padding:3px 8mm;justify-content:space-between;z-index:99}}
+  .print-footer{{display:block;position:fixed;bottom:0;left:0;right:0;background:#fff;
+    font-size:7pt;color:#999;padding:2px 8mm;border-top:1px solid #eee;text-align:right}}
+  .print-footer::after{{content:"Page " counter(page)}}
+  a{{color:#000;text-decoration:none}}
+  @page{{size:A3 landscape;margin:14mm 8mm 12mm 8mm}}
+}}
 </style></head><body>
+<div class="print-header">
+  <span><b>{_esc(title)}</b></span>
+  <span>Generated: {now} &nbsp;|&nbsp; {seq-1} step(s)</span>
+</div>
+<div class="print-footer"></div>
 <h1>{_esc(title)}</h1>
 <p class="meta">Generated: {now} &nbsp;|&nbsp; {seq-1} step(s)</p>
 <div class="legend">{legend}</div>
@@ -1152,7 +1208,7 @@ a{{color:#1a5276}}
 
 class WirePlannerApp(tk.Tk):
     TYPE_FG = {"REMOVE":"#c0392b","ADD":"#1a7a3c","MOVE":"#1a5a99",
-               "BLOCK":"#d35400","UNBLOCK":"#16a085"}
+               "BLOCK":"#d35400","UNBLOCK":"#16a085","TESTING":"#6c3483"}
 
     def __init__(self):
         super().__init__()
@@ -1225,7 +1281,8 @@ class WirePlannerApp(tk.Tk):
         ttk.Entry(tb1,textvariable=self.project_var,width=22).pack(side="left",padx=(4,10))
         for label,jtype,color in [
             ("+ Remove","REMOVE","#c0392b"),("+ Add","ADD","#27ae60"),("+ Move","MOVE","#2980b9"),
-            ("+ Block","BLOCK","#d35400"),("+ Unblock","UNBLOCK","#16a085")]:
+            ("+ Block","BLOCK","#d35400"),("+ Unblock","UNBLOCK","#16a085"),
+            ("+ Testing","TESTING","#6c3483")]:
             tk.Button(tb1,text=label,fg="white",bg=color,relief="flat",padx=7,pady=3,
                       cursor="hand2",command=lambda t=jtype:self._add_job(t)).pack(side="left",padx=2)
         rf = ttk.Frame(tb1); rf.pack(side="right")
@@ -1352,7 +1409,7 @@ class WirePlannerApp(tk.Tk):
 
     def _refresh_list(self):
         for iid in self.tree.get_children(): self.tree.delete(iid)
-        disp = {"REMOVE":"REMOVE","ADD":"ADD","MOVE":"MOVE","BLOCK":"BLOCK PROT.","UNBLOCK":"UNBLOCK PROT."}
+        disp = {"REMOVE":"REMOVE","ADD":"ADD","MOVE":"MOVE","BLOCK":"BLOCK PROT.","UNBLOCK":"UNBLOCK PROT.","TESTING":"TESTING"}
         for i,job in enumerate(self.jobs):
             self.tree.insert("","end",iid=str(i),
                 values=(i+1,disp.get(job["type"],job["type"]),job.get("description","")),
@@ -1599,7 +1656,10 @@ class WirePlannerApp(tk.Tk):
         else: self._write(self.current_file)
 
     def _save_as(self):
+        proj = self.project_var.get().strip()
+        safe = "".join(c if c not in r'<>:"/\|?*' else "_" for c in proj) if proj else "wire_plan"
         path = filedialog.asksaveasfilename(defaultextension=".wirePlan",
+                   initialfile=safe,
                    filetypes=[("Wire Plan","*.wirePlan"),("JSON","*.json"),("All","*.*")])
         if path: self.current_file=path; self._write(path)
 
