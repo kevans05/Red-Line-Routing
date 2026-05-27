@@ -126,6 +126,7 @@ class DrawingAwareFrame(ttk.LabelFrame):
         self.ep_history = ep_history if ep_history is not None else []
         self._drawing_combo = None
         self._cell_entry = None
+        self._context_combos = {}   # key → wrapper tk.Frame (for green highlight border)
         self._build()
 
     def _context_suggestions(self, key):
@@ -179,25 +180,31 @@ class DrawingAwareFrame(ttk.LabelFrame):
             self.vars[key] = var
 
             if key == "drawing":
-                combo = ttk.Combobox(self, textvariable=var, width=26)
+                wrap = tk.Frame(self, highlightthickness=0, bd=0)
+                combo = ttk.Combobox(wrap, textvariable=var, width=26)
                 combo["postcommand"] = lambda c=combo: c.__setitem__(
                     "values", self._drawing_suggestions())
                 combo.bind("<<ComboboxSelected>>", self._on_drawing_selected)
                 combo.bind("<FocusOut>", self._on_drawing_focusout)
                 _bind_search_combobox(combo, self._drawing_suggestions)
-                combo.grid(row=row_idx, column=1, sticky="ew", pady=1)
+                combo.pack(fill="both", expand=True)
+                wrap.grid(row=row_idx, column=1, sticky="ew", pady=1)
                 self._drawing_combo = combo
+                self._context_combos[key] = wrap
                 var.trace_add("write", lambda *_: self._update_cell_state())
             elif key == "drawing_cell":
                 entry = ttk.Entry(self, textvariable=var, width=28)
                 entry.grid(row=row_idx, column=1, sticky="ew", pady=1)
                 self._cell_entry = entry
             elif key in self.HISTORY_KEYS:
-                combo = ttk.Combobox(self, textvariable=var, width=28)
+                wrap = tk.Frame(self, highlightthickness=0, bd=0)
+                combo = ttk.Combobox(wrap, textvariable=var, width=28)
                 combo["postcommand"] = lambda k=key, c=combo: c.__setitem__(
                     "values", self._context_suggestions(k))
                 _bind_search_combobox(combo, lambda k=key: self._context_suggestions(k))
-                combo.grid(row=row_idx, column=1, sticky="ew", pady=1)
+                combo.pack(fill="both", expand=True)
+                wrap.grid(row=row_idx, column=1, sticky="ew", pady=1)
+                self._context_combos[key] = wrap
             else:
                 entry = ttk.Entry(self, textvariable=var, width=28)
                 entry.grid(row=row_idx, column=1, sticky="ew", pady=1)
@@ -205,6 +212,14 @@ class DrawingAwareFrame(ttk.LabelFrame):
                     entry.bind("<FocusOut>", self._on_detail_changed)
 
         self.columnconfigure(1, weight=1)
+        # When any context-providing field changes, refresh the highlight borders
+        _ctx_providers: set = set()
+        for _deps in self._CONTEXT_MAP.values():
+            _ctx_providers.update(_deps)
+        for _pk in _ctx_providers:
+            if _pk in self.vars:
+                self.vars[_pk].trace_add("write",
+                    lambda *_: self.after(30, self._refresh_highlights))
 
     def _update_cell_state(self):
         if self._cell_entry is None:
@@ -215,6 +230,23 @@ class DrawingAwareFrame(ttk.LabelFrame):
         else:
             self._cell_entry.configure(state="disabled")
             self.vars["drawing_cell"].set("")
+
+    def _refresh_highlights(self):
+        """Show a green border on context-aware combos when context fields are filled."""
+        ACTIVE = "#27ae60"
+        for key, wrap in self._context_combos.items():
+            if key == "drawing":
+                ctx_fields = [f for f in ("panel", "device") if f in self.vars]
+            else:
+                ctx_fields = [f for f in self._CONTEXT_MAP.get(key, []) if f in self.vars]
+            active = bool(self.ep_history and any(
+                self.vars[f].get().strip() for f in ctx_fields))
+            if active:
+                wrap.configure(highlightthickness=2,
+                               highlightbackground=ACTIVE,
+                               highlightcolor=ACTIVE)
+            else:
+                wrap.configure(highlightthickness=0)
 
     def _update_drawing_list(self):
         if self._drawing_combo is not None:
@@ -1025,7 +1057,7 @@ def format_job(index, job):
     lines.append("")
     return "\n".join(lines)
 
-def generate_report(jobs, project="", drawing_registry=None):
+def generate_report(jobs, project="", drawing_registry=None, title_page=None):
     now = datetime.now().strftime("%Y-%m-%d  %H:%M")
     title = "WIRE WORK PLAN" + (f"  —  {project}" if project else "")
     counts = {}
@@ -1033,6 +1065,19 @@ def generate_report(jobs, project="", drawing_registry=None):
     summary = "  ".join(f"{v} {k}" for k,v in counts.items())
     parts = [_bar("*"),title.center(W),f"Generated: {now}".center(W),_bar("*"),"",
              f"  Total Jobs : {len(jobs)}",f"  Breakdown  : {summary}",""]
+    if title_page:
+        notes = title_page.get("notes", "").strip()
+        crows = title_page.get("crows", [])
+        if notes or crows:
+            parts += [_bar("-"), "  TITLE PAGE".center(W), _bar("-"), ""]
+            if notes:
+                parts += ["  Notes:"] + [f"    {ln}" for ln in notes.splitlines()] + [""]
+            if crows:
+                parts += ["  CROWs:"]
+                for c in crows:
+                    parts.append(f"    {c.get('outage_number', '')}")
+                    if c.get("url"): parts.append(f"      {c['url']}")
+                parts.append("")
     if drawing_registry:
         parts += [_bar("-"),"  PROJECT DRAWINGS".center(W),_bar("-"),""]
         for name in sorted(drawing_registry.keys()):
@@ -1198,9 +1243,31 @@ def _prot_html(prot):
             f'&#9888; MB INPUT — also required: block/unblock{remote}{notes}</span>')
     return "<br>".join(parts)
 
-def generate_html_table(jobs, project="", drawing_registry=None):
+def generate_html_table(jobs, project="", drawing_registry=None, title_page=None):
     now   = datetime.now().strftime("%Y-%m-%d %H:%M")
     title = "Wire Work Plan" + (f" — {project}" if project else "")
+
+    tp_html = ""
+    if title_page:
+        tp_parts = []
+        notes = title_page.get("notes", "").strip()
+        crows = title_page.get("crows", [])
+        if notes:
+            tp_parts.append(
+                f"<h2>Notes</h2>"
+                f"<p style='white-space:pre-wrap;margin:4px 0 8px'>{_esc(notes)}</p>")
+        if crows:
+            crow_rows = "".join(
+                "<tr><td>{}</td><td>{}</td></tr>".format(
+                    _esc(c.get("outage_number", "")),
+                    ('<a href="{u}">{u}</a>'.format(u=_esc(c["url"])) if c.get("url") else ""))
+                for c in crows)
+            tp_parts.append(
+                "<h2>CROWs</h2>"
+                "<table><thead><tr><th>Outage Number</th><th>URL</th></tr></thead>"
+                f"<tbody>{crow_rows}</tbody></table>")
+        if tp_parts:
+            tp_html = "".join(tp_parts) + "<br>"
 
     drw_html = ""
     if drawing_registry:
@@ -1298,7 +1365,7 @@ a{{color:#1a5276}}
 <h1>{_esc(title)}</h1>
 <p class="meta">Generated: {now} &nbsp;|&nbsp; {seq-1} step(s)</p>
 <div class="legend">{legend}</div>
-{drw_html}
+{tp_html}{drw_html}
 <table><thead><tr>
 <th style="width:28px">#</th><th style="width:110px">Type</th>
 <th style="width:15%">Description</th><th style="width:24%">Start Point / Device</th>
@@ -1306,6 +1373,49 @@ a{{color:#1a5276}}
 </tr></thead><tbody>{job_rows}</tbody></table>
 <p style="font-size:7pt;color:#aaa">Ctrl+P → Save as PDF</p>
 </body></html>"""
+
+
+# ──────────────────────────────────────────────────────────────────
+# CROW dialog (outage record: outage_number + URL)
+# ──────────────────────────────────────────────────────────────────
+
+class CrowDialog(tk.Toplevel):
+    """Add/edit a CROW outage record."""
+    def __init__(self, parent, existing=None):
+        super().__init__(parent)
+        self.title("Edit CROW" if existing else "Add CROW")
+        self.result = None
+        self.resizable(False, False)
+        self._build(existing or {})
+        self.grab_set()
+        self.wait_window()
+
+    def _build(self, ex):
+        f = ttk.Frame(self, padding=12)
+        f.pack(fill="both", expand=True)
+        ttk.Label(f, text="Outage Number:").grid(row=0, column=0, sticky="e", padx=(0, 6), pady=4)
+        self.num_var = tk.StringVar(value=ex.get("outage_number", ""))
+        ttk.Entry(f, textvariable=self.num_var, width=20).grid(row=0, column=1, sticky="ew", pady=4)
+        ttk.Label(f, text="format: 8-XXXXXXXX", foreground="grey",
+                  font=("", 8)).grid(row=0, column=2, sticky="w", padx=(4, 0))
+        ttk.Label(f, text="URL:").grid(row=1, column=0, sticky="e", padx=(0, 6), pady=4)
+        self.url_var = tk.StringVar(value=ex.get("url", ""))
+        ttk.Entry(f, textvariable=self.url_var, width=42).grid(
+            row=1, column=1, columnspan=2, sticky="ew", pady=4)
+        f.columnconfigure(1, weight=1)
+        br = ttk.Frame(self)
+        br.pack(fill="x", padx=10, pady=(0, 8))
+        ttk.Button(br, text="Cancel", command=self.destroy).pack(side="right", padx=2)
+        ttk.Button(br, text="Save",   command=self._save).pack(side="right", padx=2)
+        self.geometry("480x140")
+
+    def _save(self):
+        num = self.num_var.get().strip()
+        if not num:
+            messagebox.showwarning("Required", "Outage number is required.", parent=self)
+            return
+        self.result = {"outage_number": num, "url": self.url_var.get().strip()}
+        self.destroy()
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -1327,6 +1437,7 @@ class WirePlannerApp(tk.Tk):
         self.history = {"device": [], "location": [], "pin": [], "panel": [], "wire": []}
         # Full endpoint dicts for context-aware suggestions
         self.ep_history = []
+        self.title_page = {"notes": "", "crows": []}
         self._build_menu()
         self._build_ui()
 
@@ -1416,6 +1527,7 @@ class WirePlannerApp(tk.Tk):
         nb = ttk.Notebook(self); nb.pack(fill="both",expand=True,padx=6,pady=(0,4))
         wt = ttk.Frame(nb); nb.add(wt,text="  Work Order  ");  self._build_work_tab(wt)
         dt = ttk.Frame(nb); nb.add(dt,text="  Project Drawings  "); self._build_drawings_tab(dt)
+        tt = ttk.Frame(nb); nb.add(tt,text="  Title Page  "); self._build_title_tab(tt)
 
         self.status_var = tk.StringVar(value="Ready  —  no jobs loaded")
         ttk.Label(self,textvariable=self.status_var,relief="sunken",
@@ -1445,6 +1557,7 @@ class WirePlannerApp(tk.Tk):
         ttk.Button(tb, text="Edit",          command=self._edit_drawing).pack(side="left", padx=2)
         ttk.Button(tb, text="Delete",        command=self._delete_drawing).pack(side="left", padx=2)
         ttk.Button(tb, text="Scan Jobs →",   command=self._scan_and_refresh).pack(side="left", padx=(10,2))
+        ttk.Button(tb, text="Drawing Index", command=self._show_drawing_index).pack(side="left", padx=2)
         ttk.Label(tb, text="Drawing names entered in any job are added here automatically.",
                   foreground="grey").pack(side="left", padx=8)
         frame = ttk.Frame(parent); frame.pack(fill="both", expand=True, padx=4, pady=(0,4))
@@ -1511,6 +1624,117 @@ class WirePlannerApp(tk.Tk):
     def _scan_and_refresh(self):
         self._scan_jobs_for_drawings(); self._refresh_drawings_list()
         self.status_var.set(f"Registry updated — {len(self.drawing_registry)} drawing(s).")
+
+    def _show_drawing_index(self):
+        """Dialog: which drawings appear in which job steps (cross-reference)."""
+        index = {}
+        for i, job in enumerate(self.jobs):
+            step = f"#{i+1} {job.get('description','') or job['type']}"
+            seen_in_step = []
+            for ep_key in ("start", "end", "add_start", "add_end"):
+                d = (job.get(ep_key) or {}).get("drawing", "").strip()
+                if d and d not in seen_in_step:
+                    seen_in_step.append(d)
+            for d_info in _get_prot_drawings(job.get("protection") or {}):
+                d = d_info.get("drawing", "").strip()
+                if d and d not in seen_in_step:
+                    seen_in_step.append(d)
+            for d in seen_in_step:
+                index.setdefault(d, []).append(step)
+        if not index:
+            messagebox.showinfo("Drawing Index", "No drawings are referenced in any job step.")
+            return
+        win = tk.Toplevel(self)
+        win.title("Drawing Cross-Reference")
+        win.geometry("740x440")
+        ttk.Label(win, text="Drawing → Job steps that reference it",
+                  font=("", 10, "bold"), padding=(8, 6)).pack(anchor="w")
+        fr = ttk.Frame(win)
+        fr.pack(fill="both", expand=True, padx=8, pady=(0, 4))
+        cols = ("Drawing", "Steps")
+        tree = ttk.Treeview(fr, columns=cols, show="headings")
+        tree.heading("Drawing", text="Drawing")
+        tree.heading("Steps",   text="Steps")
+        tree.column("Drawing", width=200, stretch=False)
+        tree.column("Steps",   width=500)
+        vsb = ttk.Scrollbar(fr, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=vsb.set)
+        tree.pack(side="left", fill="both", expand=True)
+        vsb.pack(side="right", fill="y")
+        for drw in sorted(index.keys()):
+            tree.insert("", "end", values=(drw, ",  ".join(index[drw])))
+        ttk.Button(win, text="Close", command=win.destroy).pack(pady=(4, 8))
+
+    # ── Title page tab ────────────────────────────────────────────
+
+    def _build_title_tab(self, parent):
+        f = ttk.Frame(parent, padding=10)
+        f.pack(fill="both", expand=True)
+        # Project name (shared with main toolbar)
+        pf = ttk.LabelFrame(f, text="Project", padding=6)
+        pf.pack(fill="x", pady=(0, 8))
+        ttk.Label(pf, text="Project Name:").grid(row=0, column=0, sticky="e", padx=(0, 6))
+        ttk.Entry(pf, textvariable=self.project_var, width=52).grid(
+            row=0, column=1, sticky="ew")
+        pf.columnconfigure(1, weight=1)
+        # Notes
+        nf = ttk.LabelFrame(f, text="Notes", padding=6)
+        nf.pack(fill="x", pady=(0, 8))
+        self.title_notes = scrolledtext.ScrolledText(nf, height=5, wrap="word", font=("", 9))
+        self.title_notes.pack(fill="x")
+        self.title_notes.insert("1.0", self.title_page.get("notes", ""))
+        # CROWs
+        cf = ttk.LabelFrame(f, text="CROWs (Outage Records)", padding=6)
+        cf.pack(fill="both", expand=True)
+        ctb = ttk.Frame(cf)
+        ctb.pack(fill="x", pady=(0, 4))
+        ttk.Button(ctb, text="+ Add CROW", command=self._add_crow).pack(side="left", padx=2)
+        ttk.Button(ctb, text="Edit",       command=self._edit_crow).pack(side="left", padx=2)
+        ttk.Button(ctb, text="Remove",     command=self._remove_crow).pack(side="left", padx=2)
+        crow_fr = ttk.Frame(cf)
+        crow_fr.pack(fill="both", expand=True)
+        ccols = ("Outage Number", "URL")
+        self.crow_tree = ttk.Treeview(crow_fr, columns=ccols, show="headings", height=6)
+        self.crow_tree.heading("Outage Number", text="Outage Number")
+        self.crow_tree.heading("URL",           text="URL")
+        self.crow_tree.column("Outage Number", width=160, stretch=False)
+        self.crow_tree.column("URL",           width=450)
+        cvsb = ttk.Scrollbar(crow_fr, orient="vertical", command=self.crow_tree.yview)
+        self.crow_tree.configure(yscrollcommand=cvsb.set)
+        self.crow_tree.pack(side="left", fill="both", expand=True)
+        cvsb.pack(side="right", fill="y")
+        self.crow_tree.bind("<Double-1>", lambda _: self._edit_crow())
+        self._refresh_crows()
+
+    def _refresh_crows(self):
+        for iid in self.crow_tree.get_children():
+            self.crow_tree.delete(iid)
+        for crow in self.title_page.get("crows", []):
+            self.crow_tree.insert("", "end", values=(
+                crow.get("outage_number", ""), crow.get("url", "")))
+
+    def _add_crow(self):
+        dlg = CrowDialog(self)
+        if dlg.result:
+            self.title_page.setdefault("crows", []).append(dlg.result)
+            self._refresh_crows()
+
+    def _edit_crow(self):
+        sel = self.crow_tree.selection()
+        if not sel:
+            return
+        idx = self.crow_tree.index(sel[0])
+        dlg = CrowDialog(self, existing=self.title_page.get("crows", [])[idx])
+        if dlg.result:
+            self.title_page["crows"][idx] = dlg.result
+            self._refresh_crows()
+
+    def _remove_crow(self):
+        sel = self.crow_tree.selection()
+        if not sel:
+            return
+        self.title_page.get("crows", []).pop(self.crow_tree.index(sel[0]))
+        self._refresh_crows()
 
     # ── Job list ─────────────────────────────────────────────────
 
@@ -1652,7 +1876,8 @@ class WirePlannerApp(tk.Tk):
 
     def _preview_report(self):
         if not self.jobs: messagebox.showinfo("No Jobs","Add at least one job before previewing."); return
-        report = generate_report(self.jobs,self.project_var.get().strip(),self.drawing_registry)
+        tp = dict(self.title_page); tp["notes"] = self.title_notes.get("1.0","end").strip()
+        report = generate_report(self.jobs,self.project_var.get().strip(),self.drawing_registry,title_page=tp)
         win = tk.Toplevel(self); win.title("Report Preview"); win.geometry("740x720")
         txt = scrolledtext.ScrolledText(win,font=("Courier",9),wrap="none")
         txt.pack(fill="both",expand=True,padx=6,pady=6); txt.insert("1.0",report); txt.configure(state="disabled")
@@ -1661,7 +1886,8 @@ class WirePlannerApp(tk.Tk):
         ttk.Button(bf,text="Close",command=win.destroy).pack(side="left",padx=4)
 
     def _export_report(self):
-        self._export_text(generate_report(self.jobs,self.project_var.get().strip(),self.drawing_registry),
+        tp = dict(self.title_page); tp["notes"] = self.title_notes.get("1.0","end").strip()
+        self._export_text(generate_report(self.jobs,self.project_var.get().strip(),self.drawing_registry,title_page=tp),
                           f"wire_report_{datetime.now().strftime('%Y%m%d')}.txt")
 
     def _export_table(self):
@@ -1694,7 +1920,8 @@ class WirePlannerApp(tk.Tk):
                    filetypes=[("HTML files","*.html"),("All files","*.*")],
                    initialfile=f"wire_table_{datetime.now().strftime('%Y%m%d')}.html")
         if not path: return
-        html = generate_html_table(self.jobs,self.project_var.get().strip(),self.drawing_registry)
+        tp = dict(self.title_page); tp["notes"] = self.title_notes.get("1.0","end").strip()
+        html = generate_html_table(self.jobs,self.project_var.get().strip(),self.drawing_registry,title_page=tp)
         with open(path,"w",encoding="utf-8") as fh: fh.write(html)
         self.status_var.set(f"HTML exported → {path}")
         webbrowser.open(path)
@@ -1708,7 +1935,9 @@ class WirePlannerApp(tk.Tk):
         self.jobs=[]; self.drawing_registry={}; self.current_file=None; self.project_var.set("")
         self.history = {"device": [], "location": [], "pin": [], "panel": [], "wire": []}
         self.ep_history = []
-        self._refresh_list(); self._refresh_drawings_list()
+        self.title_page = {"notes": "", "crows": []}
+        self.title_notes.delete("1.0", "end")
+        self._refresh_list(); self._refresh_drawings_list(); self._refresh_crows()
         self.preview.configure(state="normal"); self.preview.delete("1.0","end"); self.preview.configure(state="disabled")
 
     def _open(self):
@@ -1719,10 +1948,13 @@ class WirePlannerApp(tk.Tk):
             self.jobs = data.get("jobs",[]); self.project_var.set(data.get("project",""))
             self.drawing_registry = data.get("drawing_registry",{})
             self.history = data.get("history", {"device":[],"location":[],"pin":[],"panel":[],"wire":[]})
+            self.title_page = data.get("title_page", {"notes": "", "crows": []})
             self.current_file = path
             self._scan_jobs_for_drawings()
             self._rebuild_history()
-            self._refresh_list(); self._refresh_drawings_list()
+            self.title_notes.delete("1.0", "end")
+            self.title_notes.insert("1.0", self.title_page.get("notes", ""))
+            self._refresh_list(); self._refresh_drawings_list(); self._refresh_crows()
         except Exception as exc: messagebox.showerror("Open Error",str(exc))
 
     def _save(self):
@@ -1739,8 +1971,11 @@ class WirePlannerApp(tk.Tk):
 
     def _write(self, path):
         try:
+            tp = dict(self.title_page)
+            tp["notes"] = self.title_notes.get("1.0", "end").strip()
             with open(path,"w",encoding="utf-8") as fh:
                 json.dump({"project":self.project_var.get().strip(),
+                           "title_page":tp,
                            "drawing_registry":self.drawing_registry,
                            "history":self.history,
                            "jobs":self.jobs},fh,indent=2)
