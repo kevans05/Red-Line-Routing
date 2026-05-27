@@ -99,6 +99,15 @@ def _bind_search_combobox(combo, get_values_fn):
     combo.bind("<KeyRelease>", _on_key)
 
 
+def _bind_url_open(entry_widget, url_var):
+    """Ctrl+click on a URL entry opens it in the browser."""
+    def _open(event):
+        url = url_var.get().strip()
+        if url:
+            webbrowser.open(url)
+    entry_widget.bind("<Control-Button-1>", _open)
+
+
 # ──────────────────────────────────────────────────────────────────
 # Drawing-aware endpoint frame (with conditional Drawing Cell)
 # ──────────────────────────────────────────────────────────────────
@@ -351,6 +360,9 @@ class DrawingEntryDialog(tk.Toplevel):
         url_e = ttk.Entry(f, textvariable=self.url_var, width=32)
         url_e.bind("<FocusOut>", self._push)
         url_e.grid(row=2, column=1, sticky="ew", pady=3)
+        ttk.Label(f, text="Ctrl+click to open", foreground="grey",
+                  font=("", 7)).grid(row=2, column=2, sticky="w", padx=(4, 0))
+        _bind_url_open(url_e, self.url_var)
 
         ttk.Label(f, text="Drawing Cell:").grid(row=3, column=0, sticky="e", padx=(0, 4), pady=3)
         self.cell_var = tk.StringVar(value=ex.get("drawing_cell", ""))
@@ -968,7 +980,12 @@ class DrawingEditDialog(tk.Toplevel):
             default = self._base_url if (key == "url" and not ex.get("url")) else ""
             var = tk.StringVar(value=ex.get(key, default))
             self.vars[key] = var
-            ttk.Entry(f,textvariable=var,width=46).grid(row=row,column=1,sticky="ew",pady=4)
+            ent = ttk.Entry(f,textvariable=var,width=46)
+            ent.grid(row=row,column=1,sticky="ew",pady=4)
+            if key == "url":
+                ttk.Label(f, text="Ctrl+click to open", foreground="grey",
+                          font=("",7)).grid(row=row,column=2,sticky="w",padx=(4,0))
+                _bind_url_open(ent, var)
         f.columnconfigure(1, weight=1)
         br = ttk.Frame(self); br.pack(fill="x",padx=10,pady=(0,8))
         ttk.Button(br,text="Cancel",command=self.destroy).pack(side="right",padx=2)
@@ -1426,8 +1443,11 @@ class CrowDialog(tk.Toplevel):
                   font=("", 8)).grid(row=0, column=2, sticky="w", padx=(4, 0))
         ttk.Label(f, text="URL:").grid(row=1, column=0, sticky="e", padx=(0, 6), pady=4)
         self.url_var = tk.StringVar(value=ex.get("url", "") or self._base_url)
-        ttk.Entry(f, textvariable=self.url_var, width=42).grid(
-            row=1, column=1, columnspan=2, sticky="ew", pady=4)
+        crow_url_e = ttk.Entry(f, textvariable=self.url_var, width=36)
+        crow_url_e.grid(row=1, column=1, sticky="ew", pady=4)
+        ttk.Label(f, text="Ctrl+click to open", foreground="grey",
+                  font=("", 7)).grid(row=1, column=2, sticky="w", padx=(4, 0))
+        _bind_url_open(crow_url_e, self.url_var)
         f.columnconfigure(1, weight=1)
         br = ttk.Frame(self)
         br.pack(fill="x", padx=10, pady=(0, 8))
@@ -1568,16 +1588,21 @@ class WirePlannerApp(tk.Tk):
         pw = ttk.PanedWindow(parent, orient="horizontal")
         pw.pack(fill="both", expand=True, padx=4, pady=4)
         lf = ttk.LabelFrame(pw, text="Work Order", padding=4); pw.add(lf, weight=1)
-        cols = ("Seq","Type","Description")
+        cols = ("Done","Seq","Type","Description")
         self.tree = ttk.Treeview(lf, columns=cols, show="headings", selectmode="extended")
-        self.tree.heading("Seq",text="#"); self.tree.heading("Type",text="Type"); self.tree.heading("Description",text="Description")
-        self.tree.column("Seq",width=35,stretch=False); self.tree.column("Type",width=110,stretch=False); self.tree.column("Description",width=230)
+        self.tree.heading("Done",text="✓"); self.tree.heading("Seq",text="#")
+        self.tree.heading("Type",text="Type"); self.tree.heading("Description",text="Description")
+        self.tree.column("Done",width=30,stretch=False,anchor="center")
+        self.tree.column("Seq",width=35,stretch=False); self.tree.column("Type",width=110,stretch=False)
+        self.tree.column("Description",width=230)
         for t,fg in self.TYPE_FG.items(): self.tree.tag_configure(t, foreground=fg)
+        self.tree.tag_configure("COMPLETED", foreground="#aaaaaa")
         vsb = ttk.Scrollbar(lf, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=vsb.set)
         self.tree.pack(side="left", fill="both", expand=True); vsb.pack(side="right", fill="y")
         self.tree.bind("<<TreeviewSelect>>", self._on_select)
         self.tree.bind("<Double-1>", lambda _: self._edit_job())
+        self.tree.bind("<Button-1>", self._on_tree_click)
         pf = ttk.LabelFrame(pw, text="Job Preview", padding=4); pw.add(pf, weight=2)
         self.preview = scrolledtext.ScrolledText(pf, font=("Courier",9), state="disabled", wrap="none")
         self.preview.pack(fill="both", expand=True)
@@ -1589,7 +1614,7 @@ class WirePlannerApp(tk.Tk):
         ttk.Button(tb, text="Delete",        command=self._delete_drawing).pack(side="left", padx=2)
         ttk.Button(tb, text="Scan Jobs →",   command=self._scan_and_refresh).pack(side="left", padx=(10,2))
         ttk.Button(tb, text="Drawing Index", command=self._show_drawing_index).pack(side="left", padx=2)
-        ttk.Label(tb, text="Drawing names entered in any job are added here automatically.",
+        ttk.Label(tb, text="Drawing names entered in any job are added here automatically.  Ctrl+click a row to open its URL.",
                   foreground="grey").pack(side="left", padx=8)
         frame = ttk.Frame(parent); frame.pack(fill="both", expand=True, padx=4, pady=(0,4))
         cols = ("Drawing","Title","Revision","URL","Notes")
@@ -1604,6 +1629,7 @@ class WirePlannerApp(tk.Tk):
         self.drawings_tree.configure(yscrollcommand=vsb.set)
         self.drawings_tree.pack(side="left", fill="both", expand=True); vsb.pack(side="right", fill="y")
         self.drawings_tree.bind("<Double-1>", lambda _: self._edit_drawing())
+        self.drawings_tree.bind("<Control-Button-1>", self._on_drawings_ctrl_click)
 
     # ── Drawing registry CRUD ─────────────────────────────────────
 
@@ -1658,6 +1684,14 @@ class WirePlannerApp(tk.Tk):
     def _scan_and_refresh(self):
         self._scan_jobs_for_drawings(); self._refresh_drawings_list()
         self.status_var.set(f"Registry updated — {len(self.drawing_registry)} drawing(s).")
+
+    def _on_drawings_ctrl_click(self, event):
+        row = self.drawings_tree.identify_row(event.y)
+        if not row:
+            return
+        url = self.drawing_registry.get(row, {}).get("url", "").strip()
+        if url:
+            webbrowser.open(url)
 
     def _show_drawing_index(self):
         """Dialog: which drawings appear in which job steps (cross-reference)."""
@@ -1738,6 +1772,9 @@ class WirePlannerApp(tk.Tk):
         self.crow_tree.pack(side="left", fill="both", expand=True)
         cvsb.pack(side="right", fill="y")
         self.crow_tree.bind("<Double-1>", lambda _: self._edit_crow())
+        self.crow_tree.bind("<Control-Button-1>", self._on_crow_ctrl_click)
+        ttk.Label(cf, text="Ctrl+click a row to open its URL",
+                  foreground="grey", font=("", 7)).pack(anchor="w")
         self._refresh_crows()
 
     def _refresh_crows(self):
@@ -1769,6 +1806,17 @@ class WirePlannerApp(tk.Tk):
             return
         self.title_page.get("crows", []).pop(self.crow_tree.index(sel[0]))
         self._refresh_crows()
+
+    def _on_crow_ctrl_click(self, event):
+        row_id = self.crow_tree.identify_row(event.y)
+        if not row_id:
+            return
+        idx = self.crow_tree.index(row_id)
+        crows = self.title_page.get("crows", [])
+        if idx < len(crows):
+            url = crows[idx].get("url", "").strip()
+            if url:
+                webbrowser.open(url)
 
     def _get_settings(self):
         return {k: v.get().strip() for k, v in self.settings_vars.items()}
@@ -1803,10 +1851,29 @@ class WirePlannerApp(tk.Tk):
         for iid in self.tree.get_children(): self.tree.delete(iid)
         disp = {"REMOVE":"REMOVE","ADD":"ADD","MOVE":"MOVE","BLOCK":"BLOCK PROT.","UNBLOCK":"UNBLOCK PROT.","TESTING":"TESTING"}
         for i,job in enumerate(self.jobs):
+            done = job.get("completed", False)
+            tags = (job["type"], "COMPLETED") if done else (job["type"],)
             self.tree.insert("","end",iid=str(i),
-                values=(i+1,disp.get(job["type"],job["type"]),job.get("description","")),
-                tags=(job["type"],))
+                values=("☑" if done else "☐", i+1,
+                        disp.get(job["type"],job["type"]), job.get("description","")),
+                tags=tags)
         self._update_status()
+
+    def _on_tree_click(self, event):
+        """Toggle completed on click in the ☐/☑ Done column."""
+        if self.tree.identify_region(event.x, event.y) != "cell":
+            return
+        if self.tree.identify_column(event.x) != "#1":
+            return
+        row = self.tree.identify_row(event.y)
+        if not row:
+            return
+        idx = int(row)
+        if 0 <= idx < len(self.jobs):
+            self.jobs[idx]["completed"] = not self.jobs[idx].get("completed", False)
+            self._refresh_list()
+            self.tree.selection_set(str(idx))
+            self._on_select()
 
     def _update_status(self):
         n = len(self.jobs)
