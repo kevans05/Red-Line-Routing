@@ -28,6 +28,7 @@ def empty_endpoint():
         "pin": "",
         "panel": "",
         "drawing": "",
+        "drawing_rev": "",
         "drawing_url": "",
         "drawing_cell": "",
     }
@@ -37,7 +38,7 @@ def empty_job(job_type="REMOVE"):
     job = {
         "type": job_type,
         "description": "",
-        "wire": "",          # wire label / ID linking the two endpoints
+        "wire": "",
         "start": empty_endpoint(),
         "end": empty_endpoint(),
     }
@@ -61,6 +62,7 @@ class EndpointFrame(ttk.LabelFrame):
         ("pin",          "Pin"),
         ("panel",        "Panel"),
         ("drawing",      "Drawing"),
+        ("drawing_rev",  "Drawing Rev"),
         ("drawing_url",  "Drawing URL"),
         ("drawing_cell", "Drawing Cell"),
     ]
@@ -109,10 +111,7 @@ class JobDialog(tk.Toplevel):
         self.grab_set()
         self.wait_window()
 
-    # ── layout ──────────────────────────────────────────────────
-
     def _build(self, existing):
-        # Scrollable inner frame
         outer = ttk.Frame(self)
         outer.pack(fill="both", expand=True)
 
@@ -138,13 +137,12 @@ class JobDialog(tk.Toplevel):
 
         self._fill_form(inner, existing)
 
-        # Button row
         btn_row = ttk.Frame(self)
         btn_row.pack(fill="x", padx=10, pady=(0, 8))
         ttk.Button(btn_row, text="Cancel", command=self.destroy).pack(side="right", padx=2)
         ttk.Button(btn_row, text="Save", command=self._save).pack(side="right", padx=2)
 
-        self.geometry("920x580")
+        self.geometry("960x640")
 
     def _section_label(self, parent, row, text, color):
         ttk.Separator(parent, orient="horizontal").grid(
@@ -155,17 +153,10 @@ class JobDialog(tk.Toplevel):
         )
         lbl.grid(row=row + 1, column=0, columnspan=2, pady=(0, 4))
 
-    def _wire_row(self, parent, row, label, var):
-        ttk.Label(parent, text=label).grid(row=row, column=0, sticky="e", padx=(0, 6), pady=2)
-        ttk.Entry(parent, textvariable=var, width=40).grid(
-            row=row, column=1, sticky="ew", pady=2
-        )
-
     def _fill_form(self, f, existing):
         row = 0
         ex = existing or {}
 
-        # Description
         ttk.Label(f, text="Description:", font=("", 10, "bold")).grid(
             row=row, column=0, sticky="w"
         )
@@ -200,7 +191,6 @@ class JobDialog(tk.Toplevel):
             )
 
         elif self.job_type == "MOVE":
-            # ── Remove side ──────────────────────────────────────
             self._section_label(f, row, "── REMOVE (Wire Being Moved) ──", "#c0392b")
             row += 2
 
@@ -222,7 +212,6 @@ class JobDialog(tk.Toplevel):
             )
             row += 1
 
-            # ── Add side ─────────────────────────────────────────
             self._section_label(f, row, "── ADD (New Wire Location) ──", "#27ae60")
             row += 2
 
@@ -246,8 +235,6 @@ class JobDialog(tk.Toplevel):
         f.columnconfigure(0, weight=1)
         f.columnconfigure(1, weight=1)
 
-    # ── save ────────────────────────────────────────────────────
-
     def _save(self):
         job = {
             "type": self.job_type,
@@ -257,7 +244,7 @@ class JobDialog(tk.Toplevel):
             job["start"] = self.ep_start.get()
             job["wire"] = self.wire_var.get().strip()
             job["end"] = self.ep_end.get()
-        else:  # MOVE
+        else:
             job["start"] = self.ep_rem_start.get()
             job["wire"] = self.wire_var.get().strip()
             job["end"] = self.ep_rem_end.get()
@@ -272,7 +259,7 @@ class JobDialog(tk.Toplevel):
 # Report formatting
 # ──────────────────────────────────────────────────────────────────
 
-W = 62  # line width
+W = 62
 
 
 def _bar(char="="):
@@ -287,6 +274,7 @@ def _ep_block(ep, label):
         ("pin",          "  Pin         "),
         ("panel",        "  Panel       "),
         ("drawing",      "  Drawing     "),
+        ("drawing_rev",  "  Drawing Rev "),
         ("drawing_url",  "  Drawing URL "),
         ("drawing_cell", "  Drawing Cell"),
     ]:
@@ -299,7 +287,7 @@ def format_job(index, job):
     lines = [_bar(), f"  JOB #{index + 1}   [{job['type']} WIRE]", _bar()]
     desc = job.get("description", "")
     if desc:
-        lines += ["", f"  DESCRIPTION", f"    {desc}"]
+        lines += ["", "  DESCRIPTION", f"    {desc}"]
 
     jtype = job["type"]
 
@@ -363,7 +351,7 @@ class WirePlannerApp(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("Wire Work Planner")
-        self.geometry("1000x620")
+        self.geometry("1000x660")
         self.jobs = []
         self.current_file = None
         self._build_menu()
@@ -374,14 +362,14 @@ class WirePlannerApp(tk.Tk):
     def _build_menu(self):
         mb = tk.Menu(self)
         fm = tk.Menu(mb, tearoff=0)
-        fm.add_command(label="New",           command=self._new_plan,      accelerator="Ctrl+N")
-        fm.add_command(label="Open…",         command=self._open,          accelerator="Ctrl+O")
-        fm.add_command(label="Save",          command=self._save,          accelerator="Ctrl+S")
-        fm.add_command(label="Save As…",      command=self._save_as)
+        fm.add_command(label="New",            command=self._new_plan,      accelerator="Ctrl+N")
+        fm.add_command(label="Open…",          command=self._open,          accelerator="Ctrl+O")
+        fm.add_command(label="Save",           command=self._save,          accelerator="Ctrl+S")
+        fm.add_command(label="Save As…",       command=self._save_as)
         fm.add_separator()
-        fm.add_command(label="Export Report…",command=self._export_report, accelerator="Ctrl+E")
+        fm.add_command(label="Export Report…", command=self._export_report, accelerator="Ctrl+E")
         fm.add_separator()
-        fm.add_command(label="Quit",          command=self.quit,           accelerator="Ctrl+Q")
+        fm.add_command(label="Quit",           command=self.quit,           accelerator="Ctrl+Q")
         mb.add_cascade(label="File", menu=fm)
         self.config(menu=mb)
 
@@ -394,56 +382,69 @@ class WirePlannerApp(tk.Tk):
     # ── UI ──────────────────────────────────────────────────────
 
     def _build_ui(self):
-        # ── Toolbar ─────────────────────────────────────────────
-        tb = ttk.Frame(self, padding=(6, 4))
-        tb.pack(fill="x")
+        # ── Toolbar row 1: add job buttons ──────────────────────
+        tb1 = ttk.Frame(self, padding=(6, 4))
+        tb1.pack(fill="x")
 
-        ttk.Label(tb, text="Project:").pack(side="left")
+        ttk.Label(tb1, text="Project:").pack(side="left")
         self.project_var = tk.StringVar()
-        ttk.Entry(tb, textvariable=self.project_var, width=28).pack(side="left", padx=(4, 16))
+        ttk.Entry(tb1, textvariable=self.project_var, width=28).pack(side="left", padx=(4, 16))
 
         for label, jtype, color in [
             ("+ Remove Wire", "REMOVE", "#c0392b"),
             ("+ Add Wire",    "ADD",    "#27ae60"),
             ("+ Move Wire",   "MOVE",   "#2980b9"),
         ]:
-            btn = tk.Button(
-                tb, text=label, fg="white", bg=color, relief="flat",
+            tk.Button(
+                tb1, text=label, fg="white", bg=color, relief="flat",
                 padx=8, pady=3, cursor="hand2",
                 command=lambda t=jtype: self._add_job(t),
-            )
-            btn.pack(side="left", padx=2)
+            ).pack(side="left", padx=2)
 
-        # Right-side action buttons
-        rf = ttk.Frame(tb)
+        rf = ttk.Frame(tb1)
         rf.pack(side="right")
         for label, cmd in [
-            ("↑ Up",          self._move_up),
-            ("↓ Down",        self._move_down),
-            ("Edit",          self._edit_job),
-            ("Duplicate",     self._duplicate_job),
-            ("Delete",        self._delete_job),
-            ("Preview",       self._preview_report),
-            ("Export Report", self._export_report),
+            ("↑ Up",      self._move_up),
+            ("↓ Down",    self._move_down),
+            ("Edit",      self._edit_job),
+            ("Duplicate", self._duplicate_job),
+            ("Delete",    self._delete_job),
         ]:
             ttk.Button(rf, text=label, command=cmd).pack(side="left", padx=2)
+
+        # ── Toolbar row 2: combine / split / report ──────────────
+        tb2 = ttk.Frame(self, padding=(6, 0, 6, 4))
+        tb2.pack(fill="x")
+
+        tk.Button(
+            tb2, text="Combine 2 → Move", fg="white", bg="#7d3c98", relief="flat",
+            padx=8, pady=3, cursor="hand2", command=self._combine_jobs,
+        ).pack(side="left", padx=2)
+        ttk.Label(tb2, text="Ctrl+click to select 2", foreground="grey").pack(side="left", padx=(0, 16))
+
+        tk.Button(
+            tb2, text="Split Move → 2 Jobs", fg="white", bg="#d35400", relief="flat",
+            padx=8, pady=3, cursor="hand2", command=self._split_job,
+        ).pack(side="left", padx=2)
+
+        ttk.Button(tb2, text="Export Report",  command=self._export_report).pack(side="right", padx=2)
+        ttk.Button(tb2, text="Preview Report", command=self._preview_report).pack(side="right", padx=2)
 
         # ── Paned area ──────────────────────────────────────────
         pw = ttk.PanedWindow(self, orient="horizontal")
         pw.pack(fill="both", expand=True, padx=6, pady=(0, 4))
 
-        # Left: job list
         lf = ttk.LabelFrame(pw, text="Work Order", padding=4)
         pw.add(lf, weight=1)
 
         cols = ("Seq", "Type", "Description")
-        self.tree = ttk.Treeview(lf, columns=cols, show="headings", selectmode="browse")
+        self.tree = ttk.Treeview(lf, columns=cols, show="headings", selectmode="extended")
         self.tree.heading("Seq",         text="#")
         self.tree.heading("Type",        text="Type")
         self.tree.heading("Description", text="Description")
-        self.tree.column("Seq",  width=35,  stretch=False)
-        self.tree.column("Type", width=80,  stretch=False)
-        self.tree.column("Description", width=260)
+        self.tree.column("Seq",          width=35,  stretch=False)
+        self.tree.column("Type",         width=80,  stretch=False)
+        self.tree.column("Description",  width=260)
 
         for t, fg in self.TYPE_FG.items():
             self.tree.tag_configure(t, foreground=fg)
@@ -455,7 +456,6 @@ class WirePlannerApp(tk.Tk):
         self.tree.bind("<<TreeviewSelect>>", self._on_select)
         self.tree.bind("<Double-1>", lambda _: self._edit_job())
 
-        # Right: preview
         pf = ttk.LabelFrame(pw, text="Job Preview", padding=4)
         pw.add(pf, weight=2)
 
@@ -466,10 +466,11 @@ class WirePlannerApp(tk.Tk):
 
         # ── Status bar ──────────────────────────────────────────
         self.status_var = tk.StringVar(value="Ready  —  no jobs loaded")
-        ttk.Label(self, textvariable=self.status_var, relief="sunken", anchor="w", padding=(4, 1)
-                  ).pack(fill="x", side="bottom")
+        ttk.Label(
+            self, textvariable=self.status_var, relief="sunken", anchor="w", padding=(4, 1)
+        ).pack(fill="x", side="bottom")
 
-    # ── List management ─────────────────────────────────────────
+    # ── List helpers ─────────────────────────────────────────────
 
     def _refresh_list(self):
         for iid in self.tree.get_children():
@@ -494,15 +495,18 @@ class WirePlannerApp(tk.Tk):
         fname = os.path.basename(self.current_file) if self.current_file else "unsaved"
         self.status_var.set(f"{fname}    {n} job(s):  {parts}")
 
+    def _selected_indices(self):
+        return sorted(int(iid) for iid in self.tree.selection())
+
     def _selected_idx(self):
-        sel = self.tree.selection()
-        return int(sel[0]) if sel else None
+        idxs = self._selected_indices()
+        return idxs[0] if idxs else None
 
     def _on_select(self, _=None):
-        idx = self._selected_idx()
-        if idx is None:
+        idxs = self._selected_indices()
+        if not idxs:
             return
-        text = format_job(idx, self.jobs[idx])
+        text = format_job(idxs[0], self.jobs[idxs[0]])
         self.preview.configure(state="normal")
         self.preview.delete("1.0", "end")
         self.preview.insert("1.0", text)
@@ -545,12 +549,15 @@ class WirePlannerApp(tk.Tk):
         self._on_select()
 
     def _delete_job(self):
-        idx = self._selected_idx()
-        if idx is None:
+        idxs = self._selected_indices()
+        if not idxs:
             messagebox.showinfo("Select a Job", "Please select a job to delete.")
             return
-        if messagebox.askyesno("Delete Job", f"Delete Job #{idx + 1}?"):
-            self.jobs.pop(idx)
+        n = len(idxs)
+        msg = f"Delete {n} selected jobs?" if n > 1 else f"Delete Job #{idxs[0] + 1}?"
+        if messagebox.askyesno("Delete", msg):
+            for idx in reversed(idxs):
+                self.jobs.pop(idx)
             self._refresh_list()
             self.preview.configure(state="normal")
             self.preview.delete("1.0", "end")
@@ -574,7 +581,98 @@ class WirePlannerApp(tk.Tk):
         self.tree.selection_set(str(idx + 1))
         self._on_select()
 
-    # ── Report preview & export ─────────────────────────────────
+    # ── Combine / Split ─────────────────────────────────────────
+
+    def _combine_jobs(self):
+        idxs = self._selected_indices()
+        if len(idxs) != 2:
+            messagebox.showinfo(
+                "Combine → Move",
+                "Select exactly 2 jobs first.\n\nHold Ctrl and click two jobs in the list, then press Combine."
+            )
+            return
+
+        ja = self.jobs[idxs[0]]
+        jb = self.jobs[idxs[1]]
+
+        if ja["type"] == "MOVE" or jb["type"] == "MOVE":
+            messagebox.showwarning(
+                "Combine → Move",
+                "Cannot combine a MOVE job.\nUse Split first to break it apart, then recombine."
+            )
+            return
+
+        # If one is ADD and one is REMOVE, put REMOVE side first regardless of selection order
+        if ja["type"] == "ADD" and jb["type"] == "REMOVE":
+            ja, jb = jb, ja
+
+        desc_a = ja.get("description", "")
+        desc_b = jb.get("description", "")
+        combined_desc = " / ".join(filter(None, [desc_a, desc_b]))
+
+        move_job = {
+            "type":      "MOVE",
+            "description": combined_desc,
+            "start":     deepcopy(ja.get("start", empty_endpoint())),
+            "wire":      ja.get("wire", ""),
+            "end":       deepcopy(ja.get("end", empty_endpoint())),
+            "add_start": deepcopy(jb.get("start", empty_endpoint())),
+            "add_wire":  jb.get("wire", ""),
+            "add_end":   deepcopy(jb.get("end", empty_endpoint())),
+        }
+
+        insert_at = idxs[0]
+        for idx in reversed(idxs):
+            self.jobs.pop(idx)
+        self.jobs.insert(insert_at, move_job)
+
+        self._refresh_list()
+        self.tree.selection_set(str(insert_at))
+        self._on_select()
+        self.status_var.set(
+            f"Jobs #{idxs[0]+1} and #{idxs[1]+1} combined into MOVE job #{insert_at+1}."
+        )
+
+    def _split_job(self):
+        idx = self._selected_idx()
+        if idx is None:
+            messagebox.showinfo("Split Move", "Select a MOVE job to split.")
+            return
+
+        job = self.jobs[idx]
+        if job["type"] != "MOVE":
+            messagebox.showinfo("Split Move", "Only MOVE jobs can be split.\nSelect a MOVE job first.")
+            return
+
+        desc = job.get("description", "")
+
+        remove_job = {
+            "type":        "REMOVE",
+            "description": desc,
+            "start":       deepcopy(job.get("start", empty_endpoint())),
+            "wire":        job.get("wire", ""),
+            "end":         deepcopy(job.get("end", empty_endpoint())),
+        }
+        add_job = {
+            "type":        "ADD",
+            "description": desc,
+            "start":       deepcopy(job.get("add_start", empty_endpoint())),
+            "wire":        job.get("add_wire", ""),
+            "end":         deepcopy(job.get("add_end", empty_endpoint())),
+        }
+
+        self.jobs.pop(idx)
+        self.jobs.insert(idx, add_job)
+        self.jobs.insert(idx, remove_job)
+
+        self._refresh_list()
+        self.tree.selection_set(str(idx))
+        self._on_select()
+        self.status_var.set(
+            f"MOVE split into REMOVE #{idx+1} and ADD #{idx+2}."
+        )
+
+    # ── Report ──────────────────────────────────────────────────
 
     def _preview_report(self):
         if not self.jobs:
