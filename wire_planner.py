@@ -1687,44 +1687,64 @@ class WirePlannerApp(tk.Tk):
         self.bind("<Control-q>", lambda _: self.quit())
 
     def _build_ui(self):
-        tb1 = ttk.Frame(self, padding=(6,4))
-        tb1.pack(fill="x")
-        ttk.Label(tb1,text="Project:").pack(side="left")
+        # ── Top toolbar: project name, mode toggle, exports ────────
+        tb = ttk.Frame(self, padding=(6, 4)); tb.pack(fill="x")
+        ttk.Label(tb, text="Project:").pack(side="left")
         self.project_var = tk.StringVar()
-        ttk.Entry(tb1,textvariable=self.project_var,width=22).pack(side="left",padx=(4,10))
-        for label,jtype,color in [
-            ("+ Remove","REMOVE","#c0392b"),("+ Add","ADD","#27ae60"),
-            ("+ Block","BLOCK","#d35400"),("+ Unblock","UNBLOCK","#16a085"),
-            ("+ Testing","TESTING","#6c3483")]:
-            tk.Button(tb1,text=label,fg="white",bg=color,relief="flat",padx=7,pady=3,
-                      cursor="hand2",command=lambda t=jtype:self._add_job(t)).pack(side="left",padx=2)
-        rf = ttk.Frame(tb1); rf.pack(side="right")
-        for label,cmd in [("↑ Up",self._move_up),("↓ Down",self._move_down),
-                           ("Edit",self._edit_job),("Duplicate",self._duplicate_job),
-                           ("Delete",self._delete_job)]:
-            ttk.Button(rf,text=label,command=cmd).pack(side="left",padx=2)
+        ttk.Entry(tb, textvariable=self.project_var, width=22).pack(side="left", padx=(4, 10))
+        ttk.Separator(tb, orient="vertical").pack(side="left", fill="y", padx=6)
+        ttk.Label(tb, text="Mode:").pack(side="left")
+        self.mode_var = tk.StringVar(value="planner")
+        for text, val, bg in [("Planner", "planner", "#2c3e50"),
+                               ("Implementation", "impl", "#16a085")]:
+            tk.Button(tb, text=text, fg="white", bg=bg, relief="flat", padx=8, pady=2,
+                      cursor="hand2",
+                      command=lambda v=val: self._set_mode(v)).pack(side="left", padx=2)
+        rf = ttk.Frame(tb); rf.pack(side="right")
+        for lbl, cmd in [("HTML / PDF", self._export_html), ("Export CSV", self._export_csv),
+                          ("Export Table", self._export_table), ("Export Report", self._export_report),
+                          ("Preview", self._preview_report)]:
+            ttk.Button(rf, text=lbl, command=cmd).pack(side="right", padx=2)
 
-        tb2 = ttk.Frame(self,padding=(6,0,6,4)); tb2.pack(fill="x")
-        ttk.Button(tb2,text="Swap ↔ Start/End",command=self._swap_endpoints).pack(side="left",padx=2)
-        ttk.Button(tb2,text="Auto-Group by Device",command=self._auto_group,
-                   state="disabled").pack(side="left",padx=2)
-        ttk.Button(tb2,text="HTML / PDF",  command=self._export_html).pack(side="right",padx=2)
-        ttk.Button(tb2,text="Export CSV",  command=self._export_csv).pack(side="right",padx=2)
-        ttk.Button(tb2,text="Export Table",command=self._export_table).pack(side="right",padx=2)
-        ttk.Button(tb2,text="Export Report",command=self._export_report).pack(side="right",padx=2)
-        ttk.Button(tb2,text="Preview",     command=self._preview_report).pack(side="right",padx=2)
-
-        nb = ttk.Notebook(self); nb.pack(fill="both",expand=True,padx=6,pady=(0,4))
-        wt = ttk.Frame(nb); nb.add(wt,text="  Work Order  ");       self._build_work_tab(wt)
-        dt = ttk.Frame(nb); nb.add(dt,text="  Project Drawings  "); self._build_drawings_tab(dt)
-        rt = ttk.Frame(nb); nb.add(rt,text="  Relay Settings  ");   self._build_relay_settings_tab(rt)
-        tt = ttk.Frame(nb); nb.add(tt,text="  Title Page  ");       self._build_title_tab(tt)
-
+        # Status bar (always at bottom, packed before main area)
         self.status_var = tk.StringVar(value="Ready  —  no jobs loaded")
-        ttk.Label(self,textvariable=self.status_var,relief="sunken",
-                  anchor="w",padding=(4,1)).pack(fill="x",side="bottom")
+        ttk.Label(self, textvariable=self.status_var, relief="sunken",
+                  anchor="w", padding=(4, 1)).pack(fill="x", side="bottom")
+
+        # ── Planner mode frame ─────────────────────────────────────
+        self.planner_frame = ttk.Frame(self)
+        self.planner_frame.pack(fill="both", expand=True, padx=6, pady=(0, 4))
+        nb = ttk.Notebook(self.planner_frame)
+        nb.pack(fill="both", expand=True)
+        wt = ttk.Frame(nb); nb.add(wt, text="  Work Order  ");       self._build_work_tab(wt)
+        dt = ttk.Frame(nb); nb.add(dt, text="  Project Drawings  "); self._build_drawings_tab(dt)
+        rt = ttk.Frame(nb); nb.add(rt, text="  Relay Settings  ");   self._build_relay_settings_tab(rt)
+        ct = ttk.Frame(nb); nb.add(ct, text="  CROW  ");             self._build_title_tab(ct)
+
+        # ── Implementation mode frame (hidden initially) ────────────
+        self.impl_frame = ttk.Frame(self)
+        self._build_impl_view(self.impl_frame)
 
     def _build_work_tab(self, parent):
+        # Job-type buttons
+        tb1 = ttk.Frame(parent, padding=(4, 4, 4, 2)); tb1.pack(fill="x")
+        for label, jtype, color in [
+                ("+ Remove", "REMOVE", "#c0392b"), ("+ Add", "ADD", "#27ae60"),
+                ("+ Block", "BLOCK", "#d35400"), ("+ Unblock", "UNBLOCK", "#16a085"),
+                ("+ Testing", "TESTING", "#6c3483")]:
+            tk.Button(tb1, text=label, fg="white", bg=color, relief="flat", padx=7, pady=3,
+                      cursor="hand2", command=lambda t=jtype: self._add_job(t)).pack(side="left", padx=2)
+        nf = ttk.Frame(tb1); nf.pack(side="right")
+        for label, cmd in [("↑ Up", self._move_up), ("↓ Down", self._move_down),
+                            ("Edit", self._edit_job), ("Duplicate", self._duplicate_job),
+                            ("Delete", self._delete_job)]:
+            ttk.Button(nf, text=label, command=cmd).pack(side="left", padx=2)
+
+        tb2 = ttk.Frame(parent, padding=(4, 0, 4, 2)); tb2.pack(fill="x")
+        ttk.Button(tb2, text="Swap ↔ Start/End", command=self._swap_endpoints).pack(side="left", padx=2)
+        ttk.Button(tb2, text="Auto-Group by Device", command=self._auto_group,
+                   state="disabled").pack(side="left", padx=2)
+
         pw = ttk.PanedWindow(parent, orient="horizontal")
         pw.pack(fill="both", expand=True, padx=4, pady=4)
         lf = ttk.LabelFrame(pw, text="Work Order", padding=4); pw.add(lf, weight=1)
@@ -2229,6 +2249,143 @@ class WirePlannerApp(tk.Tk):
         self.relay_tree.bind("<Double-1>",          lambda _: self._edit_relay())
         self.relay_tree.bind("<Control-Button-1>",  self._on_relay_ctrl_click)
 
+    # ── Mode switching ────────────────────────────────────────────
+
+    def _set_mode(self, mode):
+        self.mode_var.set(mode)
+        if mode == "planner":
+            self.impl_frame.pack_forget()
+            self.planner_frame.pack(fill="both", expand=True, padx=6, pady=(0, 4))
+        else:
+            self.planner_frame.pack_forget()
+            self.impl_frame.pack(fill="both", expand=True, padx=6, pady=(0, 4))
+            self._refresh_impl_list()
+            self._refresh_file_tabs()
+
+    def _build_impl_view(self, parent):
+        pw_main = ttk.PanedWindow(parent, orient="horizontal")
+        pw_main.pack(fill="both", expand=True, padx=4, pady=4)
+
+        # ── Left: step list ────────────────────────────────────────
+        left = ttk.Frame(pw_main); pw_main.add(left, weight=1)
+        ttk.Label(left, text="Work Order Steps", font=("", 9, "bold")).pack(
+            anchor="w", padx=4, pady=(4, 2))
+        cols = ("Done", "Seq", "Type", "Description")
+        self.impl_tree = ttk.Treeview(left, columns=cols, show="headings", selectmode="browse")
+        self.impl_tree.heading("Done",        text="✓")
+        self.impl_tree.heading("Seq",         text="#")
+        self.impl_tree.heading("Type",        text="Type")
+        self.impl_tree.heading("Description", text="Description")
+        self.impl_tree.column("Done",        width=30,  stretch=False, anchor="center")
+        self.impl_tree.column("Seq",         width=35,  stretch=False)
+        self.impl_tree.column("Type",        width=105, stretch=False)
+        self.impl_tree.column("Description", width=190)
+        for t, fg in self.TYPE_FG.items():
+            self.impl_tree.tag_configure(t, foreground=fg)
+        self.impl_tree.tag_configure("COMPLETED", foreground="#aaaaaa")
+        ivsb = ttk.Scrollbar(left, orient="vertical", command=self.impl_tree.yview)
+        self.impl_tree.configure(yscrollcommand=ivsb.set)
+        self.impl_tree.pack(side="left", fill="both", expand=True)
+        ivsb.pack(side="right", fill="y")
+        self.impl_tree.bind("<<TreeviewSelect>>", self._on_impl_select)
+        self.impl_tree.bind("<Button-1>",          self._on_impl_tree_click)
+
+        # ── Right: details (top) + file viewer (bottom) ────────────
+        pw_right = ttk.PanedWindow(pw_main, orient="vertical")
+        pw_main.add(pw_right, weight=3)
+
+        details_f = ttk.LabelFrame(pw_right, text="Step Details", padding=4)
+        pw_right.add(details_f, weight=2)
+        self.impl_preview = scrolledtext.ScrolledText(
+            details_f, font=("Courier", 9), state="disabled", wrap="none")
+        self.impl_preview.pack(fill="both", expand=True)
+
+        viewer_f = ttk.LabelFrame(pw_right, text="Reference Files", padding=4)
+        pw_right.add(viewer_f, weight=3)
+
+        vf_top = ttk.Frame(viewer_f); vf_top.pack(fill="x", pady=(0, 4))
+        ttk.Button(vf_top, text="⟳ Refresh", command=self._refresh_file_tabs).pack(side="left")
+        ttk.Label(vf_top, text="Downloaded files from project folder  —  double-click to open",
+                  foreground="grey", font=("", 8)).pack(side="left", padx=8)
+
+        self.file_nb = ttk.Notebook(viewer_f)
+        self.file_nb.pack(fill="both", expand=True)
+
+        drw_tab = ttk.Frame(self.file_nb); self.file_nb.add(drw_tab,   text="  Drawings  ")
+        rly_tab = ttk.Frame(self.file_nb); self.file_nb.add(rly_tab,   text="  Relay Settings  ")
+        self._build_file_listbox(drw_tab, "impl_drw_lb", "Drawings")
+        self._build_file_listbox(rly_tab, "impl_rly_lb", "Relay Settings")
+
+    def _build_file_listbox(self, parent, attr, subfolder):
+        lb = tk.Listbox(parent, selectmode="browse", font=("Courier", 9),
+                        activestyle="none", relief="flat", borderwidth=0)
+        vsb = ttk.Scrollbar(parent, orient="vertical", command=lb.yview)
+        lb.configure(yscrollcommand=vsb.set)
+        lb.pack(side="left", fill="both", expand=True)
+        vsb.pack(side="right", fill="y")
+        lb.bind("<Double-1>", lambda e, l=lb, s=subfolder: self._open_impl_file(l, s))
+        setattr(self, attr, lb)
+
+    def _refresh_file_tabs(self):
+        for attr, subfolder in [("impl_drw_lb", "Drawings"), ("impl_rly_lb", "Relay Settings")]:
+            lb = getattr(self, attr)
+            lb.delete(0, "end")
+            if not self.project_folder:
+                lb.insert("end", "(save project first to see downloaded files)"); continue
+            folder = os.path.join(self.project_folder, subfolder)
+            if os.path.isdir(folder):
+                files = sorted(f for f in os.listdir(folder) if not f.startswith("."))
+                if files:
+                    for fn in files: lb.insert("end", fn)
+                else:
+                    lb.insert("end", f"(no files in {subfolder}/ yet — use ⬇ Download All)")
+            else:
+                lb.insert("end", f"({subfolder}/ folder not found)")
+
+    def _open_impl_file(self, lb, subfolder):
+        sel = lb.curselection()
+        if not sel: return
+        fname = lb.get(sel[0])
+        if fname.startswith("("): return
+        path = os.path.join(self.project_folder, subfolder, fname)
+        if os.path.exists(path): _open_file(path)
+
+    def _refresh_impl_list(self):
+        for iid in self.impl_tree.get_children(): self.impl_tree.delete(iid)
+        disp = {"REMOVE":"REMOVE","ADD":"ADD","MOVE":"MOVE",
+                "BLOCK":"BLOCK PROT.","UNBLOCK":"UNBLOCK PROT.","TESTING":"TESTING"}
+        for i, job in enumerate(self.jobs):
+            done = job.get("completed", False)
+            tags = (job["type"], "COMPLETED") if done else (job["type"],)
+            self.impl_tree.insert("", "end", iid=str(i),
+                values=("☑" if done else "☐", i + 1,
+                        disp.get(job["type"], job["type"]),
+                        job.get("description", "")),
+                tags=tags)
+
+    def _on_impl_select(self, _=None):
+        sel = self.impl_tree.selection()
+        if not sel: return
+        idx = int(sel[0])
+        if 0 <= idx < len(self.jobs):
+            text = format_job(idx, self.jobs[idx])
+            self.impl_preview.configure(state="normal")
+            self.impl_preview.delete("1.0", "end")
+            self.impl_preview.insert("1.0", text)
+            self.impl_preview.configure(state="disabled")
+
+    def _on_impl_tree_click(self, event):
+        if self.impl_tree.identify_region(event.x, event.y) != "cell": return
+        if self.impl_tree.identify_column(event.x) != "#1": return
+        row = self.impl_tree.identify_row(event.y)
+        if not row: return
+        idx = int(row)
+        if 0 <= idx < len(self.jobs):
+            self.jobs[idx]["completed"] = not self.jobs[idx].get("completed", False)
+            self._refresh_list()
+            self.impl_tree.selection_set(str(idx))
+            self._on_impl_select()
+
     # ── Job list ─────────────────────────────────────────────────
 
     def _refresh_list(self):
@@ -2242,6 +2399,7 @@ class WirePlannerApp(tk.Tk):
                         disp.get(job["type"],job["type"]), job.get("description","")),
                 tags=tags)
         self._update_status()
+        self._refresh_impl_list()
 
     def _on_tree_click(self, event):
         """Toggle completed on click in the ☐/☑ Done column."""
@@ -2455,7 +2613,10 @@ class WirePlannerApp(tk.Tk):
         self.title("Red-Line-Routing")
         self._refresh_list(); self._refresh_drawings_list()
         self._refresh_relay_list(); self._refresh_crows()
-        self.preview.configure(state="normal"); self.preview.delete("1.0","end"); self.preview.configure(state="disabled")
+        self.preview.configure(state="normal"); self.preview.delete("1.0","end")
+        self.preview.configure(state="disabled")
+        self.impl_preview.configure(state="normal"); self.impl_preview.delete("1.0","end")
+        self.impl_preview.configure(state="disabled")
 
     def _open(self):
         path = filedialog.askopenfilename(filetypes=[("Wire Plan","*.wirePlan"),("JSON","*.json"),("All","*.*")])
@@ -2475,6 +2636,7 @@ class WirePlannerApp(tk.Tk):
             self.title_notes.insert("1.0", self.title_page.get("notes", ""))
             self._refresh_list(); self._refresh_drawings_list()
             self._refresh_relay_list(); self._refresh_crows()
+            if self.mode_var.get() == "impl": self._refresh_file_tabs()
             proj = data.get("project","") or os.path.splitext(os.path.basename(path))[0]
             self.title(f"Red-Line-Routing — {proj}")
         except Exception as exc: messagebox.showerror("Open Error",str(exc))
