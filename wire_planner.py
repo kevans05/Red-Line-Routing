@@ -616,7 +616,10 @@ class JobDialog(tk.Toplevel):
         ex = existing or {}
         color = self.TYPE_COLOR[self.job_type]
 
-        ttk.Label(f, text="Description:", font=("",10,"bold")).grid(row=row, column=0, sticky="w")
+        desc_hdr = ttk.Frame(f)
+        desc_hdr.grid(row=row, column=0, columnspan=2, sticky="w")
+        ttk.Label(desc_hdr, text="Description:", font=("",10,"bold")).pack(side="left")
+        ttk.Button(desc_hdr, text="Auto-fill ✦", command=self._auto_desc).pack(side="left", padx=(8,0))
         row += 1
         self.desc_var = tk.StringVar(value=ex.get("description",""))
         ttk.Entry(f, textvariable=self.desc_var, width=60).grid(
@@ -676,6 +679,34 @@ class JobDialog(tk.Toplevel):
 
         f.columnconfigure(0, weight=1)
         f.columnconfigure(1, weight=1)
+
+    def _auto_desc(self):
+        """Generate a description from the current form data and put it in the field."""
+        jt = self.job_type
+
+        def dev(ep):
+            d = ep.vars.get("device", tk.StringVar()).get().strip()
+            p = ep.vars.get("pin",    tk.StringVar()).get().strip()
+            return (f"{d} pin {p}" if d and p else d or p or "?")
+
+        def wire(var):
+            w = var.get().strip()
+            return f" wire {w}" if w else ""
+
+        if jt == "REMOVE":
+            desc = f"Remove{wire(self.wire_var)} from {dev(self.ep_start)} to {dev(self.ep_end)}"
+        elif jt == "ADD":
+            desc = f"Add{wire(self.wire_var)} from {dev(self.ep_start)} to {dev(self.ep_end)}"
+        elif jt == "MOVE":
+            desc = (f"Move{wire(self.wire_var)} {dev(self.ep_rem_start)}→{dev(self.ep_rem_end)}"
+                    f" to{wire(self.add_wire_var)} {dev(self.ep_add_start)}→{dev(self.ep_add_end)}")
+        elif jt in ("BLOCK", "UNBLOCK"):
+            eq = self.ep_prot.vars.get("equipment", tk.StringVar()).get().strip() or "?"
+            action = "Block" if jt == "BLOCK" else "Unblock"
+            desc = f"{action} protection on {eq}"
+        else:
+            return
+        self.desc_var.set(desc)
 
     def _save(self):
         job = {"type": self.job_type, "description": self.desc_var.get().strip()}
@@ -1174,7 +1205,7 @@ class WirePlannerApp(tk.Tk):
         lf = ttk.LabelFrame(pw, text="Work Order", padding=4); pw.add(lf, weight=1)
         cols = ("Seq","Type","Description")
         self.tree = ttk.Treeview(lf, columns=cols, show="headings", selectmode="extended")
-        self.tree.heading("Seq","#"); self.tree.heading("Type","Type"); self.tree.heading("Description","Description")
+        self.tree.heading("Seq",text="#"); self.tree.heading("Type",text="Type"); self.tree.heading("Description",text="Description")
         self.tree.column("Seq",width=35,stretch=False); self.tree.column("Type",width=110,stretch=False); self.tree.column("Description",width=230)
         for t,fg in self.TYPE_FG.items(): self.tree.tag_configure(t, foreground=fg)
         vsb = ttk.Scrollbar(lf, orient="vertical", command=self.tree.yview)
@@ -1197,8 +1228,8 @@ class WirePlannerApp(tk.Tk):
         frame = ttk.Frame(parent); frame.pack(fill="both", expand=True, padx=4, pady=(0,4))
         cols = ("Drawing","Revision","URL","Notes")
         self.drawings_tree = ttk.Treeview(frame, columns=cols, show="headings")
-        self.drawings_tree.heading("Drawing","Drawing"); self.drawings_tree.heading("Revision","Revision")
-        self.drawings_tree.heading("URL","Drawing URL"); self.drawings_tree.heading("Notes","Notes")
+        self.drawings_tree.heading("Drawing",text="Drawing"); self.drawings_tree.heading("Revision",text="Revision")
+        self.drawings_tree.heading("URL",text="Drawing URL"); self.drawings_tree.heading("Notes",text="Notes")
         self.drawings_tree.column("Drawing",width=160,stretch=False); self.drawings_tree.column("Revision",width=80,stretch=False)
         self.drawings_tree.column("URL",width=380); self.drawings_tree.column("Notes",width=200)
         vsb = ttk.Scrollbar(frame, orient="vertical", command=self.drawings_tree.yview)
