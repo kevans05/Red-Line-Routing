@@ -440,6 +440,166 @@ def generate_report(jobs, project="", drawing_registry=None):
 
 
 # ──────────────────────────────────────────────────────────────────
+# Table (CSV) export
+# ──────────────────────────────────────────────────────────────────
+
+def _ep_summary(ep):
+    """One-line summary of an endpoint for the table."""
+    parts = []
+    if ep.get("device"):
+        parts.append(ep["device"])
+    if ep.get("pin"):
+        parts.append(f"Pin {ep['pin']}")
+    if ep.get("location"):
+        parts.append(ep["location"])
+    if ep.get("panel"):
+        parts.append(f"Panel {ep['panel']}")
+    if ep.get("drawing"):
+        rev = f" Rev{ep['drawing_rev']}" if ep.get("drawing_rev") else ""
+        cell = f" [{ep['drawing_cell']}]" if ep.get("drawing_cell") else ""
+        parts.append(f"Dwg {ep['drawing']}{rev}{cell}")
+    return "  |  ".join(parts)
+
+
+def _prot_summary(prot):
+    parts = []
+    if prot.get("equipment"):
+        parts.append(prot["equipment"])
+    if prot.get("location"):
+        parts.append(prot["location"])
+    if prot.get("panel"):
+        parts.append(f"Panel {prot['panel']}")
+    if prot.get("drawing"):
+        rev = f" Rev{prot['drawing_rev']}" if prot.get("drawing_rev") else ""
+        parts.append(f"Dwg {prot['drawing']}{rev}")
+    if prot.get("notes"):
+        parts.append(prot["notes"])
+    return "  |  ".join(parts)
+
+
+def generate_table(jobs, project="", drawing_registry=None):
+    """Generate a fixed-width table: Seq | Type | Description | Start | Wire | End"""
+    now = datetime.now().strftime("%Y-%m-%d  %H:%M")
+    title = "WIRE WORK PLAN  —  TABLE FORMAT"
+    if project:
+        title += f"  —  {project}"
+
+    # Column widths
+    CW = {"seq": 4, "type": 14, "desc": 28, "start": 36, "wire": 18, "end": 36}
+    SEP = "  "
+
+    def pad(text, width):
+        text = str(text)
+        return text[:width].ljust(width)
+
+    def row(*cells):
+        keys = list(CW.keys())
+        return SEP.join(pad(c, CW[keys[i]]) for i, c in enumerate(cells))
+
+    divider = "-" * (sum(CW.values()) + len(SEP) * (len(CW) - 1))
+    header_row = row("#", "TYPE", "DESCRIPTION", "START POINT / DEVICE", "WIRE", "END POINT / DEVICE")
+
+    lines = [
+        "=" * len(divider),
+        title.center(len(divider)),
+        f"Generated: {now}".center(len(divider)),
+        "=" * len(divider),
+        "",
+    ]
+
+    if drawing_registry:
+        lines += ["PROJECT DRAWINGS", "-" * 40]
+        for name in sorted(drawing_registry.keys()):
+            info = drawing_registry[name]
+            rev_str = f"  Rev: {info['rev']}" if info.get("rev") else ""
+            lines.append(f"  {name}{rev_str}")
+            if info.get("url"):
+                lines.append(f"    URL: {info['url']}")
+        lines += ["", ""]
+
+    lines += [header_row, divider]
+
+    type_labels = {"REMOVE":"REMOVE WIRE","ADD":"ADD WIRE","MOVE":"MOVE WIRE",
+                   "BLOCK":"BLOCK PROT.","UNBLOCK":"UNBLOCK PROT."}
+
+    seq = 1
+    for job in jobs:
+        jtype = job["type"]
+        tlabel = type_labels.get(jtype, jtype)
+        desc = job.get("description","")
+
+        if jtype in ("REMOVE","ADD"):
+            lines.append(row(seq, tlabel, desc,
+                             _ep_summary(job.get("start",{})),
+                             job.get("wire",""),
+                             _ep_summary(job.get("end",{}))))
+            seq += 1
+
+        elif jtype == "MOVE":
+            lines.append(row(seq, "MOVE — REMOVE", desc,
+                             _ep_summary(job.get("start",{})),
+                             job.get("wire",""),
+                             _ep_summary(job.get("end",{}))))
+            seq += 1
+            lines.append(row(seq, "MOVE — ADD", desc,
+                             _ep_summary(job.get("add_start",{})),
+                             job.get("add_wire",""),
+                             _ep_summary(job.get("add_end",{}))))
+            seq += 1
+
+        elif jtype in ("BLOCK","UNBLOCK"):
+            prot_txt = _prot_summary(job.get("protection",{}))
+            lines.append(row(seq, tlabel, desc, prot_txt, "", ""))
+            seq += 1
+
+        lines.append(divider)
+
+    return "\n".join(lines)
+
+
+def generate_csv(jobs, project="", drawing_registry=None):
+    """Generate a proper CSV for Excel/Sheets."""
+    import csv, io
+    buf = io.StringIO()
+    w = csv.writer(buf)
+
+    w.writerow(["Wire Work Plan", project, "", "", "", ""])
+    w.writerow([])
+    w.writerow(["#","Type","Description","Start Point / Device","Wire","End Point / Device"])
+
+    seq = 1
+    for job in jobs:
+        jtype = job["type"]
+        desc = job.get("description","")
+        type_labels = {"REMOVE":"REMOVE WIRE","ADD":"ADD WIRE","MOVE":"MOVE WIRE",
+                       "BLOCK":"BLOCK PROTECTION","UNBLOCK":"UNBLOCK PROTECTION"}
+        tlabel = type_labels.get(jtype, jtype)
+
+        if jtype in ("REMOVE","ADD"):
+            w.writerow([seq, tlabel, desc,
+                        _ep_summary(job.get("start",{})),
+                        job.get("wire",""),
+                        _ep_summary(job.get("end",{}))])
+            seq += 1
+        elif jtype == "MOVE":
+            w.writerow([seq, "MOVE — REMOVE", desc,
+                        _ep_summary(job.get("start",{})),
+                        job.get("wire",""),
+                        _ep_summary(job.get("end",{}))])
+            seq += 1
+            w.writerow([seq, "MOVE — ADD", desc,
+                        _ep_summary(job.get("add_start",{})),
+                        job.get("add_wire",""),
+                        _ep_summary(job.get("add_end",{}))])
+            seq += 1
+        elif jtype in ("BLOCK","UNBLOCK"):
+            w.writerow([seq, tlabel, desc, _prot_summary(job.get("protection",{})), "", ""])
+            seq += 1
+
+    return buf.getvalue()
+
+
+# ──────────────────────────────────────────────────────────────────
 # Main application
 # ──────────────────────────────────────────────────────────────────
 
@@ -465,7 +625,9 @@ class WirePlannerApp(tk.Tk):
         fm.add_command(label="Save",           command=self._save,          accelerator="Ctrl+S")
         fm.add_command(label="Save As…",       command=self._save_as)
         fm.add_separator()
-        fm.add_command(label="Export Report…", command=self._export_report, accelerator="Ctrl+E")
+        fm.add_command(label="Export Report (detailed)…", command=self._export_report, accelerator="Ctrl+E")
+        fm.add_command(label="Export Table (text)…",     command=self._export_table)
+        fm.add_command(label="Export CSV (Excel)…",      command=self._export_csv)
         fm.add_separator()
         fm.add_command(label="Quit",           command=self.quit,           accelerator="Ctrl+Q")
         mb.add_cascade(label="File", menu=fm)
@@ -508,8 +670,10 @@ class WirePlannerApp(tk.Tk):
         ttk.Label(tb2, text="(Ctrl+click 2 jobs)", foreground="grey").pack(side="left", padx=(0,12))
         tk.Button(tb2, text="Split Move → 2 Jobs", fg="white", bg="#7f8c8d", relief="flat",
                   padx=7, pady=3, cursor="hand2", command=self._split_job).pack(side="left", padx=2)
+        ttk.Button(tb2, text="Export CSV",     command=self._export_csv).pack(side="right", padx=2)
+        ttk.Button(tb2, text="Export Table",   command=self._export_table).pack(side="right", padx=2)
         ttk.Button(tb2, text="Export Report",  command=self._export_report).pack(side="right", padx=2)
-        ttk.Button(tb2, text="Preview Report", command=self._preview_report).pack(side="right", padx=2)
+        ttk.Button(tb2, text="Preview",        command=self._preview_report).pack(side="right", padx=2)
 
         # Notebook
         nb = ttk.Notebook(self)
@@ -857,6 +1021,40 @@ class WirePlannerApp(tk.Tk):
         with open(path, "w", encoding="utf-8") as fh:
             fh.write(report)
         self.status_var.set(f"Exported → {path}")
+        if messagebox.askyesno("Exported", f"Saved to:\n{path}\n\nOpen the file now?"):
+            _open_file(path)
+
+    def _export_table(self):
+        if not self.jobs:
+            messagebox.showinfo("No Jobs","Add at least one job before exporting.")
+            return
+        path = filedialog.asksaveasfilename(
+            defaultextension=".txt",
+            filetypes=[("Text files","*.txt"),("All files","*.*")],
+            initialfile=f"wire_table_{datetime.now().strftime('%Y%m%d')}.txt")
+        if not path:
+            return
+        content = generate_table(self.jobs, self.project_var.get().strip(), self.drawing_registry)
+        with open(path,"w",encoding="utf-8") as fh:
+            fh.write(content)
+        self.status_var.set(f"Table exported → {path}")
+        if messagebox.askyesno("Exported", f"Saved to:\n{path}\n\nOpen the file now?"):
+            _open_file(path)
+
+    def _export_csv(self):
+        if not self.jobs:
+            messagebox.showinfo("No Jobs","Add at least one job before exporting.")
+            return
+        path = filedialog.asksaveasfilename(
+            defaultextension=".csv",
+            filetypes=[("CSV files","*.csv"),("All files","*.*")],
+            initialfile=f"wire_table_{datetime.now().strftime('%Y%m%d')}.csv")
+        if not path:
+            return
+        content = generate_csv(self.jobs, self.project_var.get().strip(), self.drawing_registry)
+        with open(path,"w",encoding="utf-8",newline="") as fh:
+            fh.write(content)
+        self.status_var.set(f"CSV exported → {path}")
         if messagebox.askyesno("Exported", f"Saved to:\n{path}\n\nOpen the file now?"):
             _open_file(path)
 
