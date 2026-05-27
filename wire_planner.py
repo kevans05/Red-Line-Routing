@@ -72,24 +72,104 @@ def _get_prot_drawings(prot):
 
 
 # ──────────────────────────────────────────────────────────────────
+# Search-as-you-type helper (Google-style combobox filtering)
+# ──────────────────────────────────────────────────────────────────
+
+def _bind_search_combobox(combo, get_values_fn):
+    """Attach live search filtering to a ttk.Combobox.
+    Filters values containing the typed text and opens the dropdown."""
+    def _do_filter():
+        typed = combo.get()
+        all_vals = get_values_fn()
+        if typed.strip():
+            lo = typed.lower()
+            filtered = [v for v in all_vals if lo in v.lower()]
+        else:
+            filtered = all_vals
+        combo["values"] = filtered
+        if filtered and typed.strip():
+            try:
+                combo.tk.call("ttk::combobox::Post", str(combo))
+            except tk.TclError:
+                pass
+    def _on_key(event):
+        if event.keysym in ("Return","Tab","Escape","Up","Down","Left","Right","Home","End"):
+            return
+        combo.after(1, _do_filter)
+    combo.bind("<KeyRelease>", _on_key)
+
+
+# ──────────────────────────────────────────────────────────────────
 # Drawing-aware endpoint frame (with conditional Drawing Cell)
 # ──────────────────────────────────────────────────────────────────
 
 class DrawingAwareFrame(ttk.LabelFrame):
-    """LabelFrame with autofill from registry. Drawing Cell enabled only for H-type drawings.
-    Fields in HISTORY_KEYS get a history-backed Combobox instead of a plain Entry."""
+    """LabelFrame with autofill from registry, context-aware suggestions, and live search."""
 
     FIELDS = []          # subclasses define
-    HISTORY_KEYS = ()    # keys that use history Combobox
+    HISTORY_KEYS = ()    # keys that get a history/context Combobox
 
-    def __init__(self, parent, title, registry=None, history=None, **kwargs):
+    # Which fields provide context when building suggestions for each key
+    _CONTEXT_MAP = {
+        "location":     ["device"],
+        "pin":          ["device"],
+        "panel":        ["device", "location"],
+        "drawing":      ["panel", "device"],
+        "drawing_cell": ["device", "location", "pin", "drawing"],
+    }
+
+    def __init__(self, parent, title, registry=None, history=None, ep_history=None, **kwargs):
         super().__init__(parent, text=title, padding=6, **kwargs)
         self.vars = {}
-        self.registry = registry if registry is not None else {}
-        self.history  = history  if history  is not None else {}
+        self.registry   = registry   if registry   is not None else {}
+        self.history    = history    if history    is not None else {}
+        self.ep_history = ep_history if ep_history is not None else []
         self._drawing_combo = None
         self._cell_entry = None
         self._build()
+
+    def _context_suggestions(self, key):
+        """Return an ordered suggestion list for *key*, boosting values that co-occur
+        with whatever is already typed in context fields."""
+        ctx_keys = self._CONTEXT_MAP.get(key, [])
+        ctx_vals = {cf: self.vars[cf].get().strip()
+                    for cf in ctx_keys if cf in self.vars}
+
+        seen, prioritized, rest = set(), [], []
+        for ep in self.ep_history:
+            val = ep.get(key, "").strip()
+            if not val:
+                continue
+            score = sum(1 for cf, cv in ctx_vals.items()
+                        if cv and ep.get(cf, "").strip().lower() == cv.lower())
+            lo = val.lower()
+            if score > 0 and lo not in seen:
+                seen.add(lo)
+                prioritized.append(val)
+
+        for val in self.history.get(key, []):
+            if val.lower() not in seen:
+                seen.add(val.lower())
+                rest.append(val)
+
+        return prioritized + rest
+
+    def _drawing_suggestions(self):
+        """Return drawing names ordered by context (panel, device) then registry."""
+        ctx_vals = {cf: self.vars[cf].get().strip()
+                    for cf in ("panel", "device") if cf in self.vars}
+        seen, prioritized = set(), []
+        for ep in self.ep_history:
+            d = ep.get("drawing", "").strip()
+            if not d:
+                continue
+            score = sum(1 for cf, cv in ctx_vals.items()
+                        if cv and ep.get(cf, "").strip().lower() == cv.lower())
+            if score > 0 and d.lower() not in seen:
+                seen.add(d.lower())
+                prioritized.append(d)
+        return prioritized + [n for n in sorted(self.registry.keys())
+                               if n.lower() not in seen]
 
     def _build(self):
         for row_idx, (key, label) in enumerate(self.FIELDS):
@@ -100,9 +180,11 @@ class DrawingAwareFrame(ttk.LabelFrame):
 
             if key == "drawing":
                 combo = ttk.Combobox(self, textvariable=var, width=26)
-                combo["postcommand"] = self._update_drawing_list
+                combo["postcommand"] = lambda c=combo: c.__setitem__(
+                    "values", self._drawing_suggestions())
                 combo.bind("<<ComboboxSelected>>", self._on_drawing_selected)
                 combo.bind("<FocusOut>", self._on_drawing_focusout)
+                _bind_search_combobox(combo, self._drawing_suggestions)
                 combo.grid(row=row_idx, column=1, sticky="ew", pady=1)
                 self._drawing_combo = combo
                 var.trace_add("write", lambda *_: self._update_cell_state())
@@ -112,9 +194,9 @@ class DrawingAwareFrame(ttk.LabelFrame):
                 self._cell_entry = entry
             elif key in self.HISTORY_KEYS:
                 combo = ttk.Combobox(self, textvariable=var, width=28)
-                hkey = key
-                combo["postcommand"] = lambda k=hkey, c=combo: c.__setitem__(
-                    "values", self.history.get(k, []))
+                combo["postcommand"] = lambda k=key, c=combo: c.__setitem__(
+                    "values", self._context_suggestions(k))
+                _bind_search_combobox(combo, lambda k=key: self._context_suggestions(k))
                 combo.grid(row=row_idx, column=1, sticky="ew", pady=1)
             else:
                 entry = ttk.Entry(self, textvariable=var, width=28)
@@ -136,7 +218,7 @@ class DrawingAwareFrame(ttk.LabelFrame):
 
     def _update_drawing_list(self):
         if self._drawing_combo is not None:
-            self._drawing_combo["values"] = sorted(self.registry.keys())
+            self._drawing_combo["values"] = self._drawing_suggestions()
 
     def _on_drawing_selected(self, _=None):
         self._autofill(self.vars["drawing"].get().strip())
@@ -607,13 +689,16 @@ class JobDialog(tk.Toplevel):
     TYPE_COLOR = {"REMOVE":"#c0392b","ADD":"#27ae60","MOVE":"#2980b9",
                   "BLOCK":"#d35400","UNBLOCK":"#16a085","TESTING":"#6c3483"}
 
-    def __init__(self, parent, job_type, existing=None, registry=None, history=None):
+    def __init__(self, parent, job_type, existing=None, registry=None,
+                 history=None, ep_history=None, jobs=None):
         super().__init__(parent)
         self.title(f"{'Edit' if existing else 'Add'} — {job_type}")
         self.result = None
-        self.job_type = job_type
-        self.registry = registry if registry is not None else {}
-        self.history  = history  if history  is not None else {}
+        self.job_type  = job_type
+        self.registry  = registry   if registry   is not None else {}
+        self.history   = history    if history    is not None else {}
+        self.ep_history= ep_history if ep_history is not None else []
+        self.jobs      = jobs       if jobs       is not None else []
         self.resizable(True, True)
         self._build(existing)
         self.grab_set()
@@ -663,9 +748,10 @@ class JobDialog(tk.Toplevel):
             row=row+1, column=0, columnspan=2, pady=(0,4))
 
     def _wire_combo(self, parent, var):
-        """Return a wire-label Combobox backed by history."""
+        """Return a wire-label Combobox with history and live search."""
         combo = ttk.Combobox(parent, textvariable=var, width=30)
         combo["postcommand"] = lambda: combo.__setitem__("values", self.history.get("wire", []))
+        _bind_search_combobox(combo, lambda: self.history.get("wire", []))
         return combo
 
     def _fill_form(self, f, existing):
@@ -683,14 +769,16 @@ class JobDialog(tk.Toplevel):
             row=row, column=0, columnspan=2, sticky="ew", pady=(0,6))
         row += 1
 
+        def _ep(title):
+            return EndpointFrame(f, title, registry=self.registry,
+                                 history=self.history, ep_history=self.ep_history)
+
         if self.job_type in ("REMOVE","ADD"):
             self._section_label(f, row, f"── {self.job_type} WIRE ──", color); row += 2
-            self.ep_start = EndpointFrame(f, "Start Point / Device",
-                                          registry=self.registry, history=self.history)
+            self.ep_start = _ep("Start Point / Device")
             self.ep_start.grid(row=row, column=0, sticky="nsew", padx=(0,4), pady=2)
             self.ep_start.set(ex.get("start",{}))
-            self.ep_end = EndpointFrame(f, "End Point / Device",
-                                        registry=self.registry, history=self.history)
+            self.ep_end = _ep("End Point / Device")
             self.ep_end.grid(row=row, column=1, sticky="nsew", padx=(4,0), pady=2)
             self.ep_end.set(ex.get("end",{}))
             row += 1
@@ -700,12 +788,10 @@ class JobDialog(tk.Toplevel):
 
         elif self.job_type == "MOVE":
             self._section_label(f, row, "── REMOVE (Wire Being Moved) ──", "#c0392b"); row += 2
-            self.ep_rem_start = EndpointFrame(f, "Remove: Start",
-                                              registry=self.registry, history=self.history)
+            self.ep_rem_start = _ep("Remove: Start")
             self.ep_rem_start.grid(row=row, column=0, sticky="nsew", padx=(0,4), pady=2)
             self.ep_rem_start.set(ex.get("start",{}))
-            self.ep_rem_end = EndpointFrame(f, "Remove: End",
-                                            registry=self.registry, history=self.history)
+            self.ep_rem_end = _ep("Remove: End")
             self.ep_rem_end.grid(row=row, column=1, sticky="nsew", padx=(4,0), pady=2)
             self.ep_rem_end.set(ex.get("end",{}))
             row += 1
@@ -714,12 +800,10 @@ class JobDialog(tk.Toplevel):
             self._wire_combo(f, self.wire_var).grid(row=row, column=1, sticky="w", pady=(6,2))
             row += 1
             self._section_label(f, row, "── ADD (New Wire Location) ──", "#27ae60"); row += 2
-            self.ep_add_start = EndpointFrame(f, "Add: Start",
-                                              registry=self.registry, history=self.history)
+            self.ep_add_start = _ep("Add: Start")
             self.ep_add_start.grid(row=row, column=0, sticky="nsew", padx=(0,4), pady=2)
             self.ep_add_start.set(ex.get("add_start",{}))
-            self.ep_add_end = EndpointFrame(f, "Add: End",
-                                            registry=self.registry, history=self.history)
+            self.ep_add_end = _ep("Add: End")
             self.ep_add_end.grid(row=row, column=1, sticky="nsew", padx=(4,0), pady=2)
             self.ep_add_end.set(ex.get("add_end",{}))
             row += 1
@@ -730,6 +814,28 @@ class JobDialog(tk.Toplevel):
         elif self.job_type in ("BLOCK","UNBLOCK"):
             lbl = "BLOCK PROTECTION" if self.job_type == "BLOCK" else "UNBLOCK PROTECTION"
             self._section_label(f, row, f"── {lbl} ──", color); row += 2
+
+            # UNBLOCK: offer to copy settings from an existing BLOCK step
+            if self.job_type == "UNBLOCK":
+                block_jobs = [(i, j) for i, j in enumerate(self.jobs) if j["type"] == "BLOCK"]
+                if block_jobs:
+                    af = ttk.LabelFrame(f, text="Auto-fill from Block step", padding=4)
+                    af.grid(row=row, column=0, columnspan=2, sticky="ew", pady=(0,6)); row += 1
+                    labels = [
+                        f"#{i+1}  {j.get('description','') or j.get('protection',{}).get('equipment','(no name)')}"
+                        for i, j in block_jobs]
+                    src_var = tk.StringVar()
+                    src_cb = ttk.Combobox(af, textvariable=src_var, values=labels,
+                                          state="readonly", width=52)
+                    src_cb.grid(row=0, column=0, sticky="ew", padx=(0,4))
+                    src_cb.current(0)
+                    def _apply_block(bj=block_jobs, sv=src_cb):
+                        sel = sv.current()
+                        if sel >= 0:
+                            self.ep_prot.set(bj[sel][1].get("protection", {}))
+                    ttk.Button(af, text="Copy →", command=_apply_block).grid(row=0, column=1)
+                    af.columnconfigure(0, weight=1)
+
             self.ep_prot = ProtectionFrame(f, "Equipment / Device",
                                            registry=self.registry, job_type=self.job_type)
             self.ep_prot.grid(row=row, column=0, columnspan=2, sticky="ew", pady=2)
@@ -1217,8 +1323,10 @@ class WirePlannerApp(tk.Tk):
         self.jobs = []
         self.drawing_registry = {}
         self.current_file = None
-        # Per-field autocomplete history (device / location / pin / panel / wire)
+        # Flat value history for autocomplete dropdowns
         self.history = {"device": [], "location": [], "pin": [], "panel": [], "wire": []}
+        # Full endpoint dicts for context-aware suggestions
+        self.ep_history = []
         self._build_menu()
         self._build_ui()
 
@@ -1236,16 +1344,20 @@ class WirePlannerApp(tk.Tk):
         self.history[key] = lst[:60]
 
     def _collect_history(self, job):
-        """Extract device/location/pin/panel/wire values from a job into history."""
+        """Extract device/location/pin/panel/wire values and full endpoint dicts into history."""
         for ep_key in ("start", "end", "add_start", "add_end"):
             ep = job.get(ep_key) or {}
+            if any(ep.get(k) for k in ("device","location","pin","panel","drawing")):
+                self.ep_history.insert(0, dict(ep))
+                self.ep_history = self.ep_history[:400]
             for k in ("device", "location", "pin", "panel"):
                 self._add_to_history(k, ep.get(k, ""))
         for wire_key in ("wire", "add_wire"):
             self._add_to_history("wire", job.get(wire_key, ""))
 
     def _rebuild_history(self):
-        """Rebuild history from all loaded jobs."""
+        """Rebuild flat history and ep_history from all loaded jobs."""
+        self.ep_history = []
         for job in self.jobs:
             self._collect_history(job)
 
@@ -1436,7 +1548,8 @@ class WirePlannerApp(tk.Tk):
     # ── CRUD ─────────────────────────────────────────────────────
 
     def _add_job(self, job_type):
-        dlg = JobDialog(self, job_type, registry=self.drawing_registry, history=self.history)
+        dlg = JobDialog(self, job_type, registry=self.drawing_registry,
+                        history=self.history, ep_history=self.ep_history, jobs=self.jobs)
         if dlg.result:
             self._collect_history(dlg.result)
             self.jobs.append(dlg.result); self._refresh_list(); self._refresh_drawings_list()
@@ -1445,8 +1558,9 @@ class WirePlannerApp(tk.Tk):
     def _edit_job(self):
         idx = self._selected_idx()
         if idx is None: messagebox.showinfo("Select a Job","Please select a job from the list."); return
-        dlg = JobDialog(self,self.jobs[idx]["type"],existing=deepcopy(self.jobs[idx]),
-                        registry=self.drawing_registry, history=self.history)
+        dlg = JobDialog(self, self.jobs[idx]["type"], existing=deepcopy(self.jobs[idx]),
+                        registry=self.drawing_registry, history=self.history,
+                        ep_history=self.ep_history, jobs=self.jobs)
         if dlg.result:
             self._collect_history(dlg.result)
             self.jobs[idx]=dlg.result; self._refresh_list(); self._refresh_drawings_list()
@@ -1593,6 +1707,7 @@ class WirePlannerApp(tk.Tk):
         if self.jobs and not messagebox.askyesno("New Plan","Discard current plan and start fresh?"): return
         self.jobs=[]; self.drawing_registry={}; self.current_file=None; self.project_var.set("")
         self.history = {"device": [], "location": [], "pin": [], "panel": [], "wire": []}
+        self.ep_history = []
         self._refresh_list(); self._refresh_drawings_list()
         self.preview.configure(state="normal"); self.preview.delete("1.0","end"); self.preview.configure(state="disabled")
 
