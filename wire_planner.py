@@ -1539,6 +1539,71 @@ class CrowDialog(tk.Toplevel):
 
 
 # ──────────────────────────────────────────────────────────────────
+# Relay Setting dialog
+# ──────────────────────────────────────────────────────────────────
+
+class RelaySettingDialog(tk.Toplevel):
+    """Add/edit a relay settings record."""
+    def __init__(self, parent, existing=None, wo_devices=None, base_url=""):
+        super().__init__(parent)
+        self.title("Edit Relay Setting" if existing else "Add Relay Setting")
+        self.result = None
+        self.wo_devices = wo_devices or []
+        self.base_url = base_url
+        self.resizable(False, False)
+        self._build(existing or {})
+        self.grab_set()
+        self.wait_window()
+
+    def _build(self, ex):
+        f = ttk.Frame(self, padding=12)
+        f.pack(fill="both", expand=True)
+        f.columnconfigure(1, weight=1)
+
+        self.vars = {
+            "device_id": tk.StringVar(value=ex.get("device_id", "")),
+            "title":     tk.StringVar(value=ex.get("title", "")),
+            "revision":  tk.StringVar(value=ex.get("revision", "")),
+            "engineer":  tk.StringVar(value=ex.get("engineer", "")),
+            "contact":   tk.StringVar(value=ex.get("contact", "")),
+            "url":       tk.StringVar(value=ex.get("url", "") or self.base_url),
+            "wo_device": tk.StringVar(value=ex.get("wo_device", "")),
+        }
+
+        fields = [
+            ("device_id", "Device ID:"),
+            ("title",     "Title / Description:"),
+            ("revision",  "Revision:"),
+            ("engineer",  "Engineer:"),
+            ("contact",   "Contact (email / phone):"),
+            ("url",       "URL:"),
+        ]
+        for i, (key, label) in enumerate(fields):
+            ttk.Label(f, text=label).grid(row=i, column=0, sticky="e", padx=(0, 6), pady=4)
+            ttk.Entry(f, textvariable=self.vars[key], width=46).grid(
+                row=i, column=1, sticky="ew", pady=4)
+
+        row_wo = len(fields)
+        ttk.Label(f, text="Link to WO Device:").grid(row=row_wo, column=0, sticky="e", padx=(0, 6), pady=4)
+        ttk.Combobox(f, textvariable=self.vars["wo_device"],
+                     values=self.wo_devices, width=43).grid(
+            row=row_wo, column=1, sticky="ew", pady=4)
+        ttk.Label(f, text="Optional — links this relay record to a device in the Work Order",
+                  foreground="grey", font=("", 8)).grid(
+            row=row_wo + 1, column=0, columnspan=2, sticky="w", pady=(0, 6))
+
+        bf = ttk.Frame(f); bf.grid(row=row_wo + 2, column=0, columnspan=2, sticky="e")
+        ttk.Button(bf, text="Cancel", command=self.destroy).pack(side="right", padx=4)
+        ttk.Button(bf, text="Save",   command=self._save).pack(side="right")
+
+    def _save(self):
+        if not self.vars["device_id"].get().strip():
+            messagebox.showwarning("Required", "Device ID is required.", parent=self); return
+        self.result = {k: v.get().strip() for k, v in self.vars.items()}
+        self.destroy()
+
+
+# ──────────────────────────────────────────────────────────────────
 # Main application
 # ──────────────────────────────────────────────────────────────────
 
@@ -1559,16 +1624,8 @@ class WirePlannerApp(tk.Tk):
         # Full endpoint dicts for context-aware suggestions
         self.ep_history = []
         self.title_page = {"notes": "", "crows": []}
-        self.settings_vars = {
-            "device_id":        tk.StringVar(),
-            "revision":         tk.StringVar(),
-            "engineer_name":    tk.StringVar(),
-            "engineer_email":   tk.StringVar(),
-            "device_url":       tk.StringVar(),
-            "base_drawing_url": tk.StringVar(),
-            "base_crow_url":    tk.StringVar(),
-            "base_relay_url":   tk.StringVar(),
-        }
+        self.relay_registry = {}          # keyed by device_id
+        self.app_config = self._load_app_config()   # global prefs (~/.redlinerouting.json)
         self._build_menu()
         self._build_ui()
 
@@ -1618,6 +1675,8 @@ class WirePlannerApp(tk.Tk):
         fm.add_command(label="Export CSV (Excel)…",    command=self._export_csv)
         fm.add_command(label="Export HTML (colour PDF)…",command=self._export_html)
         fm.add_separator()
+        fm.add_command(label="Software Settings…",     command=self._open_software_settings)
+        fm.add_separator()
         fm.add_command(label="Quit",command=self.quit, accelerator="Ctrl+Q")
         mb.add_cascade(label="File",menu=fm)
         self.config(menu=mb)
@@ -1656,10 +1715,10 @@ class WirePlannerApp(tk.Tk):
         ttk.Button(tb2,text="Preview",     command=self._preview_report).pack(side="right",padx=2)
 
         nb = ttk.Notebook(self); nb.pack(fill="both",expand=True,padx=6,pady=(0,4))
-        wt = ttk.Frame(nb); nb.add(wt,text="  Work Order  ");  self._build_work_tab(wt)
+        wt = ttk.Frame(nb); nb.add(wt,text="  Work Order  ");       self._build_work_tab(wt)
         dt = ttk.Frame(nb); nb.add(dt,text="  Project Drawings  "); self._build_drawings_tab(dt)
-        st = ttk.Frame(nb); nb.add(st,text="  Settings  "); self._build_settings_tab(st)
-        tt = ttk.Frame(nb); nb.add(tt,text="  Title Page  "); self._build_title_tab(tt)
+        rt = ttk.Frame(nb); nb.add(rt,text="  Relay Settings  ");   self._build_relay_settings_tab(rt)
+        tt = ttk.Frame(nb); nb.add(tt,text="  Title Page  ");       self._build_title_tab(tt)
 
         self.status_var = tk.StringVar(value="Ready  —  no jobs loaded")
         ttk.Label(self,textvariable=self.status_var,relief="sunken",
@@ -1723,7 +1782,7 @@ class WirePlannerApp(tk.Tk):
                 values=(name,info.get("title",""),info.get("rev",""),info.get("url",""),info.get("notes","")))
 
     def _add_drawing(self):
-        dlg = DrawingEditDialog(self, base_url=self._get_settings().get("base_drawing_url",""))
+        dlg = DrawingEditDialog(self, base_url=self.app_config.get("base_drawing_url",""))
         if dlg.result:
             name = dlg.result["name"]
             self.drawing_registry[name] = {"title":dlg.result["title"],"rev":dlg.result["rev"],"url":dlg.result["url"],"notes":dlg.result["notes"]}
@@ -1734,7 +1793,7 @@ class WirePlannerApp(tk.Tk):
         if not sel: messagebox.showinfo("Select","Please select a drawing to edit."); return
         name = sel[0]; info = self.drawing_registry.get(name,{})
         dlg = DrawingEditDialog(self, existing={"name":name,**info},
-                                base_url=self._get_settings().get("base_drawing_url",""))
+                                base_url=self.app_config.get("base_drawing_url",""))
         if dlg.result:
             old = dlg.result.get("old_name"); new_name = dlg.result["name"]
             if old and old != new_name and old in self.drawing_registry: del self.drawing_registry[old]
@@ -1872,6 +1931,183 @@ class WirePlannerApp(tk.Tk):
 
         threading.Thread(target=_run, daemon=True).start()
 
+    # ── Relay Settings CRUD ───────────────────────────────────────
+
+    def _refresh_relay_list(self):
+        for iid in self.relay_tree.get_children(): self.relay_tree.delete(iid)
+        for dev_id, info in sorted(self.relay_registry.items()):
+            self.relay_tree.insert("", "end", iid=dev_id, values=(
+                dev_id,
+                info.get("title",    ""),
+                info.get("revision", ""),
+                info.get("engineer", ""),
+                info.get("contact",  ""),
+                info.get("url",      ""),
+                info.get("wo_device",""),
+            ))
+
+    def _wo_device_list(self):
+        """Collect unique device names from all work order jobs."""
+        seen = set()
+        devs = []
+        for job in self.jobs:
+            for ep_key in ("start", "end", "add_start", "add_end"):
+                d = (job.get(ep_key) or {}).get("device", "").strip()
+                if d and d not in seen:
+                    seen.add(d); devs.append(d)
+        return sorted(devs)
+
+    def _add_relay(self):
+        dlg = RelaySettingDialog(self, wo_devices=self._wo_device_list(),
+                                 base_url=self.app_config.get("base_relay_url", ""))
+        if dlg.result:
+            dev_id = dlg.result["device_id"]
+            self.relay_registry[dev_id] = {k: v for k, v in dlg.result.items() if k != "device_id"}
+            self._refresh_relay_list()
+
+    def _edit_relay(self):
+        sel = self.relay_tree.selection()
+        if not sel: messagebox.showinfo("Select", "Please select a relay record to edit."); return
+        dev_id = sel[0]; info = self.relay_registry.get(dev_id, {})
+        dlg = RelaySettingDialog(self, existing={"device_id": dev_id, **info},
+                                 wo_devices=self._wo_device_list(),
+                                 base_url=self.app_config.get("base_relay_url", ""))
+        if dlg.result:
+            old_id = dev_id; new_id = dlg.result["device_id"]
+            if old_id != new_id and old_id in self.relay_registry:
+                del self.relay_registry[old_id]
+            self.relay_registry[new_id] = {k: v for k, v in dlg.result.items() if k != "device_id"}
+            self._refresh_relay_list()
+
+    def _delete_relay(self):
+        sel = self.relay_tree.selection()
+        if not sel: messagebox.showinfo("Select", "Please select a relay record to delete."); return
+        dev_id = sel[0]
+        if messagebox.askyesno("Delete", f"Remove relay record '{dev_id}'?"):
+            self.relay_registry.pop(dev_id, None); self._refresh_relay_list()
+
+    def _on_relay_ctrl_click(self, event):
+        row = self.relay_tree.identify_row(event.y)
+        if not row: return
+        url = self.relay_registry.get(row, {}).get("url", "").strip()
+        if url: webbrowser.open(url)
+
+    def _download_relay_settings(self):
+        if not self.project_folder:
+            messagebox.showinfo("Save First",
+                "Please save the project first so the Relay Settings folder location is known."); return
+        dest_dir = os.path.join(self.project_folder, "Relay Settings")
+        os.makedirs(dest_dir, exist_ok=True)
+        targets = [(dev_id, info["url"]) for dev_id, info in self.relay_registry.items()
+                   if info.get("url", "").strip()]
+        if not targets:
+            messagebox.showinfo("No URLs", "No relay setting URLs are set."); return
+
+        dlg = tk.Toplevel(self)
+        dlg.title("Downloading Relay Settings"); dlg.geometry("420x200"); dlg.resizable(False, False)
+        dlg.grab_set()
+        ttk.Label(dlg, text="Downloading relay settings…", font=("", 10, "bold")).pack(pady=(14, 4))
+        prog_var = tk.StringVar(value="Starting…")
+        ttk.Label(dlg, textvariable=prog_var, wraplength=380).pack(pady=4)
+        bar = ttk.Progressbar(dlg, length=360, maximum=len(targets))
+        bar.pack(pady=8)
+        res_var = tk.StringVar()
+        ttk.Label(dlg, textvariable=res_var, foreground="grey", font=("", 8)).pack()
+
+        def _run():
+            ok, fail = 0, []
+            for i, (dev_id, url) in enumerate(targets):
+                prog_var.set(f"Downloading: {dev_id}")
+                bar["value"] = i
+                ext = os.path.splitext(url.split("?")[0])[-1].lower()
+                if ext not in (".pdf",".png",".jpg",".jpeg",".tif",".tiff",".svg",".dwg"):
+                    ext = ".pdf"
+                try:
+                    req = urllib.request.Request(url, headers={"User-Agent": "RedLineRouting/1.0"})
+                    with urllib.request.urlopen(req, timeout=30) as resp, \
+                         open(os.path.join(dest_dir, dev_id + ext), "wb") as out:
+                        out.write(resp.read())
+                    ok += 1
+                except Exception as e:
+                    fail.append(f"{dev_id}: {e}")
+            bar["value"] = len(targets)
+            prog_var.set("Done.")
+            msg = f"{ok} downloaded"
+            if fail: msg += f", {len(fail)} failed:\n" + "\n".join(fail[:5])
+            res_var.set(msg)
+            ttk.Button(dlg, text="Close", command=dlg.destroy).pack(pady=6)
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    # ── Software / Global Settings ────────────────────────────────
+
+    _APP_CONFIG_PATH = os.path.expanduser("~/.redlinerouting.json")
+
+    def _load_app_config(self):
+        try:
+            with open(self._APP_CONFIG_PATH, encoding="utf-8") as fh:
+                return json.load(fh)
+        except (FileNotFoundError, json.JSONDecodeError):
+            return {}
+
+    def _save_app_config(self):
+        try:
+            with open(self._APP_CONFIG_PATH, "w", encoding="utf-8") as fh:
+                json.dump(self.app_config, fh, indent=2)
+        except Exception as exc:
+            messagebox.showerror("Settings Error", f"Could not save software settings:\n{exc}")
+
+    def _open_software_settings(self):
+        dlg = tk.Toplevel(self)
+        dlg.title("Software Settings")
+        dlg.resizable(False, False)
+        dlg.grab_set()
+
+        f = ttk.Frame(dlg, padding=14)
+        f.pack(fill="both", expand=True)
+
+        sections = [
+            ("Drawings", [
+                ("base_drawing_url",  "Base Drawing URL:",  "Used to pre-fill URLs when adding drawings"),
+                ("drawing_search_url","Drawing Search URL:","Base URL for drawing search (future use)"),
+            ]),
+            ("Aspen", [
+                ("aspen_url",         "Aspen URL:",         "Base URL for Aspen (future use)"),
+            ]),
+            ("CROWs", [
+                ("base_crow_url",     "Base CROW URL:",     "Used to pre-fill URLs when adding CROWs"),
+            ]),
+            ("Relay Settings", [
+                ("base_relay_url",    "Base Relay URL:",    "Used to pre-fill URLs when adding relay settings"),
+            ]),
+        ]
+
+        cfg_vars = {}
+        for section_name, fields in sections:
+            lf = ttk.LabelFrame(f, text=section_name, padding=8)
+            lf.pack(fill="x", pady=(0, 8))
+            lf.columnconfigure(1, weight=1)
+            for r, (key, label, hint) in enumerate(fields):
+                ttk.Label(lf, text=label).grid(row=r*2,   column=0, sticky="e", padx=(0,6), pady=3)
+                var = tk.StringVar(value=self.app_config.get(key, ""))
+                cfg_vars[key] = var
+                ttk.Entry(lf, textvariable=var, width=52).grid(row=r*2, column=1, sticky="ew", pady=3)
+                ttk.Label(lf, text=hint, foreground="grey", font=("",8)).grid(
+                    row=r*2+1, column=0, columnspan=2, sticky="w", pady=(0,2))
+
+        ttk.Label(f, text="These settings apply to all projects and are stored globally.",
+                  foreground="grey", font=("",8)).pack(anchor="w", pady=(4,0))
+
+        bf = ttk.Frame(f); bf.pack(fill="x", pady=(10,0))
+        ttk.Button(bf, text="Cancel", command=dlg.destroy).pack(side="right", padx=4)
+
+        def _save():
+            self.app_config = {k: v.get().strip() for k, v in cfg_vars.items()}
+            self._save_app_config()
+            dlg.destroy()
+
+        ttk.Button(bf, text="Save", command=_save).pack(side="right")
+
     # ── Title page tab ────────────────────────────────────────────
 
     def _build_title_tab(self, parent):
@@ -1924,7 +2160,7 @@ class WirePlannerApp(tk.Tk):
                 crow.get("outage_number", ""), crow.get("url", "")))
 
     def _add_crow(self):
-        dlg = CrowDialog(self, base_url=self._get_settings().get("base_crow_url",""))
+        dlg = CrowDialog(self, base_url=self.app_config.get("base_crow_url",""))
         if dlg.result:
             self.title_page.setdefault("crows", []).append(dlg.result)
             self._refresh_crows()
@@ -1958,54 +2194,40 @@ class WirePlannerApp(tk.Tk):
                 webbrowser.open(url)
 
     def _get_settings(self):
-        return {k: v.get().strip() for k, v in self.settings_vars.items()}
+        return dict(self.app_config)
 
-    def _build_settings_tab(self, parent):
-        outer = ttk.Frame(parent, padding=10)
-        outer.pack(fill="both", expand=True)
+    def _build_relay_settings_tab(self, parent):
+        tb = ttk.Frame(parent, padding=(4, 4)); tb.pack(fill="x")
+        ttk.Button(tb, text="+ Add",        command=self._add_relay).pack(side="left", padx=2)
+        ttk.Button(tb, text="Edit",         command=self._edit_relay).pack(side="left", padx=2)
+        ttk.Button(tb, text="Delete",       command=self._delete_relay).pack(side="left", padx=2)
+        ttk.Button(tb, text="⬇ Download All", command=self._download_relay_settings).pack(side="left", padx=(10,2))
+        ttk.Label(tb, text="Relay protection settings records.  Ctrl+click a row to open its URL.",
+                  foreground="grey").pack(side="left", padx=8)
 
-        # ── Project / Device Settings ──────────────────────────────
-        pf = ttk.LabelFrame(outer, text="Project / Device Settings", padding=10)
-        pf.pack(fill="x", pady=(0, 10))
-        pf.columnconfigure(1, weight=1)
-
-        fields = [
-            ("device_id",      "Device ID:"),
-            ("revision",       "Revision:"),
-            ("engineer_name",  "Engineer Name:"),
-            ("engineer_email", "Engineer Email:"),
-            ("device_url",     "URL:"),
-        ]
-        for row_i, (key, label) in enumerate(fields):
-            ttk.Label(pf, text=label).grid(row=row_i, column=0, sticky="e", padx=(0,6), pady=3)
-            ttk.Entry(pf, textvariable=self.settings_vars[key], width=52).grid(
-                row=row_i, column=1, sticky="ew", pady=3)
-
-        ttk.Label(pf, text="Device ID can match a device name from the Work Order for reference.",
-                  foreground="grey", font=("",8)).grid(
-            row=len(fields), column=0, columnspan=2, sticky="w", pady=(2,0))
-
-        # ── System Settings (URL defaults) ────────────────────────
-        sf = ttk.LabelFrame(outer, text="System Settings — URL Defaults", padding=10)
-        sf.pack(fill="x", pady=(0, 10))
-        sf.columnconfigure(1, weight=1)
-
-        sys_fields = [
-            ("base_drawing_url", "Base Drawing URL:", "Pre-filled when adding a drawing URL"),
-            ("base_crow_url",    "Base CROW URL:",    "Pre-filled when adding a CROW URL"),
-            ("base_relay_url",   "Base Relay URL:",   "Pre-filled when downloading relay settings"),
-        ]
-        r = 0
-        for key, label, hint in sys_fields:
-            ttk.Label(sf, text=label).grid(row=r, column=0, sticky="e", padx=(0,6), pady=3)
-            ttk.Entry(sf, textvariable=self.settings_vars[key], width=52).grid(
-                row=r, column=1, sticky="ew", pady=3)
-            ttk.Label(sf, text=hint, foreground="grey", font=("",8)).grid(
-                row=r+1, column=0, columnspan=2, sticky="w", pady=(0,3))
-            r += 2
-
-        ttk.Label(outer, text="Settings are saved per project file.",
-                  foreground="grey", font=("",8)).pack(anchor="w")
+        frame = ttk.Frame(parent); frame.pack(fill="both", expand=True, padx=4, pady=(0, 4))
+        cols = ("Device ID", "Title", "Rev", "Engineer", "Contact", "URL", "WO Device")
+        self.relay_tree = ttk.Treeview(frame, columns=cols, show="headings")
+        self.relay_tree.heading("Device ID", text="Device ID")
+        self.relay_tree.heading("Title",     text="Title")
+        self.relay_tree.heading("Rev",       text="Rev")
+        self.relay_tree.heading("Engineer",  text="Engineer")
+        self.relay_tree.heading("Contact",   text="Contact")
+        self.relay_tree.heading("URL",       text="URL")
+        self.relay_tree.heading("WO Device", text="WO Device")
+        self.relay_tree.column("Device ID", width=100, stretch=False)
+        self.relay_tree.column("Title",     width=150, stretch=False)
+        self.relay_tree.column("Rev",       width=55,  stretch=False)
+        self.relay_tree.column("Engineer",  width=120, stretch=False)
+        self.relay_tree.column("Contact",   width=140, stretch=False)
+        self.relay_tree.column("URL",       width=260)
+        self.relay_tree.column("WO Device", width=100, stretch=False)
+        vsb = ttk.Scrollbar(frame, orient="vertical", command=self.relay_tree.yview)
+        self.relay_tree.configure(yscrollcommand=vsb.set)
+        self.relay_tree.pack(side="left", fill="both", expand=True)
+        vsb.pack(side="right", fill="y")
+        self.relay_tree.bind("<Double-1>",          lambda _: self._edit_relay())
+        self.relay_tree.bind("<Control-Button-1>",  self._on_relay_ctrl_click)
 
     # ── Job list ─────────────────────────────────────────────────
 
@@ -2223,16 +2445,16 @@ class WirePlannerApp(tk.Tk):
 
     def _new_plan(self):
         if self.jobs and not messagebox.askyesno("New Plan","Discard current plan and start fresh?"): return
-        self.jobs=[]; self.drawing_registry={}; self.current_file=None
-        self.project_folder = None
+        self.jobs=[]; self.drawing_registry={}; self.relay_registry={}
+        self.current_file=None; self.project_folder=None
         self.project_var.set("")
         self.history = {"device": [], "location": [], "pin": [], "panel": [], "wire": []}
         self.ep_history = []
         self.title_page = {"notes": "", "crows": []}
-        for var in self.settings_vars.values(): var.set("")
         self.title_notes.delete("1.0", "end")
         self.title("Red-Line-Routing")
-        self._refresh_list(); self._refresh_drawings_list(); self._refresh_crows()
+        self._refresh_list(); self._refresh_drawings_list()
+        self._refresh_relay_list(); self._refresh_crows()
         self.preview.configure(state="normal"); self.preview.delete("1.0","end"); self.preview.configure(state="disabled")
 
     def _open(self):
@@ -2242,17 +2464,17 @@ class WirePlannerApp(tk.Tk):
             with open(path,encoding="utf-8") as fh: data = json.load(fh)
             self.jobs = data.get("jobs",[]); self.project_var.set(data.get("project",""))
             self.drawing_registry = data.get("drawing_registry",{})
+            self.relay_registry   = data.get("relay_settings",{})
             self.history = data.get("history", {"device":[],"location":[],"pin":[],"panel":[],"wire":[]})
             self.title_page = data.get("title_page", {"notes": "", "crows": []})
-            for k, var in self.settings_vars.items():
-                var.set(data.get("settings", {}).get(k, ""))
             self.current_file = path
             self.project_folder = os.path.dirname(path)
             self._scan_jobs_for_drawings()
             self._rebuild_history()
             self.title_notes.delete("1.0", "end")
             self.title_notes.insert("1.0", self.title_page.get("notes", ""))
-            self._refresh_list(); self._refresh_drawings_list(); self._refresh_crows()
+            self._refresh_list(); self._refresh_drawings_list()
+            self._refresh_relay_list(); self._refresh_crows()
             proj = data.get("project","") or os.path.splitext(os.path.basename(path))[0]
             self.title(f"Red-Line-Routing — {proj}")
         except Exception as exc: messagebox.showerror("Open Error",str(exc))
@@ -2285,8 +2507,8 @@ class WirePlannerApp(tk.Tk):
             with open(path,"w",encoding="utf-8") as fh:
                 json.dump({"project":self.project_var.get().strip(),
                            "title_page":tp,
-                           "settings":self._get_settings(),
                            "drawing_registry":self.drawing_registry,
+                           "relay_settings":self.relay_registry,
                            "history":self.history,
                            "jobs":self.jobs},fh,indent=2)
             proj = self.project_var.get().strip() or os.path.splitext(os.path.basename(path))[0]
