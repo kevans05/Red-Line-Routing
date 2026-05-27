@@ -317,11 +317,12 @@ class EndpointFrame(DrawingAwareFrame):
 # ──────────────────────────────────────────────────────────────────
 
 class DrawingEntryDialog(tk.Toplevel):
-    def __init__(self, parent, existing=None, registry=None):
+    def __init__(self, parent, existing=None, registry=None, base_url=""):
         super().__init__(parent)
         self.title("Edit Drawing" if existing else "Add Drawing")
         self.result = None
         self.registry = registry if registry is not None else {}
+        self._base_url = base_url
         self.resizable(False, False)
         self._build(existing or {})
         self.grab_set()
@@ -346,7 +347,7 @@ class DrawingEntryDialog(tk.Toplevel):
         rev_e.grid(row=1, column=1, sticky="ew", pady=3)
 
         ttk.Label(f, text="Drawing URL:").grid(row=2, column=0, sticky="e", padx=(0, 4), pady=3)
-        self.url_var = tk.StringVar(value=ex.get("drawing_url", ""))
+        self.url_var = tk.StringVar(value=ex.get("drawing_url", "") or self._base_url)
         url_e = ttk.Entry(f, textvariable=self.url_var, width=32)
         url_e.bind("<FocusOut>", self._push)
         url_e.grid(row=2, column=1, sticky="ew", pady=3)
@@ -486,9 +487,10 @@ class IsoPointDialog(tk.Toplevel):
 # ──────────────────────────────────────────────────────────────────
 
 class MultiDrawingFrame(ttk.LabelFrame):
-    def __init__(self, parent, registry=None, **kwargs):
+    def __init__(self, parent, registry=None, base_drawing_url="", **kwargs):
         super().__init__(parent, text="Drawings", padding=4, **kwargs)
         self.registry = registry if registry is not None else {}
+        self.base_drawing_url = base_drawing_url
         self._drawings = []
         self._build()
 
@@ -521,7 +523,7 @@ class MultiDrawingFrame(ttk.LabelFrame):
                 d.get("drawing_cell", ""), d.get("drawing_url", "")))
 
     def _add(self):
-        dlg = DrawingEntryDialog(self, registry=self.registry)
+        dlg = DrawingEntryDialog(self, registry=self.registry, base_url=self.base_drawing_url)
         if dlg.result:
             self._drawings.append(dlg.result)
             self._refresh()
@@ -625,10 +627,11 @@ class MultiIsoFrame(ttk.LabelFrame):
 # ──────────────────────────────────────────────────────────────────
 
 class ProtectionFrame(ttk.LabelFrame):
-    def __init__(self, parent, title, registry=None, job_type="BLOCK", **kwargs):
+    def __init__(self, parent, title, registry=None, job_type="BLOCK", base_drawing_url="", **kwargs):
         super().__init__(parent, text=title, padding=6, **kwargs)
         self.registry = registry if registry is not None else {}
         self.job_type = job_type
+        self.base_drawing_url = base_drawing_url
         self.vars = {}
         self._build()
 
@@ -641,7 +644,7 @@ class ProtectionFrame(ttk.LabelFrame):
             self.vars[key] = var
             ttk.Entry(self, textvariable=var, width=36).grid(row=row, column=1, sticky="ew", pady=1)
         n = len(fields)
-        self.multi_draw = MultiDrawingFrame(self, registry=self.registry)
+        self.multi_draw = MultiDrawingFrame(self, registry=self.registry, base_drawing_url=self.base_drawing_url)
         self.multi_draw.grid(row=n, column=0, columnspan=2, sticky="ew", pady=(8, 2))
         self.multi_iso = MultiIsoFrame(self)
         self.multi_iso.grid(row=n+1, column=0, columnspan=2, sticky="ew", pady=(4, 2))
@@ -722,7 +725,7 @@ class JobDialog(tk.Toplevel):
                   "BLOCK":"#d35400","UNBLOCK":"#16a085","TESTING":"#6c3483"}
 
     def __init__(self, parent, job_type, existing=None, registry=None,
-                 history=None, ep_history=None, jobs=None):
+                 history=None, ep_history=None, jobs=None, settings=None):
         super().__init__(parent)
         self.title(f"{'Edit' if existing else 'Add'} — {job_type}")
         self.result = None
@@ -731,6 +734,7 @@ class JobDialog(tk.Toplevel):
         self.history   = history    if history    is not None else {}
         self.ep_history= ep_history if ep_history is not None else []
         self.jobs      = jobs       if jobs       is not None else []
+        self.settings  = settings   if settings   is not None else {}
         self.resizable(True, True)
         self._build(existing)
         self.grab_set()
@@ -869,7 +873,8 @@ class JobDialog(tk.Toplevel):
                     af.columnconfigure(0, weight=1)
 
             self.ep_prot = ProtectionFrame(f, "Equipment / Device",
-                                           registry=self.registry, job_type=self.job_type)
+                                           registry=self.registry, job_type=self.job_type,
+                                           base_drawing_url=self.settings.get("base_drawing_url",""))
             self.ep_prot.grid(row=row, column=0, columnspan=2, sticky="ew", pady=2)
             self.ep_prot.set(ex.get("protection",{}))
 
@@ -941,11 +946,12 @@ class JobDialog(tk.Toplevel):
 # ──────────────────────────────────────────────────────────────────
 
 class DrawingEditDialog(tk.Toplevel):
-    def __init__(self, parent, existing=None):
+    def __init__(self, parent, existing=None, base_url=""):
         super().__init__(parent)
         self.title("Edit Drawing" if existing else "Add Drawing")
         self.result = None
         self._old_name = existing.get("name") if existing else None
+        self._base_url = base_url
         self.resizable(False, False)
         self._build(existing or {})
         self.grab_set()
@@ -954,19 +960,20 @@ class DrawingEditDialog(tk.Toplevel):
     def _build(self, ex):
         f = ttk.Frame(self, padding=12)
         f.pack(fill="both", expand=True)
-        fields = [("name","Drawing Name / No.:"),("rev","Revision:"),
-                  ("url","Drawing URL:"),("notes","Notes:")]
+        fields = [("name","Drawing Name / No.:"),("title","Title / Description:"),
+                  ("rev","Revision:"),("url","Drawing URL:"),("notes","Notes:")]
         self.vars = {}
         for row,(key,label) in enumerate(fields):
             ttk.Label(f,text=label).grid(row=row,column=0,sticky="e",padx=(0,6),pady=4)
-            var = tk.StringVar(value=ex.get(key,""))
+            default = self._base_url if (key == "url" and not ex.get("url")) else ""
+            var = tk.StringVar(value=ex.get(key, default))
             self.vars[key] = var
             ttk.Entry(f,textvariable=var,width=46).grid(row=row,column=1,sticky="ew",pady=4)
         f.columnconfigure(1, weight=1)
         br = ttk.Frame(self); br.pack(fill="x",padx=10,pady=(0,8))
         ttk.Button(br,text="Cancel",command=self.destroy).pack(side="right",padx=2)
         ttk.Button(br,text="Save",  command=self._save).pack(side="right",padx=2)
-        self.geometry("460x230")
+        self.geometry("460x268")
 
     def _save(self):
         name = self.vars["name"].get().strip()
@@ -974,6 +981,7 @@ class DrawingEditDialog(tk.Toplevel):
             messagebox.showwarning("Required","Drawing name is required.",parent=self)
             return
         self.result = {"name":name,"old_name":self._old_name,
+                       "title":self.vars["title"].get().strip(),
                        "rev":self.vars["rev"].get().strip(),
                        "url":self.vars["url"].get().strip(),
                        "notes":self.vars["notes"].get().strip()}
@@ -1197,6 +1205,16 @@ _ROW_STYLE = {
     "TESTING":     ("background:#f5eef8","color:#6c3483;font-weight:bold"),
 }
 
+_ROW_BORDER = {
+    "REMOVE":      "#c0392b",
+    "ADD":         "#27ae60",
+    "MOVE-REMOVE": "#e67e22",
+    "MOVE-ADD":    "#d4ac0d",
+    "BLOCK":       "#ca6f1e",
+    "UNBLOCK":     "#148f77",
+    "TESTING":     "#7d3c98",
+}
+
 def _esc(t):
     return (str(t).replace("&","&amp;").replace("<","&lt;")
             .replace(">","&gt;").replace('"',"&quot;"))
@@ -1292,9 +1310,12 @@ def generate_html_table(jobs, project="", drawing_registry=None, title_page=None
 
         def tr(key, label, s_html, wire, e_html):
             row_bg, type_style = _ROW_STYLE.get(key, ("",""))
+            bc = _ROW_BORDER.get(key, "#aaa")
             nonlocal seq
             r = (f'<tr style="{row_bg}">'
-                 f'<td>{seq}</td>'
+                 f'<td class="chk" style="border-left:4px solid {bc}">'
+                 f'<input type="checkbox"></td>'
+                 f'<td style="text-align:center">{seq}</td>'
                  f'<td style="{type_style}">{_esc(label)}</td>'
                  f'<td>{desc}</td>'
                  f'<td>{s_html}</td>'
@@ -1342,18 +1363,22 @@ table{{border-collapse:collapse;width:100%;margin-bottom:10px}}
 th{{background:#2c3e50;color:#fff;padding:5px 7px;text-align:left;font-size:8pt}}
 td{{padding:4px 7px;border:1px solid #ccc;vertical-align:top;font-size:8pt;line-height:1.4}}
 a{{color:#1a5276}}
+.chk{{text-align:center;padding:3px 4px;width:22px}}
+input[type=checkbox]{{width:14px;height:14px;cursor:pointer;accent-color:#2c3e50}}
 .legend{{display:flex;gap:8px;margin:6px 0 12px;flex-wrap:wrap;font-size:7.5pt}}
 .leg{{padding:2px 7px;border-radius:3px;border:1px solid #ccc}}
 .print-header{{display:none;font-size:7.5pt;color:#555;border-bottom:1px solid #ccc;padding:3px 0 3px;margin-bottom:6px}}
 .print-footer{{display:none}}
 @media print{{
-  body{{margin-top:18mm;margin-bottom:14mm}}
+  body{{margin-top:18mm;margin-bottom:14mm;-webkit-print-color-adjust:exact;print-color-adjust:exact}}
   .print-header{{display:flex;position:fixed;top:0;left:0;right:0;background:#fff;
     padding:3px 8mm;justify-content:space-between;z-index:99}}
   .print-footer{{display:block;position:fixed;bottom:0;left:0;right:0;background:#fff;
     font-size:7pt;color:#999;padding:2px 8mm;border-top:1px solid #eee;text-align:right}}
   .print-footer::after{{content:"Page " counter(page)}}
   a{{color:#000;text-decoration:none}}
+  input[type=checkbox]{{-webkit-appearance:none;appearance:none;border:1.5px solid #444;
+    width:11px;height:11px;display:inline-block;vertical-align:middle}}
   @page{{size:A3 landscape;margin:14mm 8mm 12mm 8mm}}
 }}
 </style></head><body>
@@ -1367,7 +1392,7 @@ a{{color:#1a5276}}
 <div class="legend">{legend}</div>
 {tp_html}{drw_html}
 <table><thead><tr>
-<th style="width:28px">#</th><th style="width:110px">Type</th>
+<th class="chk" style="width:22px">✓</th><th style="width:28px">#</th><th style="width:110px">Type</th>
 <th style="width:15%">Description</th><th style="width:24%">Start Point / Device</th>
 <th style="width:95px">Wire</th><th style="width:24%">End Point / Device</th>
 </tr></thead><tbody>{job_rows}</tbody></table>
@@ -1381,10 +1406,11 @@ a{{color:#1a5276}}
 
 class CrowDialog(tk.Toplevel):
     """Add/edit a CROW outage record."""
-    def __init__(self, parent, existing=None):
+    def __init__(self, parent, existing=None, base_url=""):
         super().__init__(parent)
         self.title("Edit CROW" if existing else "Add CROW")
         self.result = None
+        self._base_url = base_url
         self.resizable(False, False)
         self._build(existing or {})
         self.grab_set()
@@ -1399,7 +1425,7 @@ class CrowDialog(tk.Toplevel):
         ttk.Label(f, text="format: 8-XXXXXXXX", foreground="grey",
                   font=("", 8)).grid(row=0, column=2, sticky="w", padx=(4, 0))
         ttk.Label(f, text="URL:").grid(row=1, column=0, sticky="e", padx=(0, 6), pady=4)
-        self.url_var = tk.StringVar(value=ex.get("url", ""))
+        self.url_var = tk.StringVar(value=ex.get("url", "") or self._base_url)
         ttk.Entry(f, textvariable=self.url_var, width=42).grid(
             row=1, column=1, columnspan=2, sticky="ew", pady=4)
         f.columnconfigure(1, weight=1)
@@ -1438,6 +1464,10 @@ class WirePlannerApp(tk.Tk):
         # Full endpoint dicts for context-aware suggestions
         self.ep_history = []
         self.title_page = {"notes": "", "crows": []}
+        self.settings_vars = {
+            "base_drawing_url": tk.StringVar(),
+            "base_crow_url":    tk.StringVar(),
+        }
         self._build_menu()
         self._build_ui()
 
@@ -1528,6 +1558,7 @@ class WirePlannerApp(tk.Tk):
         wt = ttk.Frame(nb); nb.add(wt,text="  Work Order  ");  self._build_work_tab(wt)
         dt = ttk.Frame(nb); nb.add(dt,text="  Project Drawings  "); self._build_drawings_tab(dt)
         tt = ttk.Frame(nb); nb.add(tt,text="  Title Page  "); self._build_title_tab(tt)
+        st = ttk.Frame(nb); nb.add(st,text="  Settings  "); self._build_settings_tab(st)
 
         self.status_var = tk.StringVar(value="Ready  —  no jobs loaded")
         ttk.Label(self,textvariable=self.status_var,relief="sunken",
@@ -1561,12 +1592,14 @@ class WirePlannerApp(tk.Tk):
         ttk.Label(tb, text="Drawing names entered in any job are added here automatically.",
                   foreground="grey").pack(side="left", padx=8)
         frame = ttk.Frame(parent); frame.pack(fill="both", expand=True, padx=4, pady=(0,4))
-        cols = ("Drawing","Revision","URL","Notes")
+        cols = ("Drawing","Title","Revision","URL","Notes")
         self.drawings_tree = ttk.Treeview(frame, columns=cols, show="headings")
-        self.drawings_tree.heading("Drawing",text="Drawing"); self.drawings_tree.heading("Revision",text="Revision")
+        self.drawings_tree.heading("Drawing",text="Drawing"); self.drawings_tree.heading("Title",text="Title")
+        self.drawings_tree.heading("Revision",text="Revision")
         self.drawings_tree.heading("URL",text="Drawing URL"); self.drawings_tree.heading("Notes",text="Notes")
-        self.drawings_tree.column("Drawing",width=160,stretch=False); self.drawings_tree.column("Revision",width=80,stretch=False)
-        self.drawings_tree.column("URL",width=380); self.drawings_tree.column("Notes",width=200)
+        self.drawings_tree.column("Drawing",width=140,stretch=False); self.drawings_tree.column("Title",width=160,stretch=False)
+        self.drawings_tree.column("Revision",width=68,stretch=False)
+        self.drawings_tree.column("URL",width=300); self.drawings_tree.column("Notes",width=160)
         vsb = ttk.Scrollbar(frame, orient="vertical", command=self.drawings_tree.yview)
         self.drawings_tree.configure(yscrollcommand=vsb.set)
         self.drawings_tree.pack(side="left", fill="both", expand=True); vsb.pack(side="right", fill="y")
@@ -1579,24 +1612,25 @@ class WirePlannerApp(tk.Tk):
         for name in sorted(self.drawing_registry.keys()):
             info = self.drawing_registry[name]
             self.drawings_tree.insert("","end",iid=name,
-                values=(name,info.get("rev",""),info.get("url",""),info.get("notes","")))
+                values=(name,info.get("title",""),info.get("rev",""),info.get("url",""),info.get("notes","")))
 
     def _add_drawing(self):
-        dlg = DrawingEditDialog(self)
+        dlg = DrawingEditDialog(self, base_url=self._get_settings().get("base_drawing_url",""))
         if dlg.result:
             name = dlg.result["name"]
-            self.drawing_registry[name] = {"rev":dlg.result["rev"],"url":dlg.result["url"],"notes":dlg.result["notes"]}
+            self.drawing_registry[name] = {"title":dlg.result["title"],"rev":dlg.result["rev"],"url":dlg.result["url"],"notes":dlg.result["notes"]}
             self._refresh_drawings_list()
 
     def _edit_drawing(self):
         sel = self.drawings_tree.selection()
         if not sel: messagebox.showinfo("Select","Please select a drawing to edit."); return
         name = sel[0]; info = self.drawing_registry.get(name,{})
-        dlg = DrawingEditDialog(self, existing={"name":name,**info})
+        dlg = DrawingEditDialog(self, existing={"name":name,**info},
+                                base_url=self._get_settings().get("base_drawing_url",""))
         if dlg.result:
             old = dlg.result.get("old_name"); new_name = dlg.result["name"]
             if old and old != new_name and old in self.drawing_registry: del self.drawing_registry[old]
-            self.drawing_registry[new_name] = {"rev":dlg.result["rev"],"url":dlg.result["url"],"notes":dlg.result["notes"]}
+            self.drawing_registry[new_name] = {"title":dlg.result["title"],"rev":dlg.result["rev"],"url":dlg.result["url"],"notes":dlg.result["notes"]}
             self._refresh_drawings_list()
 
     def _delete_drawing(self):
@@ -1611,7 +1645,7 @@ class WirePlannerApp(tk.Tk):
             name = ep.get("drawing","").strip()
             if not name: return
             if name not in self.drawing_registry:
-                self.drawing_registry[name] = {"rev":"","url":"","notes":""}
+                self.drawing_registry[name] = {"title":"","rev":"","url":"","notes":""}
             rec = self.drawing_registry[name]
             if ep.get("drawing_rev") and not rec.get("rev"): rec["rev"] = ep["drawing_rev"]
             if ep.get("drawing_url") and not rec.get("url"): rec["url"] = ep["drawing_url"]
@@ -1714,7 +1748,7 @@ class WirePlannerApp(tk.Tk):
                 crow.get("outage_number", ""), crow.get("url", "")))
 
     def _add_crow(self):
-        dlg = CrowDialog(self)
+        dlg = CrowDialog(self, base_url=self._get_settings().get("base_crow_url",""))
         if dlg.result:
             self.title_page.setdefault("crows", []).append(dlg.result)
             self._refresh_crows()
@@ -1735,6 +1769,33 @@ class WirePlannerApp(tk.Tk):
             return
         self.title_page.get("crows", []).pop(self.crow_tree.index(sel[0]))
         self._refresh_crows()
+
+    def _get_settings(self):
+        return {k: v.get().strip() for k, v in self.settings_vars.items()}
+
+    def _build_settings_tab(self, parent):
+        f = ttk.Frame(parent, padding=14)
+        f.pack(fill="both", expand=True)
+
+        uf = ttk.LabelFrame(f, text="URL Defaults", padding=10)
+        uf.pack(fill="x", pady=(0, 10))
+        ttk.Label(uf, text="Base Drawing URL:").grid(row=0, column=0, sticky="e", padx=(0,6), pady=4)
+        ttk.Entry(uf, textvariable=self.settings_vars["base_drawing_url"], width=58).grid(
+            row=0, column=1, sticky="ew", pady=4)
+        ttk.Label(uf, text="Pre-filled when adding a new drawing URL (user can edit or clear it)",
+                  foreground="grey", font=("",8)).grid(
+            row=1, column=0, columnspan=2, sticky="w", padx=(0,4), pady=(0,4))
+
+        ttk.Label(uf, text="Base CROW URL:").grid(row=2, column=0, sticky="e", padx=(0,6), pady=4)
+        ttk.Entry(uf, textvariable=self.settings_vars["base_crow_url"], width=58).grid(
+            row=2, column=1, sticky="ew", pady=4)
+        ttk.Label(uf, text="Pre-filled when adding a new CROW URL (user can edit or clear it)",
+                  foreground="grey", font=("",8)).grid(
+            row=3, column=0, columnspan=2, sticky="w", padx=(0,4), pady=(0,4))
+        uf.columnconfigure(1, weight=1)
+
+        ttk.Label(f, text="Settings are saved per project file.",
+                  foreground="grey", font=("",8)).pack(anchor="w")
 
     # ── Job list ─────────────────────────────────────────────────
 
@@ -1773,7 +1834,8 @@ class WirePlannerApp(tk.Tk):
 
     def _add_job(self, job_type):
         dlg = JobDialog(self, job_type, registry=self.drawing_registry,
-                        history=self.history, ep_history=self.ep_history, jobs=self.jobs)
+                        history=self.history, ep_history=self.ep_history, jobs=self.jobs,
+                        settings=self._get_settings())
         if dlg.result:
             self._collect_history(dlg.result)
             self.jobs.append(dlg.result); self._refresh_list(); self._refresh_drawings_list()
@@ -1784,7 +1846,7 @@ class WirePlannerApp(tk.Tk):
         if idx is None: messagebox.showinfo("Select a Job","Please select a job from the list."); return
         dlg = JobDialog(self, self.jobs[idx]["type"], existing=deepcopy(self.jobs[idx]),
                         registry=self.drawing_registry, history=self.history,
-                        ep_history=self.ep_history, jobs=self.jobs)
+                        ep_history=self.ep_history, jobs=self.jobs, settings=self._get_settings())
         if dlg.result:
             self._collect_history(dlg.result)
             self.jobs[idx]=dlg.result; self._refresh_list(); self._refresh_drawings_list()
@@ -1949,6 +2011,8 @@ class WirePlannerApp(tk.Tk):
             self.drawing_registry = data.get("drawing_registry",{})
             self.history = data.get("history", {"device":[],"location":[],"pin":[],"panel":[],"wire":[]})
             self.title_page = data.get("title_page", {"notes": "", "crows": []})
+            for k, var in self.settings_vars.items():
+                var.set(data.get("settings", {}).get(k, ""))
             self.current_file = path
             self._scan_jobs_for_drawings()
             self._rebuild_history()
@@ -1976,6 +2040,7 @@ class WirePlannerApp(tk.Tk):
             with open(path,"w",encoding="utf-8") as fh:
                 json.dump({"project":self.project_var.get().strip(),
                            "title_page":tp,
+                           "settings":self._get_settings(),
                            "drawing_registry":self.drawing_registry,
                            "history":self.history,
                            "jobs":self.jobs},fh,indent=2)
