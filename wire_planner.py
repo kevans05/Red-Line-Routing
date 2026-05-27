@@ -1310,13 +1310,70 @@ def generate_html_table(jobs, project="", drawing_registry=None, title_page=None
             u = info.get("url","")
             return f'<a href="{_esc(u)}">{_esc(u)}</a>' if u else ""
         rows = "".join(
-            f"<tr><td>{_esc(n)}</td><td>{_esc(i.get('rev',''))}</td>"
+            f"<tr><td>{_esc(n)}</td><td>{_esc(i.get('title',''))}</td>"
+            f"<td>{_esc(i.get('rev',''))}</td>"
             f"<td>{_url_cell(i)}</td>"
             f"<td>{_esc(i.get('notes',''))}</td></tr>"
             for n,i in sorted(drawing_registry.items()))
         drw_html = (f"<h2>Project Drawings</h2><table>"
-                    f"<thead><tr><th>Drawing</th><th>Rev</th><th>URL</th><th>Notes</th></tr></thead>"
+                    f"<thead><tr><th>Drawing</th><th>Title</th><th>Rev</th><th>URL</th><th>Notes</th></tr></thead>"
                     f"<tbody>{rows}</tbody></table><br>")
+
+    reg = drawing_registry or {}
+
+    def ep_html_r(ep):
+        """Like _ep_html but enriches the drawing line with title and URL from the registry."""
+        parts = []
+        if ep.get("device"):   parts.append(f"<b>{_esc(ep['device'])}</b>")
+        if ep.get("pin"):      parts.append(f"Pin {_esc(ep['pin'])}")
+        if ep.get("location"): parts.append(_esc(ep["location"]))
+        if ep.get("panel"):    parts.append(f"Panel {_esc(ep['panel'])}")
+        if ep.get("drawing"):
+            name = ep["drawing"]
+            ri   = reg.get(name, {})
+            rev  = f" Rev{_esc(ep['drawing_rev'])}" if ep.get("drawing_rev") else ""
+            cell = f" [{_esc(ep['drawing_cell'])}]" if ep.get("drawing_cell") else ""
+            url  = ep.get("drawing_url","") or ri.get("url","")
+            tag  = f'<a href="{_esc(url)}">' if url else ""
+            etag = "</a>" if url else ""
+            ttl  = ri.get("title","")
+            ttl_html = (f' <span style="color:#666;font-style:italic">'
+                        f'— {_esc(ttl)}</span>') if ttl else ""
+            parts.append(f"{tag}{_esc(name)}{etag}{ttl_html}{rev}{cell}")
+        return "<br>".join(parts)
+
+    def prot_html_r(prot):
+        """Like _prot_html but enriches drawing lines with title from the registry."""
+        parts = []
+        if prot.get("equipment"): parts.append(f"<b>{_esc(prot['equipment'])}</b>")
+        if prot.get("location"):  parts.append(_esc(prot["location"]))
+        if prot.get("panel"):     parts.append(f"Panel {_esc(prot['panel'])}")
+        if prot.get("notes"):     parts.append(f"<i>{_esc(prot['notes'])}</i>")
+        for d in _get_prot_drawings(prot):
+            name = d.get("drawing","")
+            ri   = reg.get(name, {})
+            rev  = f" Rev{_esc(d['drawing_rev'])}" if d.get("drawing_rev") else ""
+            cell = f" [{_esc(d['drawing_cell'])}]" if d.get("drawing_cell") else ""
+            url  = d.get("drawing_url","") or ri.get("url","")
+            tag  = f'<a href="{_esc(url)}">' if url else ""
+            etag = "</a>" if url else ""
+            ttl  = ri.get("title","")
+            ttl_html = (f' <span style="color:#666;font-style:italic">'
+                        f'— {_esc(ttl)}</span>') if ttl else ""
+            parts.append(f"Dwg: {tag}{_esc(name)}{etag}{ttl_html}{rev}{cell}")
+        for p in prot.get("iso_points", []):
+            equip = f" <i>({_esc(p['equipment'])})</i>" if p.get("equipment") else ""
+            notes = f" — {_esc(p['notes'])}" if p.get("notes") else ""
+            parts.append(f"<span style='color:#555'>{_esc(p.get('iso_type','ISO'))} block "
+                         f"{_esc(p.get('reference',''))}{equip}{notes}</span>")
+        if prot.get("mb_enabled"):
+            remote = f" &nbsp;<i>[{_esc(prot['mb_remote'])}]</i>" if prot.get("mb_remote") else ""
+            notes  = f" &nbsp;{_esc(prot['mb_notes'])}"            if prot.get("mb_notes")  else ""
+            parts.append(
+                f'<span style="background:#fff3cd;color:#7d4e00;font-weight:bold;'
+                f'padding:1px 5px;border-radius:3px">'
+                f'&#9888; MB INPUT — also required: block/unblock{remote}{notes}</span>')
+        return "<br>".join(parts)
 
     job_rows = ""
     seq = 1
@@ -1343,18 +1400,18 @@ def generate_html_table(jobs, project="", drawing_registry=None, title_page=None
 
         if jtype in ("REMOVE","ADD"):
             job_rows += tr(jtype, type_labels[jtype],
-                           _ep_html(job.get("start",{})), job.get("wire",""),
-                           _ep_html(job.get("end",{})))
+                           ep_html_r(job.get("start",{})), job.get("wire",""),
+                           ep_html_r(job.get("end",{})))
         elif jtype == "MOVE":
             job_rows += tr("MOVE-REMOVE","Move — Remove",
-                           _ep_html(job.get("start",{})), job.get("wire",""),
-                           _ep_html(job.get("end",{})))
+                           ep_html_r(job.get("start",{})), job.get("wire",""),
+                           ep_html_r(job.get("end",{})))
             job_rows += tr("MOVE-ADD","Move — Add",
-                           _ep_html(job.get("add_start",{})), job.get("add_wire",""),
-                           _ep_html(job.get("add_end",{})))
+                           ep_html_r(job.get("add_start",{})), job.get("add_wire",""),
+                           ep_html_r(job.get("add_end",{})))
         elif jtype in ("BLOCK","UNBLOCK"):
             job_rows += tr(jtype, type_labels[jtype],
-                           _prot_html(job.get("protection",{})), "", "")
+                           prot_html_r(job.get("protection",{})), "", "")
         elif jtype == "TESTING":
             job_rows += tr("TESTING", type_labels.get("TESTING","Testing"),
                            _esc(job.get("notes","")), "", "")
@@ -1379,6 +1436,7 @@ p.meta{{color:#666;margin-top:0;font-size:8pt}}
 table{{border-collapse:collapse;width:100%;margin-bottom:10px}}
 th{{background:#2c3e50;color:#fff;padding:5px 7px;text-align:left;font-size:8pt}}
 td{{padding:4px 7px;border:1px solid #ccc;vertical-align:top;font-size:8pt;line-height:1.4}}
+tr{{break-inside:avoid;page-break-inside:avoid}}
 a{{color:#1a5276}}
 .chk{{text-align:center;padding:3px 4px;width:22px}}
 input[type=checkbox]{{width:14px;height:14px;cursor:pointer;accent-color:#2c3e50}}
