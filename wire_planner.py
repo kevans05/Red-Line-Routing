@@ -1396,8 +1396,10 @@ input[type=checkbox]{{width:14px;height:14px;cursor:pointer;accent-color:#2c3e50
   a{{color:#000;text-decoration:none}}
   input[type=checkbox]{{-webkit-appearance:none;appearance:none;border:1.5px solid #444;
     width:11px;height:11px;display:inline-block;vertical-align:middle}}
+  tr.done td{{text-decoration:line-through;opacity:0.55}}
   @page{{size:A3 landscape;margin:14mm 8mm 12mm 8mm}}
 }}
+tr.done td{{text-decoration:line-through;opacity:0.6}}
 </style></head><body>
 <div class="print-header">
   <span><b>{_esc(title)}</b></span>
@@ -1414,6 +1416,18 @@ input[type=checkbox]{{width:14px;height:14px;cursor:pointer;accent-color:#2c3e50
 <th style="width:95px">Wire</th><th style="width:24%">End Point / Device</th>
 </tr></thead><tbody>{job_rows}</tbody></table>
 <p style="font-size:7pt;color:#aaa">Ctrl+P → Save as PDF</p>
+<script>
+document.querySelectorAll('input[type=checkbox]').forEach(function(cb){{
+  cb.addEventListener('change', function(){{
+    var tr = this.closest('tr');
+    if(this.checked){{
+      tr.classList.add('done');
+    }} else {{
+      tr.classList.remove('done');
+    }}
+  }});
+}});
+</script>
 </body></html>"""
 
 
