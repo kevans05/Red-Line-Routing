@@ -43,7 +43,7 @@ def empty_endpoint():
 
 def empty_protection():
     return {"equipment": "", "location": "", "panel": "", "notes": "",
-            "drawings": [], "iso_points": []}
+            "drawings": [], "iso_points": [], "mb_enabled": False, "mb_remote": ""}
 
 
 def empty_job(job_type="REMOVE"):
@@ -509,9 +509,10 @@ class MultiIsoFrame(ttk.LabelFrame):
 # ──────────────────────────────────────────────────────────────────
 
 class ProtectionFrame(ttk.LabelFrame):
-    def __init__(self, parent, title, registry=None, **kwargs):
+    def __init__(self, parent, title, registry=None, job_type="BLOCK", **kwargs):
         super().__init__(parent, text=title, padding=6, **kwargs)
         self.registry = registry if registry is not None else {}
+        self.job_type = job_type
         self.vars = {}
         self._build()
 
@@ -523,16 +524,56 @@ class ProtectionFrame(ttk.LabelFrame):
             var = tk.StringVar()
             self.vars[key] = var
             ttk.Entry(self, textvariable=var, width=36).grid(row=row, column=1, sticky="ew", pady=1)
+        n = len(fields)
         self.multi_draw = MultiDrawingFrame(self, registry=self.registry)
-        self.multi_draw.grid(row=len(fields), column=0, columnspan=2, sticky="ew", pady=(8, 2))
+        self.multi_draw.grid(row=n, column=0, columnspan=2, sticky="ew", pady=(8, 2))
         self.multi_iso = MultiIsoFrame(self)
-        self.multi_iso.grid(row=len(fields)+1, column=0, columnspan=2, sticky="ew", pady=(4, 0))
+        self.multi_iso.grid(row=n+1, column=0, columnspan=2, sticky="ew", pady=(4, 2))
+
+        # ── Mirrored Bit section ──────────────────────────────────
+        mb_outer = ttk.LabelFrame(self, text="Mirrored Bit (MB)", padding=4)
+        mb_outer.grid(row=n+2, column=0, columnspan=2, sticky="ew", pady=(6, 0))
+
+        self.mb_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(mb_outer, text="This protection uses a Mirrored Bit scheme",
+                        variable=self.mb_var,
+                        command=self._update_mb_state).grid(row=0, column=0, columnspan=2,
+                                                            sticky="w", pady=(0, 2))
+
+        ttk.Label(mb_outer, text="Remote relay / device:").grid(
+            row=1, column=0, sticky="e", padx=(0, 4), pady=2)
+        self.mb_remote_var = tk.StringVar()
+        ttk.Entry(mb_outer, textvariable=self.mb_remote_var, width=32).grid(
+            row=1, column=1, sticky="ew", pady=2)
+        mb_outer.columnconfigure(1, weight=1)
+
+        # Warning banner (visible only when MB checkbox is ticked)
+        action = "BLOCK MB INPUT" if self.job_type == "BLOCK" else "UNBLOCK MB INPUT"
+        self._mb_banner = tk.Frame(mb_outer, bg="#fff3cd", relief="solid", bd=1)
+        self._mb_banner.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(4, 0))
+        self._mb_banner_label = tk.Label(
+            self._mb_banner,
+            text=f"⚠  Also required:  {action}  on the remote relay",
+            bg="#fff3cd", fg="#7d4e00",
+            font=("", 10, "bold"),
+            pady=5, padx=8)
+        self._mb_banner_label.pack(fill="x")
+        self._mb_banner.grid_remove()   # hidden until checkbox ticked
+
         self.columnconfigure(1, weight=1)
+
+    def _update_mb_state(self, *_):
+        if self.mb_var.get():
+            self._mb_banner.grid()
+        else:
+            self._mb_banner.grid_remove()
 
     def get(self):
         result = {k: v.get().strip() for k, v in self.vars.items()}
         result["drawings"]   = self.multi_draw.get()
         result["iso_points"] = self.multi_iso.get()
+        result["mb_enabled"] = self.mb_var.get()
+        result["mb_remote"]  = self.mb_remote_var.get().strip()
         return result
 
     def set(self, data):
@@ -540,6 +581,9 @@ class ProtectionFrame(ttk.LabelFrame):
             v.set(data.get(k, ""))
         self.multi_draw.set(_get_prot_drawings(data))
         self.multi_iso.set(data.get("iso_points", []))
+        self.mb_var.set(bool(data.get("mb_enabled", False)))
+        self.mb_remote_var.set(data.get("mb_remote", ""))
+        self._update_mb_state()
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -673,7 +717,8 @@ class JobDialog(tk.Toplevel):
         elif self.job_type in ("BLOCK","UNBLOCK"):
             lbl = "BLOCK PROTECTION" if self.job_type == "BLOCK" else "UNBLOCK PROTECTION"
             self._section_label(f, row, f"── {lbl} ──", color); row += 2
-            self.ep_prot = ProtectionFrame(f, "Equipment / Device", registry=self.registry)
+            self.ep_prot = ProtectionFrame(f, "Equipment / Device",
+                                           registry=self.registry, job_type=self.job_type)
             self.ep_prot.grid(row=row, column=0, columnspan=2, sticky="ew", pady=2)
             self.ep_prot.set(ex.get("protection",{}))
 
@@ -812,6 +857,10 @@ def _prot_block(prot, label):
             equip = f"  ({p['equipment']})" if p.get("equipment") else ""
             notes = f"  — {p['notes']}" if p.get("notes") else ""
             lines.append(f"      {p.get('iso_type','ISO')} block  {p.get('reference','')}{equip}{notes}")
+    if prot.get("mb_enabled"):
+        lines.append("")
+        remote = f"  Remote: {prot['mb_remote']}" if prot.get("mb_remote") else ""
+        lines.append(f"  *** MIRRORED BIT — also required: MB INPUT block/unblock{remote} ***")
     return "\n".join(lines)
 
 def format_job(index, job):
@@ -888,6 +937,9 @@ def _prot_summary(prot):
     for p in prot.get("iso_points", []):
         equip = f" ({p['equipment']})" if p.get("equipment") else ""
         parts.append(f"{p.get('iso_type','ISO')} {p.get('reference','')}{equip}")
+    if prot.get("mb_enabled"):
+        remote = f" [{prot['mb_remote']}]" if prot.get("mb_remote") else ""
+        parts.append(f"⚠ MB INPUT req.{remote}")
     return "  |  ".join(parts)
 
 def generate_table(jobs, project="", drawing_registry=None):
@@ -995,6 +1047,12 @@ def _prot_html(prot):
         notes = f" — {_esc(p['notes'])}" if p.get("notes") else ""
         parts.append(f"<span style='color:#555'>{_esc(p.get('iso_type','ISO'))} block "
                      f"{_esc(p.get('reference',''))}{equip}{notes}</span>")
+    if prot.get("mb_enabled"):
+        remote = f" &nbsp;<i>[{_esc(prot['mb_remote'])}]</i>" if prot.get("mb_remote") else ""
+        parts.append(
+            f'<span style="background:#fff3cd;color:#7d4e00;font-weight:bold;'
+            f'padding:1px 5px;border-radius:3px">'
+            f'&#9888; MB INPUT — also required: block/unblock{remote}</span>')
     return "<br>".join(parts)
 
 def generate_html_table(jobs, project="", drawing_registry=None):
