@@ -24,13 +24,10 @@ from datetime import datetime
 
 def is_h_type_drawing(name):
     """Return True if drawing type character Y == 'H'.
-    Format: XXXX-YZZ-IIII-N  or  YZZ-IIII-N
-    Y is the first character of the segment that looks like a type code."""
+    Format: XXXX-YZZ-IIII-N  or  YZZ-IIII-N"""
     if not name:
         return False
     parts = name.strip().split("-")
-    # 4-part format: site-type-serial-sheet → type segment is parts[1]
-    # 3-part format: type-serial-sheet      → type segment is parts[0]
     type_seg = parts[1] if len(parts) >= 4 else parts[0]
     return bool(type_seg) and type_seg[0].upper() == "H"
 
@@ -45,7 +42,8 @@ def empty_endpoint():
 
 
 def empty_protection():
-    return {"equipment": "", "location": "", "panel": "", "notes": "", "drawings": []}
+    return {"equipment": "", "location": "", "panel": "", "notes": "",
+            "drawings": [], "iso_points": []}
 
 
 def empty_job(job_type="REMOVE"):
@@ -76,14 +74,17 @@ def _get_prot_drawings(prot):
 # ──────────────────────────────────────────────────────────────────
 
 class DrawingAwareFrame(ttk.LabelFrame):
-    """LabelFrame with autofill from registry. Drawing Cell enabled only for H-type drawings."""
+    """LabelFrame with autofill from registry. Drawing Cell enabled only for H-type drawings.
+    Fields in HISTORY_KEYS get a history-backed Combobox instead of a plain Entry."""
 
-    FIELDS = []  # subclasses define
+    FIELDS = []          # subclasses define
+    HISTORY_KEYS = ()    # keys that use history Combobox
 
-    def __init__(self, parent, title, registry=None, **kwargs):
+    def __init__(self, parent, title, registry=None, history=None, **kwargs):
         super().__init__(parent, text=title, padding=6, **kwargs)
         self.vars = {}
         self.registry = registry if registry is not None else {}
+        self.history  = history  if history  is not None else {}
         self._drawing_combo = None
         self._cell_entry = None
         self._build()
@@ -107,6 +108,12 @@ class DrawingAwareFrame(ttk.LabelFrame):
                 entry = ttk.Entry(self, textvariable=var, width=28)
                 entry.grid(row=row_idx, column=1, sticky="ew", pady=1)
                 self._cell_entry = entry
+            elif key in self.HISTORY_KEYS:
+                combo = ttk.Combobox(self, textvariable=var, width=28)
+                hkey = key
+                combo["postcommand"] = lambda k=hkey, c=combo: c.__setitem__(
+                    "values", self.history.get(k, []))
+                combo.grid(row=row_idx, column=1, sticky="ew", pady=1)
             else:
                 entry = ttk.Entry(self, textvariable=var, width=28)
                 entry.grid(row=row_idx, column=1, sticky="ew", pady=1)
@@ -186,6 +193,7 @@ class EndpointFrame(DrawingAwareFrame):
         ("drawing_url",  "Drawing URL"),
         ("drawing_cell", "Drawing Cell"),
     ]
+    HISTORY_KEYS = ("device", "location", "pin", "panel")
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -295,6 +303,69 @@ class DrawingEntryDialog(tk.Toplevel):
 
 
 # ──────────────────────────────────────────────────────────────────
+# Mini-dialog: enter one ISO/FT isolation point
+# ──────────────────────────────────────────────────────────────────
+
+class IsoPointDialog(tk.Toplevel):
+    """Dialog for a single ISO or FT isolation point entry."""
+    def __init__(self, parent, existing=None):
+        super().__init__(parent)
+        self.title("Edit Isolation Point" if existing else "Add Isolation Point")
+        self.result = None
+        self.resizable(False, False)
+        self._build(existing or {})
+        self.grab_set()
+        self.wait_window()
+
+    def _build(self, ex):
+        f = ttk.Frame(self, padding=12)
+        f.pack(fill="both", expand=True)
+
+        ttk.Label(f, text="Type:").grid(row=0, column=0, sticky="e", padx=(0, 6), pady=4)
+        self.type_var = tk.StringVar(value=ex.get("iso_type", "ISO"))
+        type_combo = ttk.Combobox(f, textvariable=self.type_var, width=8,
+                                  values=["ISO", "FT"], state="readonly")
+        type_combo.grid(row=0, column=1, sticky="w", pady=4)
+
+        ttk.Label(f, text="Reference:").grid(row=1, column=0, sticky="e", padx=(0, 6), pady=4)
+        self.ref_var = tk.StringVar(value=ex.get("reference", ""))
+        ttk.Entry(f, textvariable=self.ref_var, width=34).grid(row=1, column=1, sticky="ew", pady=4)
+
+        ttk.Label(f, text="Equipment:").grid(row=2, column=0, sticky="e", padx=(0, 6), pady=4)
+        self.equip_var = tk.StringVar(value=ex.get("equipment", ""))
+        ttk.Entry(f, textvariable=self.equip_var, width=34).grid(row=2, column=1, sticky="ew", pady=4)
+
+        ttk.Label(f, text="Notes:").grid(row=3, column=0, sticky="e", padx=(0, 6), pady=4)
+        self.notes_var = tk.StringVar(value=ex.get("notes", ""))
+        ttk.Entry(f, textvariable=self.notes_var, width=34).grid(row=3, column=1, sticky="ew", pady=4)
+
+        f.columnconfigure(1, weight=1)
+
+        hint = ttk.Label(f, text='e.g. Type=ISO  Reference="29L-1 54"  Equipment="2L79 OUT308"',
+                         foreground="grey", font=("", 8))
+        hint.grid(row=4, column=0, columnspan=2, sticky="w", pady=(4, 0))
+
+        br = ttk.Frame(self)
+        br.pack(fill="x", padx=10, pady=(0, 8))
+        ttk.Button(br, text="Cancel", command=self.destroy).pack(side="right", padx=2)
+        ttk.Button(br, text="Save",   command=self._save).pack(side="right", padx=2)
+        self.geometry("420x230")
+
+    def _save(self):
+        ref = self.ref_var.get().strip()
+        if not ref:
+            messagebox.showwarning("Required", "Reference is required.", parent=self)
+            return
+        self.result = {
+            "iso_type":  self.type_var.get().strip(),
+            "reference": ref,
+            "equipment": self.equip_var.get().strip(),
+            "notes":     self.notes_var.get().strip(),
+        }
+        self.destroy()
+
+
+# ──────────────────────────────────────────────────────────────────
 # Multiple-drawings list widget (for Block/Unblock)
 # ──────────────────────────────────────────────────────────────────
 
@@ -365,7 +436,76 @@ class MultiDrawingFrame(ttk.LabelFrame):
 
 
 # ──────────────────────────────────────────────────────────────────
-# Protection frame (Block/Unblock: equipment + multiple drawings)
+# Multiple ISO/FT points widget (for Block/Unblock)
+# ──────────────────────────────────────────────────────────────────
+
+class MultiIsoFrame(ttk.LabelFrame):
+    def __init__(self, parent, **kwargs):
+        super().__init__(parent, text="Isolation / Field Termination Points", padding=4, **kwargs)
+        self._points = []
+        self._build()
+
+    def _build(self):
+        cols = ("Type", "Reference", "Equipment", "Notes")
+        self.tree = ttk.Treeview(self, columns=cols, show="headings", height=3)
+        self.tree.heading("Type",      text="Type")
+        self.tree.heading("Reference", text="Reference")
+        self.tree.heading("Equipment", text="Equipment")
+        self.tree.heading("Notes",     text="Notes")
+        self.tree.column("Type",      width=44,  stretch=False)
+        self.tree.column("Reference", width=120, stretch=False)
+        self.tree.column("Equipment", width=130, stretch=False)
+        self.tree.column("Notes",     width=200)
+        self.tree.pack(fill="x", expand=False)
+        self.tree.bind("<Double-1>", lambda _: self._edit())
+
+        bf = ttk.Frame(self)
+        bf.pack(fill="x", pady=(3, 0))
+        ttk.Button(bf, text="+ Add ISO/FT Point", command=self._add).pack(side="left", padx=2)
+        ttk.Button(bf, text="Edit",               command=self._edit).pack(side="left", padx=2)
+        ttk.Button(bf, text="Remove",             command=self._remove).pack(side="left", padx=2)
+
+    def _refresh(self):
+        for iid in self.tree.get_children():
+            self.tree.delete(iid)
+        for p in self._points:
+            self.tree.insert("", "end", values=(
+                p.get("iso_type", "ISO"), p.get("reference", ""),
+                p.get("equipment", ""),  p.get("notes", "")))
+
+    def _add(self):
+        dlg = IsoPointDialog(self)
+        if dlg.result:
+            self._points.append(dlg.result)
+            self._refresh()
+
+    def _edit(self):
+        sel = self.tree.selection()
+        if not sel:
+            return
+        idx = self.tree.index(sel[0])
+        dlg = IsoPointDialog(self, existing=self._points[idx])
+        if dlg.result:
+            self._points[idx] = dlg.result
+            self._refresh()
+
+    def _remove(self):
+        sel = self.tree.selection()
+        if not sel:
+            return
+        self._points.pop(self.tree.index(sel[0]))
+        self._refresh()
+
+    def get(self):
+        return list(self._points)
+
+    def set(self, points_list):
+        self._points = list(points_list or [])
+        self._refresh()
+
+
+# ──────────────────────────────────────────────────────────────────
+# Protection frame (Block/Unblock: equipment + drawings + ISO points)
 # ──────────────────────────────────────────────────────────────────
 
 class ProtectionFrame(ttk.LabelFrame):
@@ -384,18 +524,22 @@ class ProtectionFrame(ttk.LabelFrame):
             self.vars[key] = var
             ttk.Entry(self, textvariable=var, width=36).grid(row=row, column=1, sticky="ew", pady=1)
         self.multi_draw = MultiDrawingFrame(self, registry=self.registry)
-        self.multi_draw.grid(row=len(fields), column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        self.multi_draw.grid(row=len(fields), column=0, columnspan=2, sticky="ew", pady=(8, 2))
+        self.multi_iso = MultiIsoFrame(self)
+        self.multi_iso.grid(row=len(fields)+1, column=0, columnspan=2, sticky="ew", pady=(4, 0))
         self.columnconfigure(1, weight=1)
 
     def get(self):
         result = {k: v.get().strip() for k, v in self.vars.items()}
-        result["drawings"] = self.multi_draw.get()
+        result["drawings"]   = self.multi_draw.get()
+        result["iso_points"] = self.multi_iso.get()
         return result
 
     def set(self, data):
         for k, v in self.vars.items():
             v.set(data.get(k, ""))
         self.multi_draw.set(_get_prot_drawings(data))
+        self.multi_iso.set(data.get("iso_points", []))
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -406,12 +550,13 @@ class JobDialog(tk.Toplevel):
     TYPE_COLOR = {"REMOVE":"#c0392b","ADD":"#27ae60","MOVE":"#2980b9",
                   "BLOCK":"#d35400","UNBLOCK":"#16a085"}
 
-    def __init__(self, parent, job_type, existing=None, registry=None):
+    def __init__(self, parent, job_type, existing=None, registry=None, history=None):
         super().__init__(parent)
         self.title(f"{'Edit' if existing else 'Add'} — {job_type}")
         self.result = None
         self.job_type = job_type
         self.registry = registry if registry is not None else {}
+        self.history  = history  if history  is not None else {}
         self.resizable(True, True)
         self._build(existing)
         self.grab_set()
@@ -435,7 +580,6 @@ class JobDialog(tk.Toplevel):
         inner.bind("<Configure>", _resize)
         canvas.bind("<Configure>", _resize)
 
-        # Scroll fix: try/except + unbind on dialog destroy
         def _scroll(e):
             try:
                 canvas.yview_scroll(-1 * (e.delta // 120), "units")
@@ -453,13 +597,19 @@ class JobDialog(tk.Toplevel):
         ttk.Button(btn_row, text="Cancel", command=self.destroy).pack(side="right", padx=2)
         ttk.Button(btn_row, text="Save",   command=self._save).pack(side="right", padx=2)
 
-        self.geometry("660x560" if self.job_type in ("BLOCK","UNBLOCK") else "960x640")
+        self.geometry("660x600" if self.job_type in ("BLOCK","UNBLOCK") else "960x640")
 
     def _section_label(self, parent, row, text, color):
         ttk.Separator(parent, orient="horizontal").grid(
             row=row, column=0, columnspan=2, sticky="ew", pady=(8,2))
         tk.Label(parent, text=text, foreground=color, font=("",10,"bold"), bg="#f0f0f0").grid(
             row=row+1, column=0, columnspan=2, pady=(0,4))
+
+    def _wire_combo(self, parent, var):
+        """Return a wire-label Combobox backed by history."""
+        combo = ttk.Combobox(parent, textvariable=var, width=30)
+        combo["postcommand"] = lambda: combo.__setitem__("values", self.history.get("wire", []))
+        return combo
 
     def _fill_form(self, f, existing):
         row = 0
@@ -475,41 +625,47 @@ class JobDialog(tk.Toplevel):
 
         if self.job_type in ("REMOVE","ADD"):
             self._section_label(f, row, f"── {self.job_type} WIRE ──", color); row += 2
-            self.ep_start = EndpointFrame(f, "Start Point / Device", registry=self.registry)
+            self.ep_start = EndpointFrame(f, "Start Point / Device",
+                                          registry=self.registry, history=self.history)
             self.ep_start.grid(row=row, column=0, sticky="nsew", padx=(0,4), pady=2)
             self.ep_start.set(ex.get("start",{}))
-            self.ep_end = EndpointFrame(f, "End Point / Device", registry=self.registry)
+            self.ep_end = EndpointFrame(f, "End Point / Device",
+                                        registry=self.registry, history=self.history)
             self.ep_end.grid(row=row, column=1, sticky="nsew", padx=(4,0), pady=2)
             self.ep_end.set(ex.get("end",{}))
             row += 1
             ttk.Label(f, text="Wire Label / ID:").grid(row=row, column=0, sticky="e", padx=(0,6), pady=(6,2))
             self.wire_var = tk.StringVar(value=ex.get("wire",""))
-            ttk.Entry(f, textvariable=self.wire_var, width=30).grid(row=row, column=1, sticky="w", pady=(6,2))
+            self._wire_combo(f, self.wire_var).grid(row=row, column=1, sticky="w", pady=(6,2))
 
         elif self.job_type == "MOVE":
             self._section_label(f, row, "── REMOVE (Wire Being Moved) ──", "#c0392b"); row += 2
-            self.ep_rem_start = EndpointFrame(f, "Remove: Start", registry=self.registry)
+            self.ep_rem_start = EndpointFrame(f, "Remove: Start",
+                                              registry=self.registry, history=self.history)
             self.ep_rem_start.grid(row=row, column=0, sticky="nsew", padx=(0,4), pady=2)
             self.ep_rem_start.set(ex.get("start",{}))
-            self.ep_rem_end = EndpointFrame(f, "Remove: End", registry=self.registry)
+            self.ep_rem_end = EndpointFrame(f, "Remove: End",
+                                            registry=self.registry, history=self.history)
             self.ep_rem_end.grid(row=row, column=1, sticky="nsew", padx=(4,0), pady=2)
             self.ep_rem_end.set(ex.get("end",{}))
             row += 1
             ttk.Label(f, text="Wire Label / ID (Remove):").grid(row=row, column=0, sticky="e", padx=(0,6), pady=(6,2))
             self.wire_var = tk.StringVar(value=ex.get("wire",""))
-            ttk.Entry(f, textvariable=self.wire_var, width=30).grid(row=row, column=1, sticky="w", pady=(6,2))
+            self._wire_combo(f, self.wire_var).grid(row=row, column=1, sticky="w", pady=(6,2))
             row += 1
             self._section_label(f, row, "── ADD (New Wire Location) ──", "#27ae60"); row += 2
-            self.ep_add_start = EndpointFrame(f, "Add: Start", registry=self.registry)
+            self.ep_add_start = EndpointFrame(f, "Add: Start",
+                                              registry=self.registry, history=self.history)
             self.ep_add_start.grid(row=row, column=0, sticky="nsew", padx=(0,4), pady=2)
             self.ep_add_start.set(ex.get("add_start",{}))
-            self.ep_add_end = EndpointFrame(f, "Add: End", registry=self.registry)
+            self.ep_add_end = EndpointFrame(f, "Add: End",
+                                            registry=self.registry, history=self.history)
             self.ep_add_end.grid(row=row, column=1, sticky="nsew", padx=(4,0), pady=2)
             self.ep_add_end.set(ex.get("add_end",{}))
             row += 1
             ttk.Label(f, text="Wire Label / ID (Add):").grid(row=row, column=0, sticky="e", padx=(0,6), pady=(6,2))
             self.add_wire_var = tk.StringVar(value=ex.get("add_wire",""))
-            ttk.Entry(f, textvariable=self.add_wire_var, width=30).grid(row=row, column=1, sticky="w", pady=(6,2))
+            self._wire_combo(f, self.add_wire_var).grid(row=row, column=1, sticky="w", pady=(6,2))
 
         elif self.job_type in ("BLOCK","UNBLOCK"):
             lbl = "BLOCK PROTECTION" if self.job_type == "BLOCK" else "UNBLOCK PROTECTION"
@@ -617,6 +773,14 @@ def _prot_block(prot, label):
             if d.get("drawing_rev"):  lines.append(f"      Rev     : {d['drawing_rev']}")
             if d.get("drawing_url"):  lines.append(f"      URL     : {d['drawing_url']}")
             if d.get("drawing_cell"): lines.append(f"      Cell    : {d['drawing_cell']}")
+    iso_points = prot.get("iso_points", [])
+    if iso_points:
+        lines.append("")
+        lines.append("    Isolation / FT Points")
+        for p in iso_points:
+            equip = f"  ({p['equipment']})" if p.get("equipment") else ""
+            notes = f"  — {p['notes']}" if p.get("notes") else ""
+            lines.append(f"      {p.get('iso_type','ISO')} block  {p.get('reference','')}{equip}{notes}")
     return "\n".join(lines)
 
 def format_job(index, job):
@@ -690,6 +854,9 @@ def _prot_summary(prot):
         rev  = f" Rev{d['drawing_rev']}"  if d.get("drawing_rev")  else ""
         cell = f" [{d['drawing_cell']}]"  if d.get("drawing_cell") else ""
         parts.append(f"Dwg {d.get('drawing','')}{rev}{cell}")
+    for p in prot.get("iso_points", []):
+        equip = f" ({p['equipment']})" if p.get("equipment") else ""
+        parts.append(f"{p.get('iso_type','ISO')} {p.get('reference','')}{equip}")
     return "  |  ".join(parts)
 
 def generate_table(jobs, project="", drawing_registry=None):
@@ -792,25 +959,31 @@ def _prot_html(prot):
         tag  = f'<a href="{_esc(url)}">' if url else ""
         etag = "</a>" if url else ""
         parts.append(f"Dwg: {tag}{_esc(d.get('drawing',''))}{rev}{etag}{cell}")
+    for p in prot.get("iso_points", []):
+        equip = f" <i>({_esc(p['equipment'])})</i>" if p.get("equipment") else ""
+        notes = f" — {_esc(p['notes'])}" if p.get("notes") else ""
+        parts.append(f"<span style='color:#555'>{_esc(p.get('iso_type','ISO'))} block "
+                     f"{_esc(p.get('reference',''))}{equip}{notes}</span>")
     return "<br>".join(parts)
 
 def generate_html_table(jobs, project="", drawing_registry=None):
     now   = datetime.now().strftime("%Y-%m-%d %H:%M")
     title = "Wire Work Plan" + (f" — {project}" if project else "")
 
-    # Drawings section
     drw_html = ""
     if drawing_registry:
+        def _url_cell(info):
+            u = info.get("url","")
+            return f'<a href="{_esc(u)}">{_esc(u)}</a>' if u else ""
         rows = "".join(
             f"<tr><td>{_esc(n)}</td><td>{_esc(i.get('rev',''))}</td>"
-            f"<td>{'<a href=\"'+_esc(i['url'])+'\">'+_esc(i['url'])+'</a>' if i.get('url') else ''}</td>"
+            f"<td>{_url_cell(i)}</td>"
             f"<td>{_esc(i.get('notes',''))}</td></tr>"
             for n,i in sorted(drawing_registry.items()))
         drw_html = (f"<h2>Project Drawings</h2><table>"
                     f"<thead><tr><th>Drawing</th><th>Rev</th><th>URL</th><th>Notes</th></tr></thead>"
                     f"<tbody>{rows}</tbody></table><br>")
 
-    # Job rows
     job_rows = ""
     seq = 1
     type_labels = {"REMOVE":"Remove Wire","ADD":"Add Wire","MOVE":"Move Wire",
@@ -846,8 +1019,12 @@ def generate_html_table(jobs, project="", drawing_registry=None):
             job_rows += tr(jtype, type_labels[jtype],
                            _prot_html(job.get("protection",{})), "", "")
 
+    def _leg_span(k, lbl):
+        bg = _ROW_STYLE[k][0]
+        fg = _ROW_STYLE[k][1].split(";")[0].replace("color:", "")
+        return f'<span class="leg" style="{bg};color:{fg}">{lbl}</span>'
     legend = "".join(
-        f'<span class="leg" style="{_ROW_STYLE[k][0]};color:{_ROW_STYLE[k][1].split(\";\")[0].replace(\"color:\",\"\")}">{lbl}</span>'
+        _leg_span(k, lbl)
         for k,lbl in [("REMOVE","Remove Wire"),("ADD","Add Wire"),
                       ("MOVE-REMOVE","Move — Remove"),("MOVE-ADD","Move — Add"),
                       ("BLOCK","Block Protection"),("UNBLOCK","Unblock Protection")])
@@ -895,8 +1072,39 @@ class WirePlannerApp(tk.Tk):
         self.jobs = []
         self.drawing_registry = {}
         self.current_file = None
+        # Per-field autocomplete history (device / location / pin / panel / wire)
+        self.history = {"device": [], "location": [], "pin": [], "panel": [], "wire": []}
         self._build_menu()
         self._build_ui()
+
+    # ── History helpers ───────────────────────────────────────────
+
+    def _add_to_history(self, key, value):
+        value = value.strip()
+        if not value:
+            return
+        lst = self.history.setdefault(key, [])
+        if value in lst:
+            lst.remove(value)
+        lst.insert(0, value)
+        # cap at 60 entries per key
+        self.history[key] = lst[:60]
+
+    def _collect_history(self, job):
+        """Extract device/location/pin/panel/wire values from a job into history."""
+        for ep_key in ("start", "end", "add_start", "add_end"):
+            ep = job.get(ep_key) or {}
+            for k in ("device", "location", "pin", "panel"):
+                self._add_to_history(k, ep.get(k, ""))
+        for wire_key in ("wire", "add_wire"):
+            self._add_to_history("wire", job.get(wire_key, ""))
+
+    def _rebuild_history(self):
+        """Rebuild history from all loaded jobs."""
+        for job in self.jobs:
+            self._collect_history(job)
+
+    # ── Menu ──────────────────────────────────────────────────────
 
     def _build_menu(self):
         mb = tk.Menu(self)
@@ -940,9 +1148,12 @@ class WirePlannerApp(tk.Tk):
         tb2 = ttk.Frame(self,padding=(6,0,6,4)); tb2.pack(fill="x")
         tk.Button(tb2,text="Combine 2 → Move",fg="white",bg="#7d3c98",relief="flat",
                   padx=7,pady=3,cursor="hand2",command=self._combine_jobs).pack(side="left",padx=2)
-        ttk.Label(tb2,text="(Ctrl+click 2)",foreground="grey").pack(side="left",padx=(0,10))
+        ttk.Label(tb2,text="(Ctrl+click 2)",foreground="grey").pack(side="left",padx=(0,6))
         tk.Button(tb2,text="Split Move → 2",fg="white",bg="#7f8c8d",relief="flat",
                   padx=7,pady=3,cursor="hand2",command=self._split_job).pack(side="left",padx=2)
+        ttk.Button(tb2,text="Swap ↔ Start/End",command=self._swap_endpoints).pack(side="left",padx=(8,2))
+        tk.Button(tb2,text="Auto-Group by Device",fg="white",bg="#1a6b8a",relief="flat",
+                  padx=7,pady=3,cursor="hand2",command=self._auto_group).pack(side="left",padx=2)
         ttk.Button(tb2,text="HTML / PDF",  command=self._export_html).pack(side="right",padx=2)
         ttk.Button(tb2,text="Export CSV",  command=self._export_csv).pack(side="right",padx=2)
         ttk.Button(tb2,text="Export Table",command=self._export_table).pack(side="right",padx=2)
@@ -1084,16 +1295,19 @@ class WirePlannerApp(tk.Tk):
     # ── CRUD ─────────────────────────────────────────────────────
 
     def _add_job(self, job_type):
-        dlg = JobDialog(self, job_type, registry=self.drawing_registry)
+        dlg = JobDialog(self, job_type, registry=self.drawing_registry, history=self.history)
         if dlg.result:
+            self._collect_history(dlg.result)
             self.jobs.append(dlg.result); self._refresh_list(); self._refresh_drawings_list()
             idx = len(self.jobs)-1; self.tree.selection_set(str(idx)); self._on_select()
 
     def _edit_job(self):
         idx = self._selected_idx()
         if idx is None: messagebox.showinfo("Select a Job","Please select a job from the list."); return
-        dlg = JobDialog(self,self.jobs[idx]["type"],existing=deepcopy(self.jobs[idx]),registry=self.drawing_registry)
+        dlg = JobDialog(self,self.jobs[idx]["type"],existing=deepcopy(self.jobs[idx]),
+                        registry=self.drawing_registry, history=self.history)
         if dlg.result:
+            self._collect_history(dlg.result)
             self.jobs[idx]=dlg.result; self._refresh_list(); self._refresh_drawings_list()
             self.tree.selection_set(str(idx)); self._on_select()
 
@@ -1161,6 +1375,60 @@ class WirePlannerApp(tk.Tk):
         self._refresh_list(); self.tree.selection_set(str(idx)); self._on_select()
         self.status_var.set(f"MOVE split into REMOVE #{idx+1} and ADD #{idx+2}.")
 
+    # ── Swap start ↔ end ─────────────────────────────────────────
+
+    def _swap_endpoints(self):
+        idx = self._selected_idx()
+        if idx is None:
+            messagebox.showinfo("Swap","Select a REMOVE or ADD job to swap its start and end."); return
+        job = self.jobs[idx]
+        if job["type"] not in ("REMOVE","ADD"):
+            messagebox.showinfo("Swap","Only REMOVE and ADD jobs support swapping endpoints."); return
+        job["start"], job["end"] = deepcopy(job["end"]), deepcopy(job["start"])
+        self._refresh_list(); self.tree.selection_set(str(idx)); self._on_select()
+        self.status_var.set(f"Job #{idx+1}: start and end endpoints swapped.")
+
+    # ── Auto-group by device ──────────────────────────────────────
+
+    def _auto_group(self):
+        if not self.jobs:
+            return
+
+        def get_devices(job):
+            devs = set()
+            for k in ("start","end","add_start","add_end"):
+                d = (job.get(k) or {}).get("device","").strip().upper()
+                if d:
+                    devs.add(d)
+            return devs
+
+        def group_pool(pool):
+            """Greedy clustering: pull jobs with shared devices together."""
+            grouped, used = [], set()
+            for i, job in enumerate(pool):
+                if i in used:
+                    continue
+                used.add(i)
+                grouped.append(job)
+                devs = get_devices(job)
+                for j, job2 in enumerate(pool):
+                    if j in used:
+                        continue
+                    if get_devices(job2) & devs:
+                        used.add(j)
+                        grouped.append(job2)
+                        devs |= get_devices(job2)
+            return grouped
+
+        removes = [j for j in self.jobs if j["type"] == "REMOVE"]
+        adds    = [j for j in self.jobs if j["type"] == "ADD"]
+        others  = [j for j in self.jobs if j["type"] not in ("REMOVE","ADD")]
+
+        self.jobs = group_pool(removes) + group_pool(adds) + others
+        self._refresh_list()
+        self.status_var.set(
+            f"Auto-grouped: {len(removes)} remove(s) and {len(adds)} add(s) sorted by shared device.")
+
     # ── Reports ───────────────────────────────────────────────────
 
     def _preview_report(self):
@@ -1219,6 +1487,7 @@ class WirePlannerApp(tk.Tk):
     def _new_plan(self):
         if self.jobs and not messagebox.askyesno("New Plan","Discard current plan and start fresh?"): return
         self.jobs=[]; self.drawing_registry={}; self.current_file=None; self.project_var.set("")
+        self.history = {"device": [], "location": [], "pin": [], "panel": [], "wire": []}
         self._refresh_list(); self._refresh_drawings_list()
         self.preview.configure(state="normal"); self.preview.delete("1.0","end"); self.preview.configure(state="disabled")
 
@@ -1228,8 +1497,12 @@ class WirePlannerApp(tk.Tk):
         try:
             with open(path,encoding="utf-8") as fh: data = json.load(fh)
             self.jobs = data.get("jobs",[]); self.project_var.set(data.get("project",""))
-            self.drawing_registry = data.get("drawing_registry",{}); self.current_file = path
-            self._scan_jobs_for_drawings(); self._refresh_list(); self._refresh_drawings_list()
+            self.drawing_registry = data.get("drawing_registry",{})
+            self.history = data.get("history", {"device":[],"location":[],"pin":[],"panel":[],"wire":[]})
+            self.current_file = path
+            self._scan_jobs_for_drawings()
+            self._rebuild_history()
+            self._refresh_list(); self._refresh_drawings_list()
         except Exception as exc: messagebox.showerror("Open Error",str(exc))
 
     def _save(self):
@@ -1245,7 +1518,9 @@ class WirePlannerApp(tk.Tk):
         try:
             with open(path,"w",encoding="utf-8") as fh:
                 json.dump({"project":self.project_var.get().strip(),
-                           "drawing_registry":self.drawing_registry,"jobs":self.jobs},fh,indent=2)
+                           "drawing_registry":self.drawing_registry,
+                           "history":self.history,
+                           "jobs":self.jobs},fh,indent=2)
             self._update_status()
         except Exception as exc: messagebox.showerror("Save Error",str(exc))
 
