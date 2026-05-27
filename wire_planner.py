@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-Wire Work Planner
------------------
-Plan and print electrical wire removal, addition, and move jobs.
-Save/load work plans as .wirePlan files (JSON).
-Export detailed report (text), table (text/CSV), or colour-coded HTML (print→PDF).
+Red-Line-Routing
+----------------
+All-in-one electrical job planner: work orders, drawings, relay settings, CROWs.
+Save/load plans as project folders with .wirePlan JSON and organised subfolders.
+Export detailed report, table, CSV, or colour-coded HTML/PDF.
 """
 
 import tkinter as tk
@@ -16,6 +16,8 @@ import sys
 import webbrowser
 from copy import deepcopy
 from datetime import datetime
+import threading
+import urllib.request
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -1280,7 +1282,7 @@ def _prot_html(prot):
 
 def generate_html_table(jobs, project="", drawing_registry=None, title_page=None):
     now   = datetime.now().strftime("%Y-%m-%d %H:%M")
-    title = "Wire Work Plan" + (f" — {project}" if project else "")
+    title = "Red-Line-Routing" + (f" — {project}" if project else "")
 
     tp_html = ""
     if title_page:
@@ -1546,19 +1548,26 @@ class WirePlannerApp(tk.Tk):
 
     def __init__(self):
         super().__init__()
-        self.title("Wire Work Planner")
+        self.title("Red-Line-Routing")
         self.geometry("1080x720")
         self.jobs = []
         self.drawing_registry = {}
         self.current_file = None
+        self.project_folder = None
         # Flat value history for autocomplete dropdowns
         self.history = {"device": [], "location": [], "pin": [], "panel": [], "wire": []}
         # Full endpoint dicts for context-aware suggestions
         self.ep_history = []
         self.title_page = {"notes": "", "crows": []}
         self.settings_vars = {
+            "device_id":        tk.StringVar(),
+            "revision":         tk.StringVar(),
+            "engineer_name":    tk.StringVar(),
+            "engineer_email":   tk.StringVar(),
+            "device_url":       tk.StringVar(),
             "base_drawing_url": tk.StringVar(),
             "base_crow_url":    tk.StringVar(),
+            "base_relay_url":   tk.StringVar(),
         }
         self._build_menu()
         self._build_ui()
@@ -1649,8 +1658,8 @@ class WirePlannerApp(tk.Tk):
         nb = ttk.Notebook(self); nb.pack(fill="both",expand=True,padx=6,pady=(0,4))
         wt = ttk.Frame(nb); nb.add(wt,text="  Work Order  ");  self._build_work_tab(wt)
         dt = ttk.Frame(nb); nb.add(dt,text="  Project Drawings  "); self._build_drawings_tab(dt)
-        tt = ttk.Frame(nb); nb.add(tt,text="  Title Page  "); self._build_title_tab(tt)
         st = ttk.Frame(nb); nb.add(st,text="  Settings  "); self._build_settings_tab(st)
+        tt = ttk.Frame(nb); nb.add(tt,text="  Title Page  "); self._build_title_tab(tt)
 
         self.status_var = tk.StringVar(value="Ready  —  no jobs loaded")
         ttk.Label(self,textvariable=self.status_var,relief="sunken",
@@ -1685,7 +1694,8 @@ class WirePlannerApp(tk.Tk):
         ttk.Button(tb, text="Edit",          command=self._edit_drawing).pack(side="left", padx=2)
         ttk.Button(tb, text="Delete",        command=self._delete_drawing).pack(side="left", padx=2)
         ttk.Button(tb, text="Scan Jobs →",   command=self._scan_and_refresh).pack(side="left", padx=(10,2))
-        ttk.Button(tb, text="Drawing Index", command=self._show_drawing_index).pack(side="left", padx=2)
+        ttk.Button(tb, text="Drawing Index",   command=self._show_drawing_index).pack(side="left", padx=2)
+        ttk.Button(tb, text="⬇ Download All",  command=self._download_drawings).pack(side="left", padx=(10,2))
         ttk.Label(tb, text="Drawing names entered in any job are added here automatically.  Ctrl+click a row to open its URL.",
                   foreground="grey").pack(side="left", padx=8)
         frame = ttk.Frame(parent); frame.pack(fill="both", expand=True, padx=4, pady=(0,4))
@@ -1805,6 +1815,63 @@ class WirePlannerApp(tk.Tk):
             tree.insert("", "end", values=(drw, ",  ".join(index[drw])))
         ttk.Button(win, text="Close", command=win.destroy).pack(pady=(4, 8))
 
+    def _download_drawings(self):
+        """Download all drawings with URLs to the project's Drawings/ subfolder."""
+        if not self.project_folder:
+            messagebox.showinfo("Save First",
+                "Please save the project first so the Drawings folder location is known.")
+            return
+        drawings_dir = os.path.join(self.project_folder, "Drawings")
+        os.makedirs(drawings_dir, exist_ok=True)
+
+        targets = [(name, info["url"]) for name, info in self.drawing_registry.items()
+                   if info.get("url","").strip()]
+        if not targets:
+            messagebox.showinfo("No URLs", "No drawing URLs are set in the registry."); return
+
+        # Progress dialog
+        dlg = tk.Toplevel(self)
+        dlg.title("Downloading Drawings")
+        dlg.geometry("420x200"); dlg.resizable(False,False)
+        dlg.grab_set()
+        ttk.Label(dlg, text="Downloading drawings…", font=("",10,"bold")).pack(pady=(14,4))
+        prog_var = tk.StringVar(value="Starting…")
+        ttk.Label(dlg, textvariable=prog_var, wraplength=380).pack(pady=4)
+        import tkinter.ttk as _ttk
+        bar = _ttk.Progressbar(dlg, length=360, maximum=len(targets))
+        bar.pack(pady=8)
+        results_var = tk.StringVar(value="")
+        ttk.Label(dlg, textvariable=results_var, foreground="grey", font=("",8)).pack()
+
+        def _run():
+            ok, fail = 0, []
+            for i, (name, url) in enumerate(targets):
+                prog_var.set(f"Downloading: {name}")
+                bar["value"] = i
+                # Determine file extension from URL, default to .pdf
+                ext = os.path.splitext(url.split("?")[0])[-1].lower()
+                if ext not in (".pdf",".png",".jpg",".jpeg",".tif",".tiff",".svg",".dwg",".dxf"):
+                    ext = ".pdf"
+                dest = os.path.join(drawings_dir, name + ext)
+                try:
+                    req = urllib.request.Request(url, headers={"User-Agent": "RedLineRouting/1.0"})
+                    with urllib.request.urlopen(req, timeout=30) as resp, \
+                         open(dest, "wb") as out:
+                        out.write(resp.read())
+                    ok += 1
+                except Exception as e:
+                    fail.append(f"{name}: {e}")
+            bar["value"] = len(targets)
+            prog_var.set("Done.")
+            msg = f"{ok} downloaded"
+            if fail:
+                msg += f", {len(fail)} failed:\n" + "\n".join(fail[:5])
+                if len(fail) > 5: msg += f"\n…and {len(fail)-5} more"
+            results_var.set(msg)
+            ttk.Button(dlg, text="Close", command=dlg.destroy).pack(pady=6)
+
+        threading.Thread(target=_run, daemon=True).start()
+
     # ── Title page tab ────────────────────────────────────────────
 
     def _build_title_tab(self, parent):
@@ -1894,27 +1961,50 @@ class WirePlannerApp(tk.Tk):
         return {k: v.get().strip() for k, v in self.settings_vars.items()}
 
     def _build_settings_tab(self, parent):
-        f = ttk.Frame(parent, padding=14)
-        f.pack(fill="both", expand=True)
+        outer = ttk.Frame(parent, padding=10)
+        outer.pack(fill="both", expand=True)
 
-        uf = ttk.LabelFrame(f, text="URL Defaults", padding=10)
-        uf.pack(fill="x", pady=(0, 10))
-        ttk.Label(uf, text="Base Drawing URL:").grid(row=0, column=0, sticky="e", padx=(0,6), pady=4)
-        ttk.Entry(uf, textvariable=self.settings_vars["base_drawing_url"], width=58).grid(
-            row=0, column=1, sticky="ew", pady=4)
-        ttk.Label(uf, text="Pre-filled when adding a new drawing URL (user can edit or clear it)",
+        # ── Project / Device Settings ──────────────────────────────
+        pf = ttk.LabelFrame(outer, text="Project / Device Settings", padding=10)
+        pf.pack(fill="x", pady=(0, 10))
+        pf.columnconfigure(1, weight=1)
+
+        fields = [
+            ("device_id",      "Device ID:"),
+            ("revision",       "Revision:"),
+            ("engineer_name",  "Engineer Name:"),
+            ("engineer_email", "Engineer Email:"),
+            ("device_url",     "URL:"),
+        ]
+        for row_i, (key, label) in enumerate(fields):
+            ttk.Label(pf, text=label).grid(row=row_i, column=0, sticky="e", padx=(0,6), pady=3)
+            ttk.Entry(pf, textvariable=self.settings_vars[key], width=52).grid(
+                row=row_i, column=1, sticky="ew", pady=3)
+
+        ttk.Label(pf, text="Device ID can match a device name from the Work Order for reference.",
                   foreground="grey", font=("",8)).grid(
-            row=1, column=0, columnspan=2, sticky="w", padx=(0,4), pady=(0,4))
+            row=len(fields), column=0, columnspan=2, sticky="w", pady=(2,0))
 
-        ttk.Label(uf, text="Base CROW URL:").grid(row=2, column=0, sticky="e", padx=(0,6), pady=4)
-        ttk.Entry(uf, textvariable=self.settings_vars["base_crow_url"], width=58).grid(
-            row=2, column=1, sticky="ew", pady=4)
-        ttk.Label(uf, text="Pre-filled when adding a new CROW URL (user can edit or clear it)",
-                  foreground="grey", font=("",8)).grid(
-            row=3, column=0, columnspan=2, sticky="w", padx=(0,4), pady=(0,4))
-        uf.columnconfigure(1, weight=1)
+        # ── System Settings (URL defaults) ────────────────────────
+        sf = ttk.LabelFrame(outer, text="System Settings — URL Defaults", padding=10)
+        sf.pack(fill="x", pady=(0, 10))
+        sf.columnconfigure(1, weight=1)
 
-        ttk.Label(f, text="Settings are saved per project file.",
+        sys_fields = [
+            ("base_drawing_url", "Base Drawing URL:", "Pre-filled when adding a drawing URL"),
+            ("base_crow_url",    "Base CROW URL:",    "Pre-filled when adding a CROW URL"),
+            ("base_relay_url",   "Base Relay URL:",   "Pre-filled when downloading relay settings"),
+        ]
+        r = 0
+        for key, label, hint in sys_fields:
+            ttk.Label(sf, text=label).grid(row=r, column=0, sticky="e", padx=(0,6), pady=3)
+            ttk.Entry(sf, textvariable=self.settings_vars[key], width=52).grid(
+                row=r, column=1, sticky="ew", pady=3)
+            ttk.Label(sf, text=hint, foreground="grey", font=("",8)).grid(
+                row=r+1, column=0, columnspan=2, sticky="w", pady=(0,3))
+            r += 2
+
+        ttk.Label(outer, text="Settings are saved per project file.",
                   foreground="grey", font=("",8)).pack(anchor="w")
 
     # ── Job list ─────────────────────────────────────────────────
@@ -2133,11 +2223,15 @@ class WirePlannerApp(tk.Tk):
 
     def _new_plan(self):
         if self.jobs and not messagebox.askyesno("New Plan","Discard current plan and start fresh?"): return
-        self.jobs=[]; self.drawing_registry={}; self.current_file=None; self.project_var.set("")
+        self.jobs=[]; self.drawing_registry={}; self.current_file=None
+        self.project_folder = None
+        self.project_var.set("")
         self.history = {"device": [], "location": [], "pin": [], "panel": [], "wire": []}
         self.ep_history = []
         self.title_page = {"notes": "", "crows": []}
+        for var in self.settings_vars.values(): var.set("")
         self.title_notes.delete("1.0", "end")
+        self.title("Red-Line-Routing")
         self._refresh_list(); self._refresh_drawings_list(); self._refresh_crows()
         self.preview.configure(state="normal"); self.preview.delete("1.0","end"); self.preview.configure(state="disabled")
 
@@ -2153,11 +2247,14 @@ class WirePlannerApp(tk.Tk):
             for k, var in self.settings_vars.items():
                 var.set(data.get("settings", {}).get(k, ""))
             self.current_file = path
+            self.project_folder = os.path.dirname(path)
             self._scan_jobs_for_drawings()
             self._rebuild_history()
             self.title_notes.delete("1.0", "end")
             self.title_notes.insert("1.0", self.title_page.get("notes", ""))
             self._refresh_list(); self._refresh_drawings_list(); self._refresh_crows()
+            proj = data.get("project","") or os.path.splitext(os.path.basename(path))[0]
+            self.title(f"Red-Line-Routing — {proj}")
         except Exception as exc: messagebox.showerror("Open Error",str(exc))
 
     def _save(self):
@@ -2166,11 +2263,20 @@ class WirePlannerApp(tk.Tk):
 
     def _save_as(self):
         proj = self.project_var.get().strip()
-        safe = "".join(c if c not in r'<>:"/\|?*' else "_" for c in proj) if proj else "wire_plan"
-        path = filedialog.asksaveasfilename(defaultextension=".wirePlan",
-                   initialfile=safe,
-                   filetypes=[("Wire Plan","*.wirePlan"),("JSON","*.json"),("All","*.*")])
-        if path: self.current_file=path; self._write(path)
+        safe = "".join(c if c not in r'<>:"/\|?*' else "_" for c in proj) if proj else "RedLine_Plan"
+        parent = filedialog.askdirectory(title="Choose where to create the project folder")
+        if not parent: return
+        folder = os.path.join(parent, safe)
+        try:
+            os.makedirs(folder, exist_ok=True)
+            for sub in ("Drawings", "Relay Settings", "CROW Outage", "Other"):
+                os.makedirs(os.path.join(folder, sub), exist_ok=True)
+        except Exception as exc:
+            messagebox.showerror("Save Error", f"Could not create project folder:\n{exc}"); return
+        self.project_folder = folder
+        path = os.path.join(folder, safe + ".wirePlan")
+        self.current_file = path
+        self._write(path)
 
     def _write(self, path):
         try:
@@ -2183,6 +2289,8 @@ class WirePlannerApp(tk.Tk):
                            "drawing_registry":self.drawing_registry,
                            "history":self.history,
                            "jobs":self.jobs},fh,indent=2)
+            proj = self.project_var.get().strip() or os.path.splitext(os.path.basename(path))[0]
+            self.title(f"Red-Line-Routing — {proj}")
             self._update_status()
         except Exception as exc: messagebox.showerror("Save Error",str(exc))
 
