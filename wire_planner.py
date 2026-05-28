@@ -1701,6 +1701,7 @@ class RelaySettingDialog(tk.Toplevel):
         self.result = None
         self.wo_devices = wo_devices or []
         self.base_url = base_url
+        self._import_src = tk.StringVar()   # source path chosen by Browse
         self.resizable(False, False)
         self._build(existing or {})
         self.grab_set()
@@ -1743,14 +1744,41 @@ class RelaySettingDialog(tk.Toplevel):
                   foreground="grey", font=("", 8)).grid(
             row=row_wo + 1, column=0, columnspan=2, sticky="w", pady=(0, 6))
 
-        bf = ttk.Frame(f); bf.grid(row=row_wo + 2, column=0, columnspan=2, sticky="e")
+        # Setting file import — embedded in the dialog
+        sep = ttk.Separator(f, orient="horizontal")
+        sep.grid(row=row_wo + 2, column=0, columnspan=2, sticky="ew", pady=(2, 6))
+        ttk.Label(f, text="Setting File:").grid(
+            row=row_wo + 3, column=0, sticky="e", padx=(0, 6), pady=4)
+        file_f = ttk.Frame(f)
+        file_f.grid(row=row_wo + 3, column=1, sticky="ew", pady=4)
+        file_f.columnconfigure(0, weight=1)
+        self._file_lbl = ttk.Label(file_f, textvariable=self._import_src,
+                                    foreground="grey", font=("", 8), anchor="w")
+        self._file_lbl.grid(row=0, column=0, sticky="ew")
+        ttk.Button(file_f, text="Browse…", command=self._browse_file).grid(
+            row=0, column=1, padx=(6, 0))
+        ttk.Label(f, text="Optional — choose a .txt setting file to import into Relay Settings/",
+                  foreground="grey", font=("", 8)).grid(
+            row=row_wo + 4, column=0, columnspan=2, sticky="w", pady=(0, 6))
+
+        bf = ttk.Frame(f); bf.grid(row=row_wo + 5, column=0, columnspan=2, sticky="e")
         ttk.Button(bf, text="Cancel", command=self.destroy).pack(side="right", padx=4)
         ttk.Button(bf, text="Save",   command=self._save).pack(side="right")
+
+    def _browse_file(self):
+        path = filedialog.askopenfilename(
+            title="Select relay setting file",
+            filetypes=[("Text files", "*.txt"), ("All files", "*.*")],
+            parent=self)
+        if path:
+            self._import_src.set(path)
+            self._file_lbl.configure(foreground="#2980b9")
 
     def _save(self):
         if not self.vars["device_id"].get().strip():
             messagebox.showwarning("Required", "Device ID is required.", parent=self); return
         self.result = {k: v.get().strip() for k, v in self.vars.items()}
+        self.result["import_file"] = self._import_src.get().strip() or None
         self.destroy()
 
 
@@ -3019,7 +3047,10 @@ class RedLineApp(tk.Tk):
                                  base_url=self.app_config.get("base_relay_url", ""))
         if dlg.result:
             dev_id = dlg.result["device_id"]
-            self.relay_registry[dev_id] = {k: v for k, v in dlg.result.items() if k != "device_id"}
+            self.relay_registry[dev_id] = {
+                k: v for k, v in dlg.result.items()
+                if k not in ("device_id", "import_file")}
+            self._relay_import_file(dlg.result.get("import_file"), dev_id)
             self._refresh_relay_list()
 
     def _edit_relay(self):
@@ -3033,8 +3064,29 @@ class RedLineApp(tk.Tk):
             old_id = dev_id; new_id = dlg.result["device_id"]
             if old_id != new_id and old_id in self.relay_registry:
                 del self.relay_registry[old_id]
-            self.relay_registry[new_id] = {k: v for k, v in dlg.result.items() if k != "device_id"}
+            self.relay_registry[new_id] = {
+                k: v for k, v in dlg.result.items()
+                if k not in ("device_id", "import_file")}
+            self._relay_import_file(dlg.result.get("import_file"), new_id)
             self._refresh_relay_list()
+
+    def _relay_import_file(self, src_path, dev_id):
+        """Copy src_path into Relay Settings/ using dev_id as the base name."""
+        if not src_path or not os.path.isfile(src_path):
+            return
+        if not self.project_folder:
+            messagebox.showinfo("Save Project First",
+                "Import will be available after you save the project.\n"
+                f"File to import: {src_path}")
+            return
+        dest_dir = os.path.join(self.project_folder, "Relay Settings")
+        os.makedirs(dest_dir, exist_ok=True)
+        ext      = os.path.splitext(src_path)[1] or ".txt"
+        dest     = os.path.join(dest_dir, f"{dev_id}{ext}")
+        try:
+            shutil.copy2(src_path, dest)
+        except Exception as exc:
+            messagebox.showerror("Import Failed", str(exc))
 
     def _delete_relay(self):
         sel = self.relay_tree.selection()
@@ -3875,7 +3927,6 @@ try {{
         ttk.Button(tb, text="Edit",         command=self._edit_relay).pack(side="left", padx=2)
         ttk.Button(tb, text="Delete",       command=self._delete_relay).pack(side="left", padx=2)
         ttk.Button(tb, text="⬇ Download All", command=self._download_relay_settings).pack(side="left", padx=(10,2))
-        ttk.Button(tb, text="Import File…",  command=self._import_relay_file).pack(side="left", padx=2)
         ttk.Label(tb, text="Relay protection settings records.  Ctrl+click a row to open its URL.",
                   foreground="grey").pack(side="left", padx=8)
 
@@ -4082,14 +4133,11 @@ try {{
         setattr(self, attr, lb)
 
     def _build_relay_impl_tab(self, parent):
-        """Relay Settings tab in implementation view — file list + import button."""
-        btn_f = ttk.Frame(parent)
-        btn_f.pack(fill="x", padx=4, pady=(4, 2))
-        ttk.Button(btn_f, text="Import File…",
-                   command=self._import_relay_file).pack(side="left")
-        ttk.Label(btn_f, text="Import a .txt setting file into the Relay Settings folder",
-                  foreground="grey", font=("", 8)).pack(side="left", padx=8)
-
+        """Relay Settings tab in implementation view — read-only file list."""
+        ttk.Label(parent,
+                  text="Files in Relay Settings/  ·  double-click to open  "
+                       "·  import files via Add/Edit relay in Planning",
+                  foreground="grey", font=("", 8)).pack(anchor="w", padx=6, pady=(4, 2))
         lb_f = ttk.Frame(parent)
         lb_f.pack(fill="both", expand=True, padx=4, pady=(0, 4))
         lb = tk.Listbox(lb_f, selectmode="browse", font=("Courier", 9),
@@ -4507,25 +4555,42 @@ try {{
                     state="normal" if total > 1 and page < total else "disabled")
             else:
                 self._pdf_page_lbl.set("")
+                script_dir = os.path.dirname(os.path.abspath(__file__))
                 self._pdf_canvas.create_text(
                     10, 10, anchor="nw", fill="#888",
-                    text="PDF preview unavailable.\n"
-                         "Install poppler-utils (pdftoppm) for in-app preview.\n"
-                         "Double-click the file to open it.",
-                    font=("", 9))
+                    text="PDF preview unavailable — pdftoppm not found.\n\n"
+                         "To enable in-app preview, place  pdftoppm  (and optionally  pdfinfo)\n"
+                         "beside  wire_planner.py:\n\n"
+                         f"  {script_dir}\n\n"
+                         "Windows: download the portable Poppler release from\n"
+                         "  github.com/oschwartz10612/poppler-windows/releases\n"
+                         "  and copy pdftoppm.exe (and pdfinfo.exe) there.\n\n"
+                         "Linux:  sudo apt install poppler-utils\n"
+                         "macOS:  brew install poppler\n\n"
+                         "Double-click the file to open it externally.",
+                    font=("", 9), width=460)
         self.after(80, _poll)
+
+    def _find_poppler_bin(self, name):
+        """Find a poppler binary: check beside the script first, then PATH."""
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        for candidate in (name, name + ".exe"):
+            p = os.path.join(script_dir, candidate)
+            if os.path.isfile(p):
+                return p
+        return shutil.which(name)
 
     def _render_pdf_page(self, pdf_path, page=1):
         """Convert one PDF page to a tk.PhotoImage via pdftoppm.
         Returns (PhotoImage, total_pages) or (None, 0) if pdftoppm is absent."""
-        pdftoppm = shutil.which("pdftoppm")
+        pdftoppm = self._find_poppler_bin("pdftoppm")
         if not pdftoppm:
             return None, 0
         tmp_base = None
         try:
             # Page count via pdfinfo (optional — graceful if missing)
             total = 0
-            pdfinfo = shutil.which("pdfinfo")
+            pdfinfo = self._find_poppler_bin("pdfinfo")
             if pdfinfo:
                 r = subprocess.run([pdfinfo, pdf_path],
                                    capture_output=True, text=True, timeout=5)
