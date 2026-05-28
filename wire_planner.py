@@ -3600,11 +3600,15 @@ class RedLineApp(tk.Tk):
         # Mirrored Bits warning strip — hidden until a step with MB enabled is selected
         self._mb_warn_frame = tk.Frame(viewer_f, bg="#7d3c00")
         tk.Label(self._mb_warn_frame,
-                 text="!  MIRRORED BITS ENABLED — verify MB isolation before proceeding",
-                 bg="#7d3c00", fg="#fdebd0", font=("", 9, "bold"),
-                 padx=10, pady=4).pack(side="left")
+                 text="⚠️",
+                 bg="#7d3c00", fg="#fdebd0", font=("", 14),
+                 padx=6, pady=3).pack(side="left")
+        tk.Label(self._mb_warn_frame,
+                 text="MIRRORED BITS ENABLED — verify MB isolation before proceeding",
+                 bg="#7d3c00", fg="#fdebd0", font=("", 10, "bold"),
+                 padx=4, pady=3).pack(side="left")
         self._mb_remote_lbl = tk.Label(self._mb_warn_frame, text="",
-                                        bg="#7d3c00", fg="#fad7a0", font=("", 8))
+                                        bg="#7d3c00", fg="#fad7a0", font=("", 9))
         self._mb_remote_lbl.pack(side="left")
 
         self.file_nb = ttk.Notebook(viewer_f)
