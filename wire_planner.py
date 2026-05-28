@@ -43,6 +43,22 @@ def is_h_type_drawing(name):
     return bool(type_seg) and type_seg[0].upper() == "H"
 
 
+def _treeview_strike_font():
+    """Return an overstrike font that matches the ttk Treeview row font exactly.
+    Using tkfont.Font(overstrike=True) alone creates a default-sized font which
+    looks wrong next to Treeview rows; this copies family/size/weight from the
+    current ttk style so the strikethrough rows stay the same size."""
+    try:
+        fname = ttk.Style().lookup("Treeview", "font") or "TkDefaultFont"
+        base  = tkfont.nametofont(fname)
+    except Exception:
+        base  = tkfont.nametofont("TkDefaultFont")
+    info = base.actual()
+    return tkfont.Font(family=info["family"], size=info["size"],
+                       weight=info["weight"], slant=info["slant"],
+                       overstrike=True)
+
+
 def _drawing_subdir(base_dir, drawing_name):
     """Resolve the organised subfolder for a drawing name XXXX-YZZ-NNNNN-MMM.
 
@@ -2812,7 +2828,7 @@ class RedLineApp(tk.Tk):
         self.tree.column("Seq",width=35,stretch=False); self.tree.column("Type",width=110,stretch=False)
         self.tree.column("Description",width=230)
         for t,fg in self.TYPE_FG.items(): self.tree.tag_configure(t, foreground=fg)
-        _strike = tkfont.Font(overstrike=True)
+        _strike = _treeview_strike_font()
         self.tree.tag_configure("COMPLETED", foreground="#aaaaaa", font=_strike)
         vsb = ttk.Scrollbar(lf, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=vsb.set)
@@ -3930,7 +3946,7 @@ try {{
         self.impl_tree.column("Description", width=190)
         for t, fg in self.TYPE_FG.items():
             self.impl_tree.tag_configure(t, foreground=fg)
-        _strike = tkfont.Font(overstrike=True)
+        _strike = _treeview_strike_font()
         self.impl_tree.tag_configure("COMPLETED", foreground="#aaaaaa", font=_strike)
         ivsb = ttk.Scrollbar(left, orient="vertical", command=self.impl_tree.yview)
         self.impl_tree.configure(yscrollcommand=ivsb.set)
