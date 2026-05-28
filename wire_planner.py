@@ -7,6 +7,7 @@ Save/load plans as project folders with .wirePlan JSON and organised subfolders.
 Export detailed report, table, CSV, or colour-coded HTML/PDF.
 """
 
+# stdlib
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog, scrolledtext
 import json
@@ -115,7 +116,20 @@ def _bind_url_open(entry_widget, url_var):
 # ──────────────────────────────────────────────────────────────────
 
 class DrawingAwareFrame(ttk.LabelFrame):
-    """LabelFrame with autofill from registry, context-aware suggestions, and live search."""
+    """LabelFrame with autofill from registry, context-aware suggestions, and live search.
+
+    How context-aware suggestions work:
+      Each HISTORY_KEYS combobox is populated by _context_suggestions(), which scores
+      candidate values by how many of the 'context' fields (see _CONTEXT_MAP) match what
+      the user has already typed in the same form.  Matches rise to the top; the rest of
+      the flat history follows below.  A green border (_refresh_highlights) indicates when
+      context is active.
+
+    ep_history: a list of full endpoint dicts (device/location/pin/panel/drawing) collected
+      from every job saved so far.  It is the source for the co-occurrence scoring in
+      _context_suggestions.  The flat per-key history (self.history) provides fallback values
+      for fields with no context match.
+    """
 
     FIELDS = []          # subclasses define
     HISTORY_KEYS = ()    # keys that get a history/context Combobox
@@ -134,6 +148,7 @@ class DrawingAwareFrame(ttk.LabelFrame):
         self.vars = {}
         self.registry   = registry   if registry   is not None else {}
         self.history    = history    if history    is not None else {}
+        # ep_history: list of full endpoint dicts used for co-occurrence scoring
         self.ep_history = ep_history if ep_history is not None else []
         self._drawing_combo = None
         self._cell_entry = None
@@ -142,7 +157,16 @@ class DrawingAwareFrame(ttk.LabelFrame):
 
     def _context_suggestions(self, key):
         """Return an ordered suggestion list for *key*, boosting values that co-occur
-        with whatever is already typed in context fields."""
+        with whatever is already typed in context fields.
+
+        Scoring algorithm:
+          1. Walk ep_history (most-recent first).  For each past endpoint, count how many
+             of the context fields (per _CONTEXT_MAP) match what the user has typed so far.
+          2. Any value with score > 0 is promoted to the 'prioritized' bucket (in encounter
+             order, deduplicated case-insensitively).
+          3. Remaining values from the flat per-key history fill the 'rest' bucket.
+          4. Return prioritized + rest so the combobox dropdown is ordered by relevance.
+        """
         ctx_keys = self._CONTEXT_MAP.get(key, [])
         ctx_vals = {cf: self.vars[cf].get().strip()
                     for cf in ctx_keys if cf in self.vars}
@@ -152,6 +176,7 @@ class DrawingAwareFrame(ttk.LabelFrame):
             val = ep.get(key, "").strip()
             if not val:
                 continue
+            # Count how many context fields in this historical endpoint match the current form
             score = sum(1 for cf, cv in ctx_vals.items()
                         if cv and ep.get(cf, "").strip().lower() == cv.lower())
             lo = val.lower()
@@ -159,6 +184,7 @@ class DrawingAwareFrame(ttk.LabelFrame):
                 seen.add(lo)
                 prioritized.append(val)
 
+        # Flat history provides fallback candidates not already boosted above
         for val in self.history.get(key, []):
             if val.lower() not in seen:
                 seen.add(val.lower())
@@ -233,6 +259,9 @@ class DrawingAwareFrame(ttk.LabelFrame):
                     lambda *_: self.after(30, self._refresh_highlights))
 
     def _update_cell_state(self):
+        # Drawing Cell only applies to H-type drawings (e.g. protection/schematic sheets
+        # with cell references).  For all other drawing types the field is meaningless, so
+        # we disable it and clear any stale value to avoid carrying phantom data into exports.
         if self._cell_entry is None:
             return
         name = self.vars.get("drawing", tk.StringVar()).get().strip()
@@ -243,13 +272,20 @@ class DrawingAwareFrame(ttk.LabelFrame):
             self.vars["drawing_cell"].set("")
 
     def _refresh_highlights(self):
-        """Show a green border on context-aware combos when context fields are filled."""
+        """Show a green border on context-aware combos when context fields are filled.
+
+        The green border is a visual hint telling the user that the dropdown for this field
+        is now personalised — values from past jobs that share the same device/panel/etc.
+        will appear first.  No border means the dropdown shows plain history with no boosting.
+        """
         ACTIVE = "#27ae60"
         for key, wrap in self._context_combos.items():
             if key == "drawing":
                 ctx_fields = [f for f in ("panel", "device") if f in self.vars]
             else:
                 ctx_fields = [f for f in self._CONTEXT_MAP.get(key, []) if f in self.vars]
+            # Active only when there is ep_history to score against AND at least one
+            # context field has a value to match on
             active = bool(self.ep_history and any(
                 self.vars[f].get().strip() for f in ctx_fields))
             if active:
@@ -280,6 +316,9 @@ class DrawingAwareFrame(ttk.LabelFrame):
             self._push(name)
 
     def _autofill(self, name):
+        # Registry → form: populate rev/url from the shared drawing registry so the user
+        # doesn't have to retype details already known from a previous job or the Drawings tab.
+        # Only fills blank fields to avoid clobbering intentional overrides.
         if name in self.registry:
             rec = self.registry[name]
             if not self.vars["drawing_rev"].get():
@@ -288,6 +327,9 @@ class DrawingAwareFrame(ttk.LabelFrame):
                 self.vars["drawing_url"].set(rec.get("url", ""))
 
     def _push(self, name):
+        # Form → registry: write rev/url back to the shared drawing registry so that any
+        # detail typed here propagates to the Drawings tab and future autofills.
+        # Only non-empty values are written to avoid blanking existing registry entries.
         rev = self.vars["drawing_rev"].get().strip()
         url = self.vars["drawing_url"].get().strip()
         if name not in self.registry:
