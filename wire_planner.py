@@ -1608,10 +1608,15 @@ class RelaySettingDialog(tk.Toplevel):
 # ──────────────────────────────────────────────────────────────────
 
 def _center_window(win, w, h):
-    win.update_idletasks()
-    x = max(0, (win.winfo_screenwidth()  - w) // 2)
-    y = max(0, (win.winfo_screenheight() - h) // 2 - 40)
-    win.geometry(f"{w}x{h}+{x}+{y}")
+    try:
+        win.update_idletasks()
+        sw = win.winfo_screenwidth()
+        sh = win.winfo_screenheight()
+        x = max(0, (sw - w) // 2)
+        y = max(0, (sh - h) // 2 - 40)
+        win.geometry(f"{w}x{h}+{x}+{y}")
+    except Exception:
+        win.geometry(f"{w}x{h}")
 
 def _hover_btn(frame, bg_normal, bg_hover):
     """Add Enter/Leave colour-swap to a tk.Frame used as a clickable button."""
@@ -1653,7 +1658,7 @@ class SoftwareSetupDialog(tk.Toplevel):
         self.result = None
         self._cfg_vars = {}
         self._build(dict(app_config))
-        _center_window(self, 580, 560)
+        _center_window(self, 560, 580)
         self.grab_set()
         self.wait_window()
 
@@ -1661,35 +1666,43 @@ class SoftwareSetupDialog(tk.Toplevel):
         _styled_header(self, "Welcome to Red-Line-Routing",
                        "First-time setup — configure your organisation's base URLs")
 
-        body = ttk.Frame(self, padding=(20, 12, 20, 0)); body.pack(fill="both", expand=True)
-        ttk.Label(body,
-                  text="These settings are global and apply to all projects.\n"
-                       "You can leave fields blank and update them later via File → Software Settings.",
-                  justify="left", foreground="#566573").pack(anchor="w", pady=(0, 12))
+        body = tk.Frame(self, bg="white"); body.pack(fill="both", expand=True, padx=24, pady=14)
+        tk.Label(body,
+                 text="These settings are global and apply to all projects.\n"
+                      "You can leave fields blank and update them later via File → Software Settings.",
+                 bg="white", justify="left", fg="#566573", font=("", 9)).pack(anchor="w", pady=(0, 14))
 
         sections = [
-            ("Drawings",       [("base_drawing_url",   "Base Drawing URL:"),
-                                 ("drawing_search_url", "Drawing Search URL (future):")]),
-            ("Aspen",          [("aspen_url",           "Aspen URL (future):")]),
-            ("CROWs",          [("base_crow_url",       "Base CROW URL:")]),
-            ("Relay Settings", [("base_relay_url",      "Base Relay URL:")]),
+            ("Drawings",       [("base_drawing_url",   "Base Drawing URL"),
+                                 ("drawing_search_url", "Drawing Search URL (future)")]),
+            ("Aspen",          [("aspen_url",           "Aspen URL (future)")]),
+            ("CROWs",          [("base_crow_url",       "Base CROW URL")]),
+            ("Relay Settings", [("base_relay_url",      "Base Relay URL")]),
         ]
         for sec, fields in sections:
-            lf = ttk.LabelFrame(body, text=sec, padding=(10, 6))
-            lf.pack(fill="x", pady=(0, 8)); lf.columnconfigure(1, weight=1)
-            for r, (key, label) in enumerate(fields):
-                ttk.Label(lf, text=label).grid(row=r, column=0, sticky="e", padx=(0, 8), pady=4)
+            # Section header row
+            sh = tk.Frame(body, bg="white"); sh.pack(fill="x", pady=(6, 4))
+            tk.Frame(sh, bg="#2980b9", width=3).pack(side="left", fill="y")
+            tk.Label(sh, text=sec, bg="white", fg="#1c2833",
+                     font=("", 9, "bold"), padx=8, pady=2).pack(side="left", anchor="w")
+            # Fields
+            for key, label in fields:
+                row = tk.Frame(body, bg="white"); row.pack(fill="x", pady=2)
+                tk.Label(row, text=label + ":", bg="white", fg="#5d6d7e",
+                         font=("", 9), width=26, anchor="e").pack(side="left")
                 var = tk.StringVar(value=cfg.get(key, ""))
                 self._cfg_vars[key] = var
-                ttk.Entry(lf, textvariable=var, width=46).grid(row=r, column=1, sticky="ew", pady=4)
+                tk.Entry(row, textvariable=var, bg="#f4f6f7", relief="flat",
+                         bd=1, highlightthickness=1, highlightbackground="#d5d8dc",
+                         highlightcolor="#2980b9", font=("", 9)).pack(
+                    side="left", fill="x", expand=True, padx=(6, 0), ipady=4)
 
-        sep = ttk.Frame(self); sep.pack(fill="x", side="bottom")
-        ttk.Separator(sep).pack(fill="x")
-        bf = ttk.Frame(sep, padding=(20, 8)); bf.pack(fill="x")
-        ttk.Label(bf, text="You can skip this and fill in URLs later.",
-                  foreground="#aab7b8", font=("", 8)).pack(side="left")
-        ttk.Button(bf, text="Skip for Now",    command=self._skip).pack(side="right", padx=(6, 0))
-        ttk.Button(bf, text="Save & Continue", command=self._save).pack(side="right")
+        sep = tk.Frame(self, bg="#d5d8dc", height=1); sep.pack(fill="x", side="bottom")
+        bf = tk.Frame(self, bg="#eaecee"); bf.pack(fill="x", side="bottom")
+        tk.Label(bf, text="You can skip this and fill in URLs later.",
+                 bg="#eaecee", fg="#aab7b8", font=("", 8)).pack(side="left", padx=12, pady=8)
+        ttk.Button(bf, text="Skip for Now",    command=self._skip).pack(side="right", padx=(6, 12), pady=8)
+        ttk.Button(bf, text="Save & Continue", command=self._save).pack(side="right", pady=8)
 
     def _skip(self):
         self.result = {}; self.destroy()
