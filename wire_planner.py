@@ -1902,7 +1902,8 @@ class ProjectWizard(tk.Toplevel):
     def __init__(self, parent, app_config=None):
         super().__init__(parent)
         self.title("New Project Wizard")
-        self.minsize(720, 560)
+        self.resizable(True, True)
+        self.minsize(680, 500)
         self.result = None
         self.app_config = app_config or {}
         self._step = 0
@@ -1945,13 +1946,25 @@ class ProjectWizard(tk.Toplevel):
         # ── Right side ────────────────────────────────────────────
         right = tk.Frame(self, bg="#f5f6fa"); right.pack(side="right", fill="both", expand=True)
 
-        # Step accent strip (coloured top border of content area)
-        self._accent_strip = tk.Frame(right, height=4, bg="#2980b9")
-        self._accent_strip.pack(fill="x")
+        # Footer nav — pack BEFORE content so pack(expand=True) doesn't swallow it
+        tk.Frame(right, bg="#d5d8dc", height=1).pack(fill="x", side="bottom")
+        nav = tk.Frame(right, bg="#eaecee"); nav.pack(fill="x", side="bottom")
+        ttk.Button(nav, text="Cancel", command=self.destroy).pack(side="left", padx=12, pady=10)
+        self._finish_btn = tk.Button(nav, text="  Create Project ✓  ", bg="#27ae60", fg="white",
+                                     font=("", 9, "bold"), relief="flat", cursor="hand2",
+                                     activebackground="#2ecc71", activeforeground="white",
+                                     command=self._finish)
+        self._next_btn  = ttk.Button(nav, text="Next  →", command=self._next)
+        self._back_btn  = ttk.Button(nav, text="←  Back", command=self._back)
+        self._back_btn.pack(side="right", padx=(0, 12), pady=10)
+        self._next_btn.pack(side="right", padx=4, pady=10)
+        self._finish_btn.pack(side="right", padx=(0, 12), pady=8)
 
-        # Content area
+        # Accent strip + content — packed AFTER footer
+        self._accent_strip = tk.Frame(right, height=4, bg="#2980b9")
+        self._accent_strip.pack(fill="x", side="top")
         self._content = tk.Frame(right, bg="#f5f6fa")
-        self._content.pack(fill="both", expand=True)
+        self._content.pack(fill="both", expand=True, side="top")
 
         self._frames = []
         for _ in range(len(self._STEPS)):
@@ -1968,21 +1981,6 @@ class ProjectWizard(tk.Toplevel):
         self._build_step_relays(  _inner(self._frames[2]))
         self._build_step_crows(   _inner(self._frames[3]))
         self._build_step_summary( _inner(self._frames[4]))
-
-        # Footer nav
-        tk.Frame(right, bg="#d5d8dc", height=1).pack(fill="x", side="bottom")
-        nav = tk.Frame(right, bg="#eaecee", pady=0); nav.pack(fill="x", side="bottom")
-        ttk.Button(nav, text="Cancel", command=self.destroy).pack(side="left", padx=12, pady=10)
-
-        self._finish_btn = tk.Button(nav, text="  Create Project ✓  ", bg="#27ae60", fg="white",
-                                     font=("", 9, "bold"), relief="flat", cursor="hand2",
-                                     activebackground="#2ecc71", activeforeground="white",
-                                     command=self._finish)
-        self._next_btn  = ttk.Button(nav, text="Next  →", command=self._next)
-        self._back_btn  = ttk.Button(nav, text="←  Back", command=self._back)
-        self._back_btn.pack(side="right", padx=(0, 6), pady=10)
-        self._next_btn.pack(side="right", padx=4, pady=10)
-        self._finish_btn.pack(side="right", padx=(0, 6), pady=8)
 
         self._show_step(0)
 
