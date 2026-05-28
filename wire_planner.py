@@ -3999,6 +3999,16 @@ try {{
         ttk.Label(vf_top, text="  click to preview  ·  double-click to open",
                   foreground="grey", font=("", 8)).pack(side="left", padx=8)
 
+        # MB warning strip — hidden until a step with MB enabled is selected
+        self._mb_warn_frame = tk.Frame(viewer_f, bg="#7d3c00")
+        tk.Label(self._mb_warn_frame,
+                 text="!  MODBUS ENABLED — verify MB isolation before proceeding",
+                 bg="#7d3c00", fg="#fdebd0", font=("", 9, "bold"),
+                 padx=10, pady=4).pack(side="left")
+        self._mb_remote_lbl = tk.Label(self._mb_warn_frame, text="",
+                                        bg="#7d3c00", fg="#fad7a0", font=("", 8))
+        self._mb_remote_lbl.pack(side="left")
+
         self.file_nb = ttk.Notebook(viewer_f)
         self.file_nb.pack(fill="both", expand=True)
 
@@ -4182,6 +4192,28 @@ try {{
         else:
             lb.insert("end", "(Relay Settings/ folder not found)")
 
+    def _job_has_mb(self, job):
+        """Return True if this job's protection sub-dict has mb_enabled set."""
+        return bool((job.get("protection") or {}).get("mb_enabled"))
+
+    def _update_mb_warn(self, job=None):
+        """Show or hide the MB warning strip in the Reference Files area."""
+        if not hasattr(self, "_mb_warn_frame"):
+            return
+        if job and self._job_has_mb(job):
+            prot   = job.get("protection") or {}
+            remote = prot.get("mb_remote", "").strip()
+            notes  = prot.get("mb_notes",  "").strip()
+            detail = ""
+            if remote:
+                detail = f"  Remote: {remote}"
+            if notes:
+                detail += f"  ({notes})"
+            self._mb_remote_lbl.configure(text=detail)
+            self._mb_warn_frame.pack(fill="x", before=self.file_nb)
+        else:
+            self._mb_warn_frame.pack_forget()
+
     def _open_impl_file(self, lb, subfolder):
         sel = lb.curselection()
         if not sel: return
@@ -4211,36 +4243,46 @@ try {{
         disp = {"REMOVE":"REMOVE","ADD":"ADD","MOVE":"MOVE",
                 "BLOCK":"BLOCK PROT.","UNBLOCK":"UNBLOCK PROT.","TESTING":"TESTING",
                 "DEVICE ADD":"INSTALL DEVICE","DEVICE REMOVE":"REMOVE DEVICE"}
+        self.impl_tree.tag_configure("MB_WARN", foreground="#e59866")
         for i, job in enumerate(self.jobs):
-            done = job.get("completed", False)
-            tags = (job["type"], "COMPLETED") if done else (job["type"],)
+            done   = job.get("completed", False)
+            has_mb = self._job_has_mb(job)
+            desc   = ("! " if has_mb else "") + job.get("description", "")
+            base_tags = (job["type"],)
+            if has_mb:
+                base_tags = base_tags + ("MB_WARN",)
+            tags = base_tags + ("COMPLETED",) if done else base_tags
             self.impl_tree.insert("", "end", iid=str(i),
                 values=("☑" if done else "☐", i + 1,
                         disp.get(job["type"], job["type"]),
-                        job.get("description", "")),
+                        desc),
                 tags=tags)
 
     def _on_impl_select(self, _=None):
         sel = self.impl_tree.selection()
         if not sel: return
         if sel[0] == "__tailboard__":
+            self._update_mb_warn(None)
             self._show_tailboard_panel()
             return
         # All other rows: hide tailboard panel, show text preview
         self.impl_tb_frame.pack_forget()
         self.impl_preview.pack(fill="both", expand=True)
         if sel[0] == "__prep__":
+            self._update_mb_warn(None)
             self._show_impl_prep()
             return
         idx = int(sel[0])
         if 0 <= idx < len(self.jobs):
-            text = format_job(idx, self.jobs[idx])
+            job  = self.jobs[idx]
+            text = format_job(idx, job)
             self.impl_preview.configure(state="normal")
             self.impl_preview.delete("1.0", "end")
             self.impl_preview.insert("1.0", text)
             self.impl_preview.configure(state="disabled")
+            self._update_mb_warn(job)
             if self._drw_filter_var.get() == "step":
-                self._filter_drawings_to_job(self.jobs[idx])
+                self._filter_drawings_to_job(job)
 
     # ── Drawing filter helpers ─────────────────────────────────────
 
@@ -4659,14 +4701,14 @@ try {{
 
     def _build_tailboard_panel(self, parent):
         """Build the tailboard detail panel inside details_f (hidden until selected)."""
-        # Template row
-        tmpl_f = ttk.LabelFrame(parent, text="Template", padding=6)
+        # Template row — view only, never editable from the app
+        tmpl_f = ttk.LabelFrame(parent, text="Template  (read-only — do not edit from here)", padding=6)
         tmpl_f.pack(fill="x", padx=4, pady=(4, 2))
         self._tb_tmpl_lbl = ttk.Label(tmpl_f, text="(loading…)", foreground="#2980b9",
                                        cursor="hand2", font=("", 9))
         self._tb_tmpl_lbl.pack(side="left", expand=True, fill="x")
         self._tb_tmpl_lbl.bind("<Button-1>", lambda _: self._open_tailboard_template())
-        ttk.Button(tmpl_f, text="Open ↗",
+        ttk.Button(tmpl_f, text="View ↗",
                    command=self._open_tailboard_template).pack(side="right")
 
         # Middle: sign-ons (left) + saved tailboards / revisions (right)
