@@ -42,6 +42,44 @@ def is_h_type_drawing(name):
     return bool(type_seg) and type_seg[0].upper() == "H"
 
 
+def _drawing_subdir(base_dir, drawing_name):
+    """Resolve the organised subfolder for a drawing name XXXX-YZZ-NNNNN-MMM.
+
+    Folder layout:  base_dir / XXXX / YZZ / NNNNN /
+    Falls back to base_dir for names that don't match the 4-part convention.
+    """
+    parts = drawing_name.strip().split("-")
+    if len(parts) >= 4:
+        facility  = parts[0]   # XXXX
+        type_subj = parts[1]   # YZZ  (drawing type + subject combined)
+        serial    = parts[2]   # NNNNN
+        return os.path.join(base_dir, facility, type_subj, serial)
+    return base_dir
+
+
+def _archive_existing(folder, drawing_name):
+    """Move files in *folder* whose stem starts with *drawing_name* into Archive/.
+
+    Called before saving a fresh download so the old revision is preserved.
+    Returns the number of files moved.
+    """
+    archive_dir = os.path.join(folder, "Archive")
+    moved = 0
+    try:
+        for fname in os.listdir(folder):
+            fpath = os.path.join(folder, fname)
+            if not os.path.isfile(fpath):
+                continue
+            stem = os.path.splitext(fname)[0]
+            if stem.lower().startswith(drawing_name.lower()):
+                os.makedirs(archive_dir, exist_ok=True)
+                shutil.move(fpath, os.path.join(archive_dir, fname))
+                moved += 1
+    except OSError:
+        pass
+    return moved
+
+
 # ──────────────────────────────────────────────────────────────────
 # Data helpers
 # ──────────────────────────────────────────────────────────────────
@@ -2889,6 +2927,7 @@ class RedLineApp(tk.Tk):
             "Downloading Drawings",
             targets,
             os.path.join(self.project_folder, "Drawings"),
+            organize=True,
         )
 
     # ── Relay Settings CRUD ───────────────────────────────────────
@@ -2988,7 +3027,7 @@ class RedLineApp(tk.Tk):
                 headers[key] = value
         return headers
 
-    def _download_with_progress(self, title, targets, dest_dir):
+    def _download_with_progress(self, title, targets, dest_dir, organize=False):
         """Shared download engine with thread-safe progress dialog.
 
         Uses a queue.Queue so the worker thread never touches tkinter directly —
@@ -3074,7 +3113,9 @@ class RedLineApp(tk.Tk):
                 ext = os.path.splitext(url.split("?")[0])[-1].lower()
                 if ext not in _VALID_EXTS:
                     ext = ".pdf"
-                dest = os.path.join(dest_dir, name + ext)
+                sub_dir = _drawing_subdir(dest_dir, name) if organize else dest_dir
+                os.makedirs(sub_dir, exist_ok=True)
+                dest = os.path.join(sub_dir, name + ext)
                 q.put(("progress", i, name, dest))
 
                 try:
@@ -3082,10 +3123,13 @@ class RedLineApp(tk.Tk):
                     req = urllib.request.Request(url, headers=hdrs)
                     with urllib.request.urlopen(req, timeout=30) as resp:
                         data = resp.read()
+                    archived = _archive_existing(sub_dir, name) if organize else 0
                     with open(dest, "wb") as fh:
                         fh.write(data)
                     kb = len(data) // 1024
-                    q.put(("log", f"✓  {name}  ({kb} KB)  →  {os.path.basename(dest)}", "ok"))
+                    rel = os.path.relpath(dest, dest_dir)
+                    arch_note = f"  [{archived} archived]" if archived else ""
+                    q.put(("log", f"✓  {name}  ({kb} KB)  →  {rel}{arch_note}", "ok"))
                     ok += 1
                 except urllib.error.HTTPError as exc:
                     msg = f"✗  {name}: HTTP {exc.code} {exc.reason}  [{url}]"
