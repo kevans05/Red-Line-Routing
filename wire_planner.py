@@ -724,8 +724,8 @@ class ProtectionFrame(ttk.LabelFrame):
         ttk.Label(mb_outer, text="Action / notes:").grid(
             row=2, column=0, sticky="e", padx=(0, 4), pady=2)
         self.mb_notes_var = tk.StringVar()
-        ttk.Entry(mb_outer, textvariable=self.mb_notes_var, width=32,
-                  ).grid(row=2, column=1, sticky="ew", pady=2)
+        ttk.Entry(mb_outer, textvariable=self.mb_notes_var, width=32).grid(
+            row=2, column=1, sticky="ew", pady=2)
         ttk.Label(mb_outer, text='e.g. "block input", "block comms", "disable channel 1"',
                   foreground="grey", font=("", 8)).grid(
             row=3, column=0, columnspan=2, sticky="w", padx=(0, 4), pady=(0, 2))
@@ -847,6 +847,11 @@ class JobDialog(tk.Toplevel):
         return combo
 
     def _fill_form(self, f, existing):
+        # Builds the body of the dialog.  Layout varies significantly by job type:
+        #   REMOVE / ADD    — one endpoint pair + wire
+        #   MOVE            — two endpoint pairs (remove + add) + two wire fields
+        #   BLOCK / UNBLOCK — protection frame only (no endpoints)
+        #   TESTING         — free-text notes box only
         row = 0
         ex = existing or {}
         color = self.TYPE_COLOR[self.job_type]
@@ -879,6 +884,9 @@ class JobDialog(tk.Toplevel):
             self._wire_combo(f, self.wire_var).grid(row=row, column=1, sticky="w", pady=(6,2))
 
         elif self.job_type == "MOVE":
+            # MOVE has two endpoint pairs: the wire being removed ("start"/"end") and
+            # the new wire being added ("add_start"/"add_end").  This lets engineers
+            # describe both sides of a terminal re-route in a single job record.
             self._section_label(f, row, "── REMOVE (Wire Being Moved) ──", "#c0392b"); row += 2
             self.ep_rem_start = _ep("Remove: Start")
             self.ep_rem_start.grid(row=row, column=0, sticky="nsew", padx=(0,4), pady=2)
@@ -1365,6 +1373,11 @@ def generate_html_table(jobs, project="", drawing_registry=None, title_page=None
 
     reg = drawing_registry or {}
 
+    # ep_html_r and prot_html_r are local closures that wrap the module-level _ep_html / _prot_html
+    # helpers but additionally look up each drawing name in the registry to append its title and
+    # to fall back to the registry URL when the endpoint's own drawing_url is blank.  They are
+    # defined inline (rather than reusing _ep_html/_prot_html) so that 'reg' is captured by closure
+    # without needing to pass it as a parameter on every call inside the tight loop below.
     def ep_html_r(ep):
         """Like _ep_html but enriches the drawing line with title and URL from the registry."""
         parts = []
@@ -1650,7 +1663,16 @@ class RelaySettingDialog(tk.Toplevel):
 # ──────────────────────────────────────────────────────────────────
 
 def _center_window(win, w=None, h=None):
-    """Center win on screen.  If w/h are omitted the window auto-sizes to content."""
+    """Center win on screen.  If w/h are omitted the window auto-sizes to content.
+
+    Auto-size logic: call update_idletasks() first so Tk has computed the widget
+    geometry, then read winfo_reqwidth/Height which reflects the packed content size.
+    A small padding (40px wide, 20px tall) is added to avoid tight edges.
+    The result is clamped to 90% of the screen so oversized dialogs are not clipped.
+    The y offset is nudged up by 40px to allow for taskbars at the bottom of screen.
+    Falls back to a plain geometry string without positioning if any Tk call fails
+    (e.g. on headless/CI environments).
+    """
     try:
         win.update_idletasks()
         if w is None: w = win.winfo_reqwidth()  + 40
@@ -2005,7 +2027,11 @@ class ProjectWizard(tk.Toplevel):
         # ── Right side ────────────────────────────────────────────
         right = tk.Frame(self, bg="#f5f6fa"); right.pack(side="right", fill="both", expand=True)
 
-        # Footer nav — pack BEFORE content so pack(expand=True) doesn't swallow it
+        # Footer nav — pack BEFORE content so pack(expand=True) doesn't swallow it.
+        # tk's pack geometry manager allocates remaining space to widgets with
+        # expand=True in the order they were packed.  By packing the footer first
+        # (side="bottom") and the content second (expand=True), the footer always
+        # gets its natural height and the content fills whatever is left above it.
         tk.Frame(right, bg="#d5d8dc", height=1).pack(fill="x", side="bottom")
         nav = tk.Frame(right, bg="#eaecee"); nav.pack(fill="x", side="bottom")
         ttk.Button(nav, text="Cancel", command=self.destroy).pack(side="left", padx=12, pady=10)
@@ -2401,7 +2427,15 @@ class WirePlannerApp(tk.Tk):
     # ── Startup flow ─────────────────────────────────────────────
 
     def _startup_flow(self):
-        """Run once after the UI is ready: first-time setup → landing dialog."""
+        """Run once after the UI is ready: first-time setup → landing dialog.
+
+        Sequence:
+          1. If this is the first run (setup_complete absent), show SoftwareSetupDialog
+             to collect global base-URLs and write them to ~/.redlinerouting.json.
+          2. Always show LandingDialog so the user can open an existing project,
+             start a quick blank plan, or run the full wizard.
+          3. Dispatch based on the user's choice (open / wizard / quick-start).
+        """
         if not self.app_config.get("setup_complete"):
             dlg = SoftwareSetupDialog(self, self.app_config)
             if dlg.result is not None:
@@ -2454,9 +2488,13 @@ class WirePlannerApp(tk.Tk):
         messagebox.showinfo("Project Created",
             f"'{proj}' created at:\n{folder}\n\nYou're ready to start adding jobs.")
 
-    # ── History helpers ───────────────────────────────────────────
+    # ──────────────────────────────────────────────────────────────────
+    # History management
+    # ──────────────────────────────────────────────────────────────────
 
     def _add_to_history(self, key, value):
+        # Most-recently-used order: remove the value if it already exists, then
+        # re-insert at position 0 so the dropdown always leads with recent entries.
         value = value.strip()
         if not value:
             return
@@ -3105,6 +3143,11 @@ class WirePlannerApp(tk.Tk):
                 btn.configure(bg="#1c2833", fg="#7f8c8d")
 
     def _set_mode(self, mode):
+        # Two modes share the same window; only one frame is visible at a time.
+        # Planner mode: full tabbed notebook for editing jobs, drawings, relays, CROWs.
+        # Implementation mode: step-by-step checklist view with reference file viewer.
+        # Switching to impl refreshes both the job list and the downloaded-file tabs so
+        # the engineer always sees up-to-date information when moving to the field.
         self.mode_var.set(mode)
         self._update_mode_buttons(mode)
         if mode == "planner":
@@ -3115,6 +3158,10 @@ class WirePlannerApp(tk.Tk):
             self.impl_frame.pack(fill="both", expand=True, padx=6, pady=(0, 4))
             self._refresh_impl_list()
             self._refresh_file_tabs()
+
+    # ──────────────────────────────────────────────────────────────────
+    # Implementation mode
+    # ──────────────────────────────────────────────────────────────────
 
     def _build_impl_view(self, parent):
         pw_main = ttk.PanedWindow(parent, orient="horizontal")
@@ -3397,7 +3444,9 @@ class WirePlannerApp(tk.Tk):
         self.status_var.set(
             f"Auto-grouped: {len(removes)} remove(s) and {len(adds)} add(s) sorted by shared device.")
 
-    # ── Reports ───────────────────────────────────────────────────
+    # ──────────────────────────────────────────────────────────────────
+    # Export methods (report, table, CSV, HTML)
+    # ──────────────────────────────────────────────────────────────────
 
     def _preview_report(self):
         if not self.jobs: messagebox.showinfo("No Jobs","Add at least one job before previewing."); return
@@ -3453,7 +3502,9 @@ class WirePlannerApp(tk.Tk):
         messagebox.showinfo("HTML Opened",
             "The file has been opened in your browser.\n\nTo save as PDF:\nCtrl+P  →  Destination: Save as PDF")
 
-    # ── File I/O ─────────────────────────────────────────────────
+    # ──────────────────────────────────────────────────────────────────
+    # Save / Load
+    # ──────────────────────────────────────────────────────────────────
 
     def _new_plan(self):
         if self.jobs and not messagebox.askyesno("New Plan","Discard current plan and start fresh?"): return
@@ -3473,6 +3524,11 @@ class WirePlannerApp(tk.Tk):
         self.impl_preview.configure(state="disabled")
 
     def _open(self):
+        # File format: a single JSON object with keys:
+        #   project, title_page, drawing_registry, relay_settings, history, jobs
+        # After loading we re-scan jobs to backfill any drawings that exist in job
+        # endpoints but are missing from the registry (handles files saved by older
+        # versions that lacked the registry), then rebuild ep_history from scratch.
         path = filedialog.askopenfilename(filetypes=[("Wire Plan","*.wirePlan"),("JSON","*.json"),("All","*.*")])
         if not path: return
         try:
@@ -3517,6 +3573,9 @@ class WirePlannerApp(tk.Tk):
         self._write(path)
 
     def _write(self, path):
+        # Serialise the entire project to a single JSON file (indent=2 for readability).
+        # title_notes is a tk.Text widget so its content must be pulled out here rather
+        # than being stored continuously in title_page["notes"].
         try:
             tp = dict(self.title_page)
             tp["notes"] = self.title_notes.get("1.0", "end").strip()
