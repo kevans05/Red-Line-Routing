@@ -1604,6 +1604,568 @@ class RelaySettingDialog(tk.Toplevel):
 
 
 # ──────────────────────────────────────────────────────────────────
+# Startup / wizard dialogs
+# ──────────────────────────────────────────────────────────────────
+
+class SoftwareSetupDialog(tk.Toplevel):
+    """First-time global setup: collect base URLs."""
+    def __init__(self, parent, app_config):
+        super().__init__(parent)
+        self.title("Welcome to Red-Line-Routing — First Time Setup")
+        self.geometry("560x560")
+        self.resizable(False, False)
+        self.result = None
+        self._cfg_vars = {}
+        self._build(dict(app_config))
+        self.grab_set()
+        self.wait_window()
+
+    def _build(self, cfg):
+        hdr = tk.Frame(self, bg="#2c3e50"); hdr.pack(fill="x")
+        tk.Label(hdr, text="Red-Line-Routing", bg="#2c3e50", fg="white",
+                 font=("", 16, "bold"), pady=14).pack()
+        tk.Label(hdr, text="First-time setup — configure your organisation's base URLs",
+                 bg="#2c3e50", fg="#bdc3c7", font=("", 9)).pack(pady=(0, 14))
+
+        f = ttk.Frame(self, padding=14); f.pack(fill="both", expand=True)
+        ttk.Label(f, text="These are saved globally and apply to all projects.\n"
+                  "You can leave fields blank and fill them in later under File → Software Settings.",
+                  justify="left", foreground="grey").pack(anchor="w", pady=(0, 10))
+
+        sections = [
+            ("Drawings",       [("base_drawing_url",  "Base Drawing URL:"),
+                                 ("drawing_search_url","Drawing Search URL (future):")]),
+            ("Aspen",          [("aspen_url",          "Aspen URL (future):")]),
+            ("CROWs",          [("base_crow_url",      "Base CROW URL:")]),
+            ("Relay Settings", [("base_relay_url",     "Base Relay URL:")]),
+        ]
+        for sec, fields in sections:
+            lf = ttk.LabelFrame(f, text=sec, padding=8); lf.pack(fill="x", pady=(0, 6))
+            lf.columnconfigure(1, weight=1)
+            for r, (key, label) in enumerate(fields):
+                ttk.Label(lf, text=label).grid(row=r, column=0, sticky="e", padx=(0,6), pady=3)
+                var = tk.StringVar(value=cfg.get(key, ""))
+                self._cfg_vars[key] = var
+                ttk.Entry(lf, textvariable=var, width=44).grid(row=r, column=1, sticky="ew", pady=3)
+
+        bf = ttk.Frame(f); bf.pack(fill="x", pady=(10, 0))
+        ttk.Button(bf, text="Skip for Now", command=self._skip).pack(side="left")
+        ttk.Button(bf, text="Save & Continue", command=self._save).pack(side="right")
+
+    def _skip(self):
+        self.result = {}; self.destroy()
+
+    def _save(self):
+        self.result = {k: v.get().strip() for k, v in self._cfg_vars.items()}
+        self.destroy()
+
+
+class LandingDialog(tk.Toplevel):
+    """Welcome screen: open existing or start new project."""
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.title("Red-Line-Routing")
+        self.geometry("520x380")
+        self.resizable(False, False)
+        self.result = None
+        self.protocol("WM_DELETE_WINDOW", lambda: self._choose("new_quick"))
+        self._build()
+        self.grab_set()
+        self.wait_window()
+
+    def _build(self):
+        hdr = tk.Frame(self, bg="#2c3e50"); hdr.pack(fill="x")
+        tk.Label(hdr, text="Red-Line-Routing", bg="#2c3e50", fg="white",
+                 font=("", 18, "bold"), pady=18).pack()
+        tk.Label(hdr, text="All-in-one electrical job planner",
+                 bg="#2c3e50", fg="#bdc3c7", font=("", 10)).pack(pady=(0, 18))
+
+        f = ttk.Frame(self, padding=24); f.pack(fill="both", expand=True)
+        ttk.Label(f, text="What would you like to do?", font=("", 11)).pack(pady=(0, 18))
+
+        def _big_btn(parent, title, subtitle, bg, hl, cmd):
+            fr = tk.Frame(parent, bg=bg, cursor="hand2"); fr.pack(fill="x", pady=5, ipadx=12, ipady=14)
+            tk.Label(fr, text=title,    bg=bg, fg="white",  font=("", 12, "bold")).pack()
+            tk.Label(fr, text=subtitle, bg=bg, fg=hl, font=("", 9)).pack()
+            for w in [fr] + fr.winfo_children(): w.bind("<Button-1>", lambda _: cmd())
+            return fr
+
+        _big_btn(f, "Open Existing Project", "Browse for a .wirePlan file",
+                 "#1a5276", "#aed6f1", lambda: self._choose("open"))
+        _big_btn(f, "Create New Project", "Quick start or step-through wizard",
+                 "#1e8449", "#abebc6", self._new_choice)
+
+    def _new_choice(self):
+        dlg = NewProjectChoiceDialog(self)
+        if dlg.result: self._choose(dlg.result)
+
+    def _choose(self, result):
+        self.result = result; self.destroy()
+
+
+class NewProjectChoiceDialog(tk.Toplevel):
+    """Quick start vs wizard choice."""
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.title("New Project")
+        self.geometry("430x240")
+        self.resizable(False, False)
+        self.result = None
+        self._build()
+        self.grab_set()
+        self.wait_window()
+
+    def _build(self):
+        f = ttk.Frame(self, padding=20); f.pack(fill="both", expand=True)
+        ttk.Label(f, text="How would you like to start?", font=("", 11, "bold")).pack(pady=(0, 16))
+
+        def _card(parent, title, subtitle, bg, hl, val):
+            fr = tk.Frame(parent, bg=bg, cursor="hand2", relief="groove", bd=1)
+            fr.pack(fill="x", pady=4, ipadx=8, ipady=10)
+            tk.Label(fr, text=title,    bg=bg, fg="white", font=("", 11, "bold")).pack()
+            tk.Label(fr, text=subtitle, bg=bg, fg=hl,      font=("", 9)).pack()
+            for w in [fr] + fr.winfo_children():
+                w.bind("<Button-1>", lambda _, v=val: self._choose(v))
+
+        _card(f, "Quick Start", "Open a blank planner and start adding jobs immediately",
+              "#2c3e50", "#bdc3c7", "new_quick")
+        _card(f, "Setup Wizard", "Step-by-step: drawings, relays, CROWs, save location",
+              "#7d3c98", "#d2b4de", "new_wizard")
+
+    def _choose(self, val):
+        self.result = val; self.destroy()
+
+
+class WizardRelayDialog(tk.Toplevel):
+    """Add/edit a relay/device record in the wizard (includes Aspen settings tab)."""
+    def __init__(self, parent, existing=None, app_config=None):
+        super().__init__(parent)
+        self.title("Edit Relay / Device" if existing else "Add Relay / Device")
+        self.geometry("500x460")
+        self.resizable(False, False)
+        self.result = None
+        self._cfg = app_config or {}
+        self._build(existing or {})
+        self.grab_set()
+        self.wait_window()
+
+    def _build(self, ex):
+        nb = ttk.Notebook(self); nb.pack(fill="both", expand=True, padx=8, pady=8)
+
+        self.vars = {
+            "device_id":   tk.StringVar(value=ex.get("device_id", "")),
+            "title":       tk.StringVar(value=ex.get("title", "")),
+            "revision":    tk.StringVar(value=ex.get("revision", "")),
+            "engineer":    tk.StringVar(value=ex.get("engineer", "")),
+            "contact":     tk.StringVar(value=ex.get("contact", "")),
+            "url":         tk.StringVar(value=ex.get("url","") or self._cfg.get("base_relay_url","")),
+            "aspen_model": tk.StringVar(value=ex.get("aspen_model", "")),
+            "aspen_url":   tk.StringVar(value=ex.get("aspen_url","") or self._cfg.get("aspen_url","")),
+            "aspen_notes": tk.StringVar(value=ex.get("aspen_notes", "")),
+        }
+
+        # Tab 1: Device info
+        df = ttk.Frame(nb, padding=10); nb.add(df, text="Device Info"); df.columnconfigure(1, weight=1)
+        for r, (key, label) in enumerate([
+                ("device_id","Device ID: *"), ("title","Title:"), ("revision","Revision:"),
+                ("engineer","Engineer:"), ("contact","Contact (email/phone):"), ("url","URL:")]):
+            ttk.Label(df, text=label).grid(row=r, column=0, sticky="e", padx=(0,6), pady=4)
+            ttk.Entry(df, textvariable=self.vars[key], width=40).grid(row=r, column=1, sticky="ew", pady=4)
+
+        # Tab 2: Aspen
+        af = ttk.Frame(nb, padding=10); nb.add(af, text="Aspen Settings"); af.columnconfigure(1, weight=1)
+        ttk.Label(af, text="Aspen integration is a future feature. Fill in details now to be ready.",
+                  foreground="grey", wraplength=380, justify="left").grid(
+            row=0, column=0, columnspan=2, sticky="w", pady=(0, 10))
+        for r, (key, label) in enumerate([
+                ("aspen_model","Aspen Model Name:"), ("aspen_url","Aspen URL:"), ("aspen_notes","Notes:")]):
+            ttk.Label(af, text=label).grid(row=r+1, column=0, sticky="e", padx=(0,6), pady=4)
+            ttk.Entry(af, textvariable=self.vars[key], width=40).grid(row=r+1, column=1, sticky="ew", pady=4)
+
+        bf = ttk.Frame(self); bf.pack(fill="x", padx=8, pady=(0, 8))
+        ttk.Label(bf, text="* Required", foreground="grey", font=("",8)).pack(side="left")
+        ttk.Button(bf, text="Cancel", command=self.destroy).pack(side="right", padx=4)
+        ttk.Button(bf, text="Save",   command=self._save).pack(side="right")
+
+    def _save(self):
+        if not self.vars["device_id"].get().strip():
+            messagebox.showwarning("Required", "Device ID is required.", parent=self); return
+        self.result = {k: v.get().strip() for k, v in self.vars.items()}
+        self.destroy()
+
+
+class ProjectWizard(tk.Toplevel):
+    """Multi-step new-project wizard."""
+
+    _STEPS = ["Project Info", "Drawings", "Relays & Devices", "CROWs", "Summary"]
+
+    _SUGGESTIONS = [
+        ("Project Team",     "Add team members (engineers, technicians, supervisors) with roles and contacts."),
+        ("Outage Window",    "Record the planned outage date, start time, and expected duration."),
+        ("Safety Checklist", "Pre-work safety items: PPE requirements, isolation verification, grounding."),
+        ("Job Templates",    "Save common job sequences as reusable templates for standard terminal work."),
+        ("Protection Review","List protection devices that need before/after verification at re-energisation."),
+    ]
+
+    def __init__(self, parent, app_config=None):
+        super().__init__(parent)
+        self.title("New Project Wizard")
+        self.geometry("760x600")
+        self.minsize(680, 520)
+        self.result = None
+        self.app_config = app_config or {}
+        self._step = 0
+        self.wiz_vars = {}
+        self.wiz_notes_widget = None
+        self.wiz_drawings = {}
+        self.wiz_relays   = {}
+        self.wiz_crows    = []
+        self._build()
+        self.grab_set()
+        self.wait_window()
+
+    def _build(self):
+        # Sidebar
+        self._sidebar = tk.Frame(self, bg="#2c3e50", width=170)
+        self._sidebar.pack(side="left", fill="y"); self._sidebar.pack_propagate(False)
+        tk.Label(self._sidebar, text="New Project", bg="#2c3e50", fg="white",
+                 font=("", 11, "bold"), pady=14).pack()
+        ttk.Separator(self._sidebar).pack(fill="x")
+        self._step_widgets = []
+        for i, name in enumerate(self._STEPS):
+            row = tk.Frame(self._sidebar, bg="#2c3e50")
+            row.pack(fill="x")
+            num = tk.Label(row, text=str(i+1), bg="#34495e", fg="#7f8c8d",
+                           width=3, font=("", 9, "bold"))
+            num.pack(side="left", ipadx=4, ipady=5)
+            lbl = tk.Label(row, text=name, bg="#2c3e50", fg="#7f8c8d",
+                           font=("", 9), anchor="w", padx=6)
+            lbl.pack(side="left", fill="x", expand=True, ipady=5)
+            self._step_widgets.append((row, num, lbl))
+
+        # Right side
+        right = ttk.Frame(self); right.pack(side="right", fill="both", expand=True)
+
+        self._content = ttk.Frame(right); self._content.pack(fill="both", expand=True)
+        self._frames = []
+        for i in range(len(self._STEPS)):
+            sf = ttk.Frame(self._content, padding=(16, 12)); self._frames.append(sf)
+
+        self._build_step_info(self._frames[0])
+        self._build_step_drawings(self._frames[1])
+        self._build_step_relays(self._frames[2])
+        self._build_step_crows(self._frames[3])
+        self._build_step_summary(self._frames[4])
+
+        # Footer nav
+        ttk.Separator(right).pack(fill="x", side="bottom")
+        nav = ttk.Frame(right, padding=(12, 8)); nav.pack(fill="x", side="bottom")
+        ttk.Button(nav, text="Cancel", command=self.destroy).pack(side="left")
+        self._finish_btn = tk.Button(nav, text="Create Project ✓", bg="#27ae60", fg="white",
+                                     font=("", 9, "bold"), relief="flat", padx=12, pady=4,
+                                     cursor="hand2", command=self._finish)
+        self._next_btn  = ttk.Button(nav, text="Next →", command=self._next)
+        self._back_btn  = ttk.Button(nav, text="← Back", command=self._back)
+        self._back_btn.pack(side="right", padx=(4,0))
+        self._next_btn.pack(side="right", padx=4)
+        self._finish_btn.pack(side="right", padx=4)
+
+        self._show_step(0)
+
+    def _show_step(self, idx):
+        for f in self._frames: f.pack_forget()
+        self._frames[idx].pack(fill="both", expand=True)
+        self._step = idx
+        is_last = idx == len(self._STEPS) - 1
+
+        for i, (row, num, lbl) in enumerate(self._step_widgets):
+            if i == idx:
+                row.configure(bg="#1a5276"); num.configure(bg="#2980b9", fg="white")
+                lbl.configure(bg="#1a5276", fg="white")
+            elif i < idx:
+                row.configure(bg="#1e8449"); num.configure(bg="#27ae60", fg="white")
+                lbl.configure(bg="#1e8449", fg="#abebc6")
+            else:
+                row.configure(bg="#2c3e50"); num.configure(bg="#34495e", fg="#7f8c8d")
+                lbl.configure(bg="#2c3e50", fg="#7f8c8d")
+
+        self._back_btn.configure(state="normal" if idx > 0 else "disabled")
+        if is_last:
+            self._next_btn.pack_forget(); self._finish_btn.pack(side="right", padx=4)
+            self._refresh_summary()
+        else:
+            self._finish_btn.pack_forget(); self._next_btn.pack(side="right", padx=4)
+
+    def _next(self):
+        if self._validate(): self._show_step(self._step + 1)
+
+    def _back(self):
+        self._show_step(self._step - 1)
+
+    def _validate(self):
+        if self._step == 0:
+            if not self.wiz_vars.get("project_name", tk.StringVar()).get().strip():
+                messagebox.showwarning("Required", "Project Name is required.", parent=self); return False
+            if not self.wiz_vars.get("save_location", tk.StringVar()).get().strip():
+                messagebox.showwarning("Required", "Please choose a save location.", parent=self); return False
+        return True
+
+    # ── Step 1 ─────────────────────────────────────────────────────
+    def _build_step_info(self, parent):
+        ttk.Label(parent, text="Project Information", font=("", 13, "bold")).pack(anchor="w", pady=(0, 2))
+        ttk.Label(parent, text="Fill in the core project details. Fields marked * are required.",
+                  foreground="grey").pack(anchor="w", pady=(0, 12))
+
+        f = ttk.Frame(parent); f.pack(fill="x"); f.columnconfigure(1, weight=1)
+        row = [0]
+        def _field(key, label, hint=""):
+            ttk.Label(f, text=label).grid(row=row[0], column=0, sticky="e", padx=(0,8), pady=3)
+            var = tk.StringVar(); self.wiz_vars[key] = var
+            ttk.Entry(f, textvariable=var, width=44).grid(row=row[0], column=1, sticky="ew", pady=3)
+            row[0] += 1
+            if hint:
+                ttk.Label(f, text=hint, foreground="grey", font=("",8)).grid(
+                    row=row[0], column=0, columnspan=2, sticky="w", pady=(0,2)); row[0] += 1
+
+        _field("project_name", "Project Name: *")
+        _field("site_name",    "Site Name:")
+        _field("site_id",      "Site ID (XXXX):", "4-char site ID used in drawing name convention XXXX-YZZ-IIII-N")
+
+        # Save location with Browse button
+        ttk.Label(f, text="Save Location: *").grid(row=row[0], column=0, sticky="e", padx=(0,8), pady=3)
+        lf = ttk.Frame(f); lf.grid(row=row[0], column=1, sticky="ew", pady=3); lf.columnconfigure(0, weight=1)
+        self.wiz_vars["save_location"] = tk.StringVar()
+        ttk.Entry(lf, textvariable=self.wiz_vars["save_location"]).grid(row=0, column=0, sticky="ew")
+        ttk.Button(lf, text="Browse…", command=self._browse_location).grid(row=0, column=1, padx=(4,0))
+        row[0] += 1
+
+        ttk.Label(f, text="Notes:").grid(row=row[0], column=0, sticky="ne", padx=(0,8), pady=(6,0))
+        self.wiz_notes_widget = scrolledtext.ScrolledText(f, height=5, wrap="word", font=("",9))
+        self.wiz_notes_widget.grid(row=row[0], column=1, sticky="ew", pady=(6,0))
+
+        ttk.Label(parent, text="* Required", foreground="grey", font=("",8)).pack(anchor="w", pady=(6,0))
+
+    def _browse_location(self):
+        d = filedialog.askdirectory(title="Choose save location", parent=self)
+        if d: self.wiz_vars["save_location"].set(d)
+
+    # ── Step 2 ─────────────────────────────────────────────────────
+    def _build_step_drawings(self, parent):
+        ttk.Label(parent, text="Project Drawings", font=("", 13, "bold")).pack(anchor="w", pady=(0, 2))
+        ttk.Label(parent,
+                  text="Add drawings for this project (optional — you can add more later).\n"
+                  "Naming convention: XXXX-YZZ-IIII-N  (Site—Type—Subject—Serial—Sheet)",
+                  foreground="grey", justify="left").pack(anchor="w", pady=(0, 8))
+
+        tb = ttk.Frame(parent); tb.pack(fill="x", pady=(0, 4))
+        ttk.Button(tb, text="+ Add Drawing", command=self._wiz_add_drawing).pack(side="left", padx=2)
+        ttk.Button(tb, text="Edit",          command=self._wiz_edit_drawing).pack(side="left", padx=2)
+        ttk.Button(tb, text="Delete",        command=self._wiz_del_drawing).pack(side="left", padx=2)
+        tk.Button(tb, text="🔍 Search Drawings  (coming soon)", relief="flat",
+                  fg="#95a5a6", bg="#ecf0f1", state="disabled").pack(side="left", padx=(10,2))
+
+        fr = ttk.Frame(parent); fr.pack(fill="both", expand=True)
+        cols = ("Drawing","Title","Rev","URL")
+        self.wiz_drw_tree = ttk.Treeview(fr, columns=cols, show="headings")
+        for col, w in [("Drawing",140),("Title",160),("Rev",55),("URL",220)]:
+            self.wiz_drw_tree.heading(col, text=col)
+            self.wiz_drw_tree.column(col, width=w, stretch=(col=="URL"))
+        vsb = ttk.Scrollbar(fr, orient="vertical", command=self.wiz_drw_tree.yview)
+        self.wiz_drw_tree.configure(yscrollcommand=vsb.set)
+        self.wiz_drw_tree.pack(side="left", fill="both", expand=True); vsb.pack(side="right", fill="y")
+        self.wiz_drw_tree.bind("<Double-1>", lambda _: self._wiz_edit_drawing())
+
+    def _wiz_add_drawing(self):
+        dlg = DrawingEditDialog(self, base_url=self.app_config.get("base_drawing_url",""))
+        if dlg.result:
+            n = dlg.result["name"]
+            self.wiz_drawings[n] = {k: dlg.result[k] for k in ("title","rev","url","notes")}
+            self._wiz_refresh_drawings()
+
+    def _wiz_edit_drawing(self):
+        sel = self.wiz_drw_tree.selection()
+        if not sel: return
+        n = sel[0]; info = self.wiz_drawings.get(n, {})
+        dlg = DrawingEditDialog(self, existing={"name":n,**info},
+                                base_url=self.app_config.get("base_drawing_url",""))
+        if dlg.result:
+            old = dlg.result.get("old_name"); new = dlg.result["name"]
+            if old and old != new: self.wiz_drawings.pop(old, None)
+            self.wiz_drawings[new] = {k: dlg.result[k] for k in ("title","rev","url","notes")}
+            self._wiz_refresh_drawings()
+
+    def _wiz_del_drawing(self):
+        sel = self.wiz_drw_tree.selection()
+        if not sel: return
+        if messagebox.askyesno("Delete", f"Remove '{sel[0]}'?", parent=self):
+            self.wiz_drawings.pop(sel[0], None); self._wiz_refresh_drawings()
+
+    def _wiz_refresh_drawings(self):
+        for iid in self.wiz_drw_tree.get_children(): self.wiz_drw_tree.delete(iid)
+        for n, i in sorted(self.wiz_drawings.items()):
+            self.wiz_drw_tree.insert("","end",iid=n,
+                values=(n,i.get("title",""),i.get("rev",""),i.get("url","")))
+
+    # ── Step 3 ─────────────────────────────────────────────────────
+    def _build_step_relays(self, parent):
+        ttk.Label(parent, text="Relays & Devices", font=("", 13, "bold")).pack(anchor="w", pady=(0, 2))
+        ttk.Label(parent,
+                  text="Add relay protection devices (optional — you can add more in Relay Settings later).\n"
+                  "All relays are devices. Aspen settings can be attached to each relay record.",
+                  foreground="grey", justify="left").pack(anchor="w", pady=(0, 8))
+
+        tb = ttk.Frame(parent); tb.pack(fill="x", pady=(0, 4))
+        ttk.Button(tb, text="+ Add",  command=self._wiz_add_relay).pack(side="left", padx=2)
+        ttk.Button(tb, text="Edit",   command=self._wiz_edit_relay).pack(side="left", padx=2)
+        ttk.Button(tb, text="Delete", command=self._wiz_del_relay).pack(side="left", padx=2)
+
+        fr = ttk.Frame(parent); fr.pack(fill="both", expand=True)
+        cols = ("Device ID","Title","Rev","Engineer","Aspen")
+        self.wiz_rly_tree = ttk.Treeview(fr, columns=cols, show="headings")
+        for col, w in [("Device ID",100),("Title",155),("Rev",55),("Engineer",120),("Aspen",70)]:
+            self.wiz_rly_tree.heading(col, text=col)
+            self.wiz_rly_tree.column(col, width=w, stretch=(col=="Title"))
+        vsb = ttk.Scrollbar(fr, orient="vertical", command=self.wiz_rly_tree.yview)
+        self.wiz_rly_tree.configure(yscrollcommand=vsb.set)
+        self.wiz_rly_tree.pack(side="left", fill="both", expand=True); vsb.pack(side="right", fill="y")
+        self.wiz_rly_tree.bind("<Double-1>", lambda _: self._wiz_edit_relay())
+
+    def _wiz_add_relay(self):
+        dlg = WizardRelayDialog(self, app_config=self.app_config)
+        if dlg.result:
+            dev = dlg.result["device_id"]
+            self.wiz_relays[dev] = {k: v for k, v in dlg.result.items() if k != "device_id"}
+            self._wiz_refresh_relays()
+
+    def _wiz_edit_relay(self):
+        sel = self.wiz_rly_tree.selection()
+        if not sel: return
+        dev = sel[0]; info = self.wiz_relays.get(dev, {})
+        dlg = WizardRelayDialog(self, existing={"device_id":dev,**info}, app_config=self.app_config)
+        if dlg.result:
+            old = dev; new = dlg.result["device_id"]
+            if old != new: self.wiz_relays.pop(old, None)
+            self.wiz_relays[new] = {k: v for k, v in dlg.result.items() if k != "device_id"}
+            self._wiz_refresh_relays()
+
+    def _wiz_del_relay(self):
+        sel = self.wiz_rly_tree.selection()
+        if not sel: return
+        if messagebox.askyesno("Delete", f"Remove '{sel[0]}'?", parent=self):
+            self.wiz_relays.pop(sel[0], None); self._wiz_refresh_relays()
+
+    def _wiz_refresh_relays(self):
+        for iid in self.wiz_rly_tree.get_children(): self.wiz_rly_tree.delete(iid)
+        for dev, info in sorted(self.wiz_relays.items()):
+            aspen = "✓" if info.get("aspen_model") or info.get("aspen_url") else "—"
+            self.wiz_rly_tree.insert("","end",iid=dev,
+                values=(dev,info.get("title",""),info.get("revision",""),info.get("engineer",""),aspen))
+
+    # ── Step 4 ─────────────────────────────────────────────────────
+    def _build_step_crows(self, parent):
+        ttk.Label(parent, text="CROW / Outage Records", font=("", 13, "bold")).pack(anchor="w", pady=(0, 2))
+        ttk.Label(parent,
+                  text="Attach any CROW outage records to this project (optional).\n"
+                  "You can add and edit CROWs at any time in the CROW tab.",
+                  foreground="grey", justify="left").pack(anchor="w", pady=(0, 8))
+
+        tb = ttk.Frame(parent); tb.pack(fill="x", pady=(0, 4))
+        ttk.Button(tb, text="+ Add CROW", command=self._wiz_add_crow).pack(side="left", padx=2)
+        ttk.Button(tb, text="Edit",       command=self._wiz_edit_crow).pack(side="left", padx=2)
+        ttk.Button(tb, text="Remove",     command=self._wiz_del_crow).pack(side="left", padx=2)
+
+        fr = ttk.Frame(parent); fr.pack(fill="both", expand=True)
+        cols = ("Outage Number","URL")
+        self.wiz_crow_tree = ttk.Treeview(fr, columns=cols, show="headings")
+        self.wiz_crow_tree.heading("Outage Number", text="Outage Number")
+        self.wiz_crow_tree.heading("URL", text="URL")
+        self.wiz_crow_tree.column("Outage Number", width=160, stretch=False)
+        self.wiz_crow_tree.column("URL", width=380)
+        vsb = ttk.Scrollbar(fr, orient="vertical", command=self.wiz_crow_tree.yview)
+        self.wiz_crow_tree.configure(yscrollcommand=vsb.set)
+        self.wiz_crow_tree.pack(side="left", fill="both", expand=True); vsb.pack(side="right", fill="y")
+        self.wiz_crow_tree.bind("<Double-1>", lambda _: self._wiz_edit_crow())
+
+    def _wiz_add_crow(self):
+        dlg = CrowDialog(self, base_url=self.app_config.get("base_crow_url",""))
+        if dlg.result: self.wiz_crows.append(dlg.result); self._wiz_refresh_crows()
+
+    def _wiz_edit_crow(self):
+        sel = self.wiz_crow_tree.selection()
+        if not sel: return
+        idx = self.wiz_crow_tree.index(sel[0])
+        dlg = CrowDialog(self, existing=self.wiz_crows[idx])
+        if dlg.result: self.wiz_crows[idx] = dlg.result; self._wiz_refresh_crows()
+
+    def _wiz_del_crow(self):
+        sel = self.wiz_crow_tree.selection()
+        if not sel: return
+        self.wiz_crows.pop(self.wiz_crow_tree.index(sel[0])); self._wiz_refresh_crows()
+
+    def _wiz_refresh_crows(self):
+        for iid in self.wiz_crow_tree.get_children(): self.wiz_crow_tree.delete(iid)
+        for c in self.wiz_crows:
+            self.wiz_crow_tree.insert("","end",values=(c.get("outage_number",""),c.get("url","")))
+
+    # ── Step 5 ─────────────────────────────────────────────────────
+    def _build_step_summary(self, parent):
+        ttk.Label(parent, text="Summary", font=("", 13, "bold")).pack(anchor="w", pady=(0, 2))
+        self._summary_text = scrolledtext.ScrolledText(
+            parent, height=8, font=("Courier", 9), state="disabled", wrap="word")
+        self._summary_text.pack(fill="x", pady=(0, 10))
+
+        sf = ttk.LabelFrame(parent, text="Suggested future additions", padding=8)
+        sf.pack(fill="both", expand=True)
+        for title, desc in self._SUGGESTIONS:
+            rf = ttk.Frame(sf); rf.pack(fill="x", pady=2)
+            ttk.Label(rf, text=f"● {title}", font=("", 9, "bold")).pack(anchor="w")
+            ttk.Label(rf, text=f"   {desc}", foreground="grey", font=("", 8),
+                      wraplength=500, justify="left").pack(anchor="w")
+
+    def _refresh_summary(self):
+        proj = self.wiz_vars.get("project_name",  tk.StringVar()).get().strip() or "(unnamed)"
+        site = self.wiz_vars.get("site_name",      tk.StringVar()).get().strip() or "—"
+        sid  = self.wiz_vars.get("site_id",        tk.StringVar()).get().strip() or "—"
+        loc  = self.wiz_vars.get("save_location",  tk.StringVar()).get().strip() or "—"
+        lines = [
+            f"Project:        {proj}",
+            f"Site:           {site}  (ID: {sid})",
+            f"Save folder:    {loc}/{proj}",
+            f"",
+            f"Drawings:       {len(self.wiz_drawings)} added",
+            f"Relay records:  {len(self.wiz_relays)} added",
+            f"CROWs:          {len(self.wiz_crows)} added",
+            f"",
+            f"Click 'Create Project' to build the folder structure and save.",
+        ]
+        self._summary_text.configure(state="normal")
+        self._summary_text.delete("1.0","end")
+        self._summary_text.insert("1.0","\n".join(lines))
+        self._summary_text.configure(state="disabled")
+
+    def _finish(self):
+        if not self._validate() and self._step != 4:
+            self._show_step(0); return
+        proj = self.wiz_vars.get("project_name", tk.StringVar()).get().strip()
+        loc  = self.wiz_vars.get("save_location",tk.StringVar()).get().strip()
+        if not proj or not loc:
+            messagebox.showwarning("Required",
+                "Project Name and Save Location are required.", parent=self)
+            self._show_step(0); return
+        self.result = {
+            "project_name":  proj,
+            "site_name":     self.wiz_vars.get("site_name",    tk.StringVar()).get().strip(),
+            "site_id":       self.wiz_vars.get("site_id",      tk.StringVar()).get().strip(),
+            "save_location": loc,
+            "notes":         self.wiz_notes_widget.get("1.0","end").strip() if self.wiz_notes_widget else "",
+            "drawings":      dict(self.wiz_drawings),
+            "relays":        dict(self.wiz_relays),
+            "crows":         list(self.wiz_crows),
+        }
+        self.destroy()
+
+
+# ──────────────────────────────────────────────────────────────────
 # Main application
 # ──────────────────────────────────────────────────────────────────
 
@@ -1628,6 +2190,63 @@ class WirePlannerApp(tk.Tk):
         self.app_config = self._load_app_config()   # global prefs (~/.redlinerouting.json)
         self._build_menu()
         self._build_ui()
+        self.after_idle(self._startup_flow)
+
+    # ── Startup flow ─────────────────────────────────────────────
+
+    def _startup_flow(self):
+        """Run once after the UI is ready: first-time setup → landing dialog."""
+        if not self.app_config.get("setup_complete"):
+            dlg = SoftwareSetupDialog(self, self.app_config)
+            if dlg.result is not None:
+                self.app_config.update(dlg.result)
+                self.app_config["setup_complete"] = True
+                self._save_app_config()
+
+        dlg = LandingDialog(self)
+        choice = dlg.result or "new_quick"
+
+        if choice == "open":
+            self._open()
+        elif choice == "new_wizard":
+            wiz = ProjectWizard(self, app_config=self.app_config)
+            if wiz.result:
+                self._apply_wizard_result(wiz.result)
+        # "new_quick" → blank plan, nothing to do
+
+    def _apply_wizard_result(self, result):
+        """Apply wizard output: populate app state, create folder structure, save."""
+        self.project_var.set(result["project_name"])
+        self.drawing_registry = result.get("drawings", {})
+        self.relay_registry   = result.get("relays",   {})
+        self.title_page = {
+            "notes": result.get("notes", ""),
+            "crows": result.get("crows", []),
+        }
+
+        proj = result["project_name"]
+        safe = "".join(c if c not in r'<>:"/\|?*' else "_" for c in proj) if proj else "RedLine_Plan"
+        folder = os.path.join(result["save_location"], safe)
+        try:
+            os.makedirs(folder, exist_ok=True)
+            for sub in ("Drawings", "Relay Settings", "CROW Outage", "Other"):
+                os.makedirs(os.path.join(folder, sub), exist_ok=True)
+        except Exception as exc:
+            messagebox.showerror("Error", f"Could not create project folder:\n{exc}"); return
+
+        self.project_folder = folder
+        path = os.path.join(folder, safe + ".wirePlan")
+        self.current_file = path
+
+        self.title_notes.delete("1.0", "end")
+        self.title_notes.insert("1.0", result.get("notes", ""))
+        self._refresh_list()
+        self._refresh_drawings_list()
+        self._refresh_relay_list()
+        self._refresh_crows()
+        self._write(path)
+        messagebox.showinfo("Project Created",
+            f"'{proj}' created at:\n{folder}\n\nYou're ready to start adding jobs.")
 
     # ── History helpers ───────────────────────────────────────────
 
