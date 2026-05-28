@@ -1604,52 +1604,91 @@ class RelaySettingDialog(tk.Toplevel):
 
 
 # ──────────────────────────────────────────────────────────────────
-# Startup / wizard dialogs
+# Startup / wizard dialogs  —  shared UI helpers
 # ──────────────────────────────────────────────────────────────────
+
+def _center_window(win, w, h):
+    win.update_idletasks()
+    x = max(0, (win.winfo_screenwidth()  - w) // 2)
+    y = max(0, (win.winfo_screenheight() - h) // 2 - 40)
+    win.geometry(f"{w}x{h}+{x}+{y}")
+
+def _hover_btn(frame, bg_normal, bg_hover):
+    """Add Enter/Leave colour-swap to a tk.Frame used as a clickable button."""
+    def _all_widgets():
+        result = [frame]
+        def _walk(w):
+            for c in w.winfo_children():
+                result.append(c); _walk(c)
+        _walk(frame)
+        return result
+    def _enter(_):
+        for w in _all_widgets():
+            try: w.configure(bg=bg_hover)
+            except tk.TclError: pass
+    def _leave(_):
+        for w in _all_widgets():
+            try: w.configure(bg=bg_normal)
+            except tk.TclError: pass
+    for w in _all_widgets():
+        w.bind("<Enter>", _enter, add=True)
+        w.bind("<Leave>", _leave, add=True)
+
+def _styled_header(parent, title, subtitle=None, bg="#1c2833"):
+    hdr = tk.Frame(parent, bg=bg); hdr.pack(fill="x")
+    tk.Label(hdr, text=title, bg=bg, fg="white",
+             font=("", 15, "bold"), pady=18, padx=24).pack(anchor="w")
+    if subtitle:
+        tk.Label(hdr, text=subtitle, bg=bg, fg="#85929e",
+                 font=("", 9), pady=0, padx=24).pack(anchor="w")
+    tk.Frame(hdr, bg=bg, height=14).pack()   # bottom padding
+    return hdr
 
 class SoftwareSetupDialog(tk.Toplevel):
     """First-time global setup: collect base URLs."""
     def __init__(self, parent, app_config):
         super().__init__(parent)
-        self.title("Welcome to Red-Line-Routing — First Time Setup")
-        self.geometry("560x560")
+        self.title("Red-Line-Routing — First Time Setup")
         self.resizable(False, False)
         self.result = None
         self._cfg_vars = {}
         self._build(dict(app_config))
+        _center_window(self, 580, 560)
         self.grab_set()
         self.wait_window()
 
     def _build(self, cfg):
-        hdr = tk.Frame(self, bg="#2c3e50"); hdr.pack(fill="x")
-        tk.Label(hdr, text="Red-Line-Routing", bg="#2c3e50", fg="white",
-                 font=("", 16, "bold"), pady=14).pack()
-        tk.Label(hdr, text="First-time setup — configure your organisation's base URLs",
-                 bg="#2c3e50", fg="#bdc3c7", font=("", 9)).pack(pady=(0, 14))
+        _styled_header(self, "Welcome to Red-Line-Routing",
+                       "First-time setup — configure your organisation's base URLs")
 
-        f = ttk.Frame(self, padding=14); f.pack(fill="both", expand=True)
-        ttk.Label(f, text="These are saved globally and apply to all projects.\n"
-                  "You can leave fields blank and fill them in later under File → Software Settings.",
-                  justify="left", foreground="grey").pack(anchor="w", pady=(0, 10))
+        body = ttk.Frame(self, padding=(20, 12, 20, 0)); body.pack(fill="both", expand=True)
+        ttk.Label(body,
+                  text="These settings are global and apply to all projects.\n"
+                       "You can leave fields blank and update them later via File → Software Settings.",
+                  justify="left", foreground="#566573").pack(anchor="w", pady=(0, 12))
 
         sections = [
-            ("Drawings",       [("base_drawing_url",  "Base Drawing URL:"),
-                                 ("drawing_search_url","Drawing Search URL (future):")]),
-            ("Aspen",          [("aspen_url",          "Aspen URL (future):")]),
-            ("CROWs",          [("base_crow_url",      "Base CROW URL:")]),
-            ("Relay Settings", [("base_relay_url",     "Base Relay URL:")]),
+            ("Drawings",       [("base_drawing_url",   "Base Drawing URL:"),
+                                 ("drawing_search_url", "Drawing Search URL (future):")]),
+            ("Aspen",          [("aspen_url",           "Aspen URL (future):")]),
+            ("CROWs",          [("base_crow_url",       "Base CROW URL:")]),
+            ("Relay Settings", [("base_relay_url",      "Base Relay URL:")]),
         ]
         for sec, fields in sections:
-            lf = ttk.LabelFrame(f, text=sec, padding=8); lf.pack(fill="x", pady=(0, 6))
-            lf.columnconfigure(1, weight=1)
+            lf = ttk.LabelFrame(body, text=sec, padding=(10, 6))
+            lf.pack(fill="x", pady=(0, 8)); lf.columnconfigure(1, weight=1)
             for r, (key, label) in enumerate(fields):
-                ttk.Label(lf, text=label).grid(row=r, column=0, sticky="e", padx=(0,6), pady=3)
+                ttk.Label(lf, text=label).grid(row=r, column=0, sticky="e", padx=(0, 8), pady=4)
                 var = tk.StringVar(value=cfg.get(key, ""))
                 self._cfg_vars[key] = var
-                ttk.Entry(lf, textvariable=var, width=44).grid(row=r, column=1, sticky="ew", pady=3)
+                ttk.Entry(lf, textvariable=var, width=46).grid(row=r, column=1, sticky="ew", pady=4)
 
-        bf = ttk.Frame(f); bf.pack(fill="x", pady=(10, 0))
-        ttk.Button(bf, text="Skip for Now", command=self._skip).pack(side="left")
+        sep = ttk.Frame(self); sep.pack(fill="x", side="bottom")
+        ttk.Separator(sep).pack(fill="x")
+        bf = ttk.Frame(sep, padding=(20, 8)); bf.pack(fill="x")
+        ttk.Label(bf, text="You can skip this and fill in URLs later.",
+                  foreground="#aab7b8", font=("", 8)).pack(side="left")
+        ttk.Button(bf, text="Skip for Now",    command=self._skip).pack(side="right", padx=(6, 0))
         ttk.Button(bf, text="Save & Continue", command=self._save).pack(side="right")
 
     def _skip(self):
@@ -1665,35 +1704,55 @@ class LandingDialog(tk.Toplevel):
     def __init__(self, parent):
         super().__init__(parent)
         self.title("Red-Line-Routing")
-        self.geometry("520x380")
         self.resizable(False, False)
         self.result = None
         self.protocol("WM_DELETE_WINDOW", lambda: self._choose("new_quick"))
         self._build()
+        _center_window(self, 540, 400)
         self.grab_set()
         self.wait_window()
 
     def _build(self):
-        hdr = tk.Frame(self, bg="#2c3e50"); hdr.pack(fill="x")
-        tk.Label(hdr, text="Red-Line-Routing", bg="#2c3e50", fg="white",
-                 font=("", 18, "bold"), pady=18).pack()
+        # ── Header ────────────────────────────────────────────────
+        hdr = tk.Frame(self, bg="#1c2833"); hdr.pack(fill="x")
+        tk.Label(hdr, text="Red-Line-Routing", bg="#1c2833", fg="white",
+                 font=("", 19, "bold"), padx=28, pady=20, anchor="w").pack(fill="x")
         tk.Label(hdr, text="All-in-one electrical job planner",
-                 bg="#2c3e50", fg="#bdc3c7", font=("", 10)).pack(pady=(0, 18))
+                 bg="#1c2833", fg="#7fb3c8", font=("", 10), padx=28, pady=0,
+                 anchor="w").pack(fill="x")
+        tk.Frame(hdr, bg="#1c2833", height=16).pack()
 
-        f = ttk.Frame(self, padding=24); f.pack(fill="both", expand=True)
-        ttk.Label(f, text="What would you like to do?", font=("", 11)).pack(pady=(0, 18))
+        # ── Body ──────────────────────────────────────────────────
+        body = tk.Frame(self, bg="#eaecee"); body.pack(fill="both", expand=True)
+        tk.Label(body, text="What would you like to do?", bg="#eaecee",
+                 font=("", 11), fg="#2c3e50").pack(pady=(22, 10))
 
-        def _big_btn(parent, title, subtitle, bg, hl, cmd):
-            fr = tk.Frame(parent, bg=bg, cursor="hand2"); fr.pack(fill="x", pady=5, ipadx=12, ipady=14)
-            tk.Label(fr, text=title,    bg=bg, fg="white",  font=("", 12, "bold")).pack()
-            tk.Label(fr, text=subtitle, bg=bg, fg=hl, font=("", 9)).pack()
-            for w in [fr] + fr.winfo_children(): w.bind("<Button-1>", lambda _: cmd())
-            return fr
+        def _action_card(parent, icon, title, subtitle, bg, hover, cmd):
+            wrapper = tk.Frame(parent, bg="#eaecee")
+            wrapper.pack(fill="x", padx=36, pady=5)
+            fr = tk.Frame(wrapper, bg=bg, cursor="hand2")
+            fr.pack(fill="x")
+            # Left accent strip
+            accent = tk.Frame(fr, bg=hover, width=6); accent.pack(side="left", fill="y")
+            content = tk.Frame(fr, bg=bg); content.pack(side="left", fill="both",
+                                                         expand=True, padx=16, pady=14)
+            tk.Label(content, text=f"{icon}  {title}", bg=bg, fg="white",
+                     font=("", 12, "bold"), anchor="w").pack(fill="x")
+            tk.Label(content, text=subtitle, bg=bg, fg="#d6eaf8",
+                     font=("", 9), anchor="w").pack(fill="x", pady=(2, 0))
+            _hover_btn(fr, bg, hover)
+            for w in [fr, accent, content] + list(content.winfo_children()):
+                w.bind("<Button-1>", lambda _, c=cmd: c())
 
-        _big_btn(f, "Open Existing Project", "Browse for a .wirePlan file",
-                 "#1a5276", "#aed6f1", lambda: self._choose("open"))
-        _big_btn(f, "Create New Project", "Quick start or step-through wizard",
-                 "#1e8449", "#abebc6", self._new_choice)
+        _action_card(body, "📂", "Open Existing Project",
+                     "Browse for a .wirePlan file",
+                     "#1a5276", "#21618c", lambda: self._choose("open"))
+        _action_card(body, "✦", "Create New Project",
+                     "Quick start or step-through setup wizard",
+                     "#1e6b3c", "#1e8449", self._new_choice)
+
+        tk.Label(body, text="Red-Line-Routing  —  Electrical Job Planner",
+                 bg="#eaecee", fg="#aab7b8", font=("", 8)).pack(pady=(16, 0))
 
     def _new_choice(self):
         dlg = NewProjectChoiceDialog(self)
@@ -1708,29 +1767,40 @@ class NewProjectChoiceDialog(tk.Toplevel):
     def __init__(self, parent):
         super().__init__(parent)
         self.title("New Project")
-        self.geometry("430x240")
         self.resizable(False, False)
         self.result = None
         self._build()
+        _center_window(self, 460, 280)
         self.grab_set()
         self.wait_window()
 
     def _build(self):
-        f = ttk.Frame(self, padding=20); f.pack(fill="both", expand=True)
-        ttk.Label(f, text="How would you like to start?", font=("", 11, "bold")).pack(pady=(0, 16))
+        _styled_header(self, "Create New Project", "Choose how you'd like to begin")
 
-        def _card(parent, title, subtitle, bg, hl, val):
-            fr = tk.Frame(parent, bg=bg, cursor="hand2", relief="groove", bd=1)
-            fr.pack(fill="x", pady=4, ipadx=8, ipady=10)
-            tk.Label(fr, text=title,    bg=bg, fg="white", font=("", 11, "bold")).pack()
-            tk.Label(fr, text=subtitle, bg=bg, fg=hl,      font=("", 9)).pack()
-            for w in [fr] + fr.winfo_children():
+        body = tk.Frame(self, bg="#eaecee"); body.pack(fill="both", expand=True)
+
+        def _card(parent, icon, title, subtitle, bg, hover, val):
+            wrapper = tk.Frame(parent, bg="#eaecee")
+            wrapper.pack(fill="x", padx=24, pady=5)
+            fr = tk.Frame(wrapper, bg=bg, cursor="hand2")
+            fr.pack(fill="x")
+            accent = tk.Frame(fr, bg=hover, width=5); accent.pack(side="left", fill="y")
+            inner = tk.Frame(fr, bg=bg); inner.pack(side="left", fill="both",
+                                                      expand=True, padx=14, pady=12)
+            tk.Label(inner, text=f"{icon}  {title}", bg=bg, fg="white",
+                     font=("", 11, "bold"), anchor="w").pack(fill="x")
+            tk.Label(inner, text=subtitle, bg=bg, fg="#d6eaf8",
+                     font=("", 9), anchor="w").pack(fill="x", pady=(2, 0))
+            _hover_btn(fr, bg, hover)
+            for w in [fr, accent, inner] + list(inner.winfo_children()):
                 w.bind("<Button-1>", lambda _, v=val: self._choose(v))
 
-        _card(f, "Quick Start", "Open a blank planner and start adding jobs immediately",
-              "#2c3e50", "#bdc3c7", "new_quick")
-        _card(f, "Setup Wizard", "Step-by-step: drawings, relays, CROWs, save location",
-              "#7d3c98", "#d2b4de", "new_wizard")
+        _card(body, "⚡", "Quick Start",
+              "Open a blank planner and start adding jobs straight away",
+              "#2c3e50", "#3d5166", "new_quick")
+        _card(body, "🧭", "Setup Wizard",
+              "Step-by-step: drawings, relays, CROWs, and save location",
+              "#6c2f8a", "#7d3c98", "new_wizard")
 
     def _choose(self, val):
         self.result = val; self.destroy()
@@ -1807,11 +1877,19 @@ class ProjectWizard(tk.Toplevel):
         ("Protection Review","List protection devices that need before/after verification at re-energisation."),
     ]
 
+    # Step accent colours: (sidebar-active, sidebar-done, content-strip)
+    _STEP_COLORS = [
+        ("#154360", "#1a5276", "#2980b9"),   # Project Info  — blue
+        ("#0b3d2e", "#1b6b46", "#27ae60"),   # Drawings      — green
+        ("#4a1f6a", "#6c3483", "#8e44ad"),   # Relays        — purple
+        ("#6e2706", "#943126", "#e74c3c"),   # CROWs         — red
+        ("#17202a", "#273746", "#566573"),   # Summary       — slate
+    ]
+
     def __init__(self, parent, app_config=None):
         super().__init__(parent)
         self.title("New Project Wizard")
-        self.geometry("760x600")
-        self.minsize(680, 520)
+        self.minsize(720, 560)
         self.result = None
         self.app_config = app_config or {}
         self._step = 0
@@ -1821,54 +1899,77 @@ class ProjectWizard(tk.Toplevel):
         self.wiz_relays   = {}
         self.wiz_crows    = []
         self._build()
+        _center_window(self, 820, 640)
         self.grab_set()
         self.wait_window()
 
     def _build(self):
-        # Sidebar
-        self._sidebar = tk.Frame(self, bg="#2c3e50", width=170)
-        self._sidebar.pack(side="left", fill="y"); self._sidebar.pack_propagate(False)
-        tk.Label(self._sidebar, text="New Project", bg="#2c3e50", fg="white",
-                 font=("", 11, "bold"), pady=14).pack()
-        ttk.Separator(self._sidebar).pack(fill="x")
+        # ── Sidebar ───────────────────────────────────────────────
+        self._sidebar = tk.Frame(self, bg="#1c2833", width=195)
+        self._sidebar.pack(side="left", fill="y")
+        self._sidebar.pack_propagate(False)
+
+        tk.Label(self._sidebar, text="New Project", bg="#1c2833", fg="white",
+                 font=("", 12, "bold"), padx=18, pady=18, anchor="w").pack(fill="x")
+        tk.Frame(self._sidebar, bg="#2e4053", height=1).pack(fill="x")
+
         self._step_widgets = []
         for i, name in enumerate(self._STEPS):
-            row = tk.Frame(self._sidebar, bg="#2c3e50")
-            row.pack(fill="x")
-            num = tk.Label(row, text=str(i+1), bg="#34495e", fg="#7f8c8d",
-                           width=3, font=("", 9, "bold"))
-            num.pack(side="left", ipadx=4, ipady=5)
-            lbl = tk.Label(row, text=name, bg="#2c3e50", fg="#7f8c8d",
-                           font=("", 9), anchor="w", padx=6)
-            lbl.pack(side="left", fill="x", expand=True, ipady=5)
-            self._step_widgets.append((row, num, lbl))
+            row = tk.Frame(self._sidebar, bg="#1c2833"); row.pack(fill="x")
+            # Number badge
+            badge_bg, _, _ = self._STEP_COLORS[i]
+            num_cv = tk.Canvas(row, width=30, height=30, bg="#1c2833",
+                               highlightthickness=0)
+            num_cv.pack(side="left", padx=(12, 0), pady=6)
+            num_cv.create_oval(3, 3, 27, 27, fill="#2e4053", outline="")
+            num_cv.create_text(15, 15, text=str(i+1), fill="#7f8c8d",
+                               font=("", 9, "bold"), tags="txt")
+            lbl = tk.Label(row, text=name, bg="#1c2833", fg="#7f8c8d",
+                           font=("", 9), anchor="w", padx=8)
+            lbl.pack(side="left", fill="x", expand=True, ipady=6)
+            self._step_widgets.append((row, num_cv, lbl))
 
-        # Right side
-        right = ttk.Frame(self); right.pack(side="right", fill="both", expand=True)
+        # ── Right side ────────────────────────────────────────────
+        right = tk.Frame(self, bg="#f5f6fa"); right.pack(side="right", fill="both", expand=True)
 
-        self._content = ttk.Frame(right); self._content.pack(fill="both", expand=True)
+        # Step accent strip (coloured top border of content area)
+        self._accent_strip = tk.Frame(right, height=4, bg="#2980b9")
+        self._accent_strip.pack(fill="x")
+
+        # Content area
+        self._content = tk.Frame(right, bg="#f5f6fa")
+        self._content.pack(fill="both", expand=True)
+
         self._frames = []
-        for i in range(len(self._STEPS)):
-            sf = ttk.Frame(self._content, padding=(16, 12)); self._frames.append(sf)
+        for _ in range(len(self._STEPS)):
+            outer = tk.Frame(self._content, bg="#f5f6fa")
+            self._frames.append(outer)
 
-        self._build_step_info(self._frames[0])
-        self._build_step_drawings(self._frames[1])
-        self._build_step_relays(self._frames[2])
-        self._build_step_crows(self._frames[3])
-        self._build_step_summary(self._frames[4])
+        def _inner(outer):
+            f = tk.Frame(outer, bg="#f5f6fa")
+            f.pack(fill="both", expand=True, padx=20, pady=14)
+            return f
+
+        self._build_step_info(    _inner(self._frames[0]))
+        self._build_step_drawings(_inner(self._frames[1]))
+        self._build_step_relays(  _inner(self._frames[2]))
+        self._build_step_crows(   _inner(self._frames[3]))
+        self._build_step_summary( _inner(self._frames[4]))
 
         # Footer nav
-        ttk.Separator(right).pack(fill="x", side="bottom")
-        nav = ttk.Frame(right, padding=(12, 8)); nav.pack(fill="x", side="bottom")
-        ttk.Button(nav, text="Cancel", command=self.destroy).pack(side="left")
-        self._finish_btn = tk.Button(nav, text="Create Project ✓", bg="#27ae60", fg="white",
-                                     font=("", 9, "bold"), relief="flat", padx=12, pady=4,
-                                     cursor="hand2", command=self._finish)
-        self._next_btn  = ttk.Button(nav, text="Next →", command=self._next)
-        self._back_btn  = ttk.Button(nav, text="← Back", command=self._back)
-        self._back_btn.pack(side="right", padx=(4,0))
-        self._next_btn.pack(side="right", padx=4)
-        self._finish_btn.pack(side="right", padx=4)
+        tk.Frame(right, bg="#d5d8dc", height=1).pack(fill="x", side="bottom")
+        nav = tk.Frame(right, bg="#eaecee", pady=0); nav.pack(fill="x", side="bottom")
+        ttk.Button(nav, text="Cancel", command=self.destroy).pack(side="left", padx=12, pady=10)
+
+        self._finish_btn = tk.Button(nav, text="  Create Project ✓  ", bg="#27ae60", fg="white",
+                                     font=("", 9, "bold"), relief="flat", cursor="hand2",
+                                     activebackground="#2ecc71", activeforeground="white",
+                                     command=self._finish)
+        self._next_btn  = ttk.Button(nav, text="Next  →", command=self._next)
+        self._back_btn  = ttk.Button(nav, text="←  Back", command=self._back)
+        self._back_btn.pack(side="right", padx=(0, 6), pady=10)
+        self._next_btn.pack(side="right", padx=4, pady=10)
+        self._finish_btn.pack(side="right", padx=(0, 6), pady=8)
 
         self._show_step(0)
 
@@ -1878,23 +1979,40 @@ class ProjectWizard(tk.Toplevel):
         self._step = idx
         is_last = idx == len(self._STEPS) - 1
 
-        for i, (row, num, lbl) in enumerate(self._step_widgets):
+        _, active_bg, strip_col = self._STEP_COLORS[idx]
+        self._accent_strip.configure(bg=strip_col)
+
+        for i, (row, num_cv, lbl) in enumerate(self._step_widgets):
+            _, act, _ = self._STEP_COLORS[i]
+            done_bg   = self._STEP_COLORS[i][1]
             if i == idx:
-                row.configure(bg="#1a5276"); num.configure(bg="#2980b9", fg="white")
-                lbl.configure(bg="#1a5276", fg="white")
+                row.configure(bg=act); lbl.configure(bg=act, fg="white")
+                num_cv.configure(bg=act)
+                num_cv.itemconfigure("txt", fill="white")
+                num_cv.delete("oval"); num_cv.create_oval(3,3,27,27,fill=strip_col,outline="",tags="oval")
+                num_cv.tag_raise("txt")
             elif i < idx:
-                row.configure(bg="#1e8449"); num.configure(bg="#27ae60", fg="white")
-                lbl.configure(bg="#1e8449", fg="#abebc6")
+                row.configure(bg="#1b4332"); lbl.configure(bg="#1b4332", fg="#a9dfbf")
+                num_cv.configure(bg="#1b4332")
+                num_cv.itemconfigure("txt", fill="white")
+                num_cv.delete("oval"); num_cv.create_oval(3,3,27,27,fill="#27ae60",outline="",tags="oval")
+                num_cv.tag_raise("txt")
+                num_cv.delete("check"); num_cv.create_text(15,15,text="✓",fill="white",
+                    font=("",9,"bold"),tags="check")
             else:
-                row.configure(bg="#2c3e50"); num.configure(bg="#34495e", fg="#7f8c8d")
-                lbl.configure(bg="#2c3e50", fg="#7f8c8d")
+                row.configure(bg="#1c2833"); lbl.configure(bg="#1c2833", fg="#7f8c8d")
+                num_cv.configure(bg="#1c2833")
+                num_cv.itemconfigure("txt", fill="#7f8c8d")
+                num_cv.delete("oval"); num_cv.create_oval(3,3,27,27,fill="#2e4053",outline="",tags="oval")
+                num_cv.tag_raise("txt")
+                num_cv.delete("check")
 
         self._back_btn.configure(state="normal" if idx > 0 else "disabled")
         if is_last:
-            self._next_btn.pack_forget(); self._finish_btn.pack(side="right", padx=4)
+            self._next_btn.pack_forget(); self._finish_btn.pack(side="right", padx=(0,6), pady=8)
             self._refresh_summary()
         else:
-            self._finish_btn.pack_forget(); self._next_btn.pack(side="right", padx=4)
+            self._finish_btn.pack_forget(); self._next_btn.pack(side="right", padx=4, pady=10)
 
     def _next(self):
         if self._validate(): self._show_step(self._step + 1)
@@ -1912,9 +2030,10 @@ class ProjectWizard(tk.Toplevel):
 
     # ── Step 1 ─────────────────────────────────────────────────────
     def _build_step_info(self, parent):
-        ttk.Label(parent, text="Project Information", font=("", 13, "bold")).pack(anchor="w", pady=(0, 2))
-        ttk.Label(parent, text="Fill in the core project details. Fields marked * are required.",
-                  foreground="grey").pack(anchor="w", pady=(0, 12))
+        tk.Label(parent, text="Project Information", bg="#f5f6fa", fg="#1c2833",
+                 font=("", 13, "bold")).pack(anchor="w", pady=(0, 2))
+        tk.Label(parent, text="Fill in the core project details. Fields marked * are required.",
+                 bg="#f5f6fa", fg="#85929e").pack(anchor="w", pady=(0, 12))
 
         f = ttk.Frame(parent); f.pack(fill="x"); f.columnconfigure(1, weight=1)
         row = [0]
@@ -1943,7 +2062,8 @@ class ProjectWizard(tk.Toplevel):
         self.wiz_notes_widget = scrolledtext.ScrolledText(f, height=5, wrap="word", font=("",9))
         self.wiz_notes_widget.grid(row=row[0], column=1, sticky="ew", pady=(6,0))
 
-        ttk.Label(parent, text="* Required", foreground="grey", font=("",8)).pack(anchor="w", pady=(6,0))
+        tk.Label(parent, text="* Required", bg="#f5f6fa", fg="#aab7b8",
+                 font=("", 8)).pack(anchor="w", pady=(6, 0))
 
     def _browse_location(self):
         d = filedialog.askdirectory(title="Choose save location", parent=self)
@@ -1951,11 +2071,12 @@ class ProjectWizard(tk.Toplevel):
 
     # ── Step 2 ─────────────────────────────────────────────────────
     def _build_step_drawings(self, parent):
-        ttk.Label(parent, text="Project Drawings", font=("", 13, "bold")).pack(anchor="w", pady=(0, 2))
-        ttk.Label(parent,
-                  text="Add drawings for this project (optional — you can add more later).\n"
-                  "Naming convention: XXXX-YZZ-IIII-N  (Site—Type—Subject—Serial—Sheet)",
-                  foreground="grey", justify="left").pack(anchor="w", pady=(0, 8))
+        tk.Label(parent, text="Project Drawings", bg="#f5f6fa", fg="#1c2833",
+                 font=("", 13, "bold")).pack(anchor="w", pady=(0, 2))
+        tk.Label(parent,
+                 text="Add drawings for this project (optional — you can add more later).\n"
+                      "Naming convention: XXXX-YZZ-IIII-N  (Site—Type—Subject—Serial—Sheet)",
+                 bg="#f5f6fa", fg="#85929e", justify="left").pack(anchor="w", pady=(0, 8))
 
         tb = ttk.Frame(parent); tb.pack(fill="x", pady=(0, 4))
         ttk.Button(tb, text="+ Add Drawing", command=self._wiz_add_drawing).pack(side="left", padx=2)
@@ -2008,11 +2129,12 @@ class ProjectWizard(tk.Toplevel):
 
     # ── Step 3 ─────────────────────────────────────────────────────
     def _build_step_relays(self, parent):
-        ttk.Label(parent, text="Relays & Devices", font=("", 13, "bold")).pack(anchor="w", pady=(0, 2))
-        ttk.Label(parent,
-                  text="Add relay protection devices (optional — you can add more in Relay Settings later).\n"
-                  "All relays are devices. Aspen settings can be attached to each relay record.",
-                  foreground="grey", justify="left").pack(anchor="w", pady=(0, 8))
+        tk.Label(parent, text="Relays & Devices", bg="#f5f6fa", fg="#1c2833",
+                 font=("", 13, "bold")).pack(anchor="w", pady=(0, 2))
+        tk.Label(parent,
+                 text="Add relay protection devices (optional — you can add more in Relay Settings later).\n"
+                      "All relays are devices. Aspen settings can be attached to each relay record.",
+                 bg="#f5f6fa", fg="#85929e", justify="left").pack(anchor="w", pady=(0, 8))
 
         tb = ttk.Frame(parent); tb.pack(fill="x", pady=(0, 4))
         ttk.Button(tb, text="+ Add",  command=self._wiz_add_relay).pack(side="left", padx=2)
@@ -2063,11 +2185,12 @@ class ProjectWizard(tk.Toplevel):
 
     # ── Step 4 ─────────────────────────────────────────────────────
     def _build_step_crows(self, parent):
-        ttk.Label(parent, text="CROW / Outage Records", font=("", 13, "bold")).pack(anchor="w", pady=(0, 2))
-        ttk.Label(parent,
-                  text="Attach any CROW outage records to this project (optional).\n"
-                  "You can add and edit CROWs at any time in the CROW tab.",
-                  foreground="grey", justify="left").pack(anchor="w", pady=(0, 8))
+        tk.Label(parent, text="CROW / Outage Records", bg="#f5f6fa", fg="#1c2833",
+                 font=("", 13, "bold")).pack(anchor="w", pady=(0, 2))
+        tk.Label(parent,
+                 text="Attach any CROW outage records to this project (optional).\n"
+                      "You can add and edit CROWs at any time in the CROW tab.",
+                 bg="#f5f6fa", fg="#85929e", justify="left").pack(anchor="w", pady=(0, 8))
 
         tb = ttk.Frame(parent); tb.pack(fill="x", pady=(0, 4))
         ttk.Button(tb, text="+ Add CROW", command=self._wiz_add_crow).pack(side="left", padx=2)
@@ -2109,7 +2232,8 @@ class ProjectWizard(tk.Toplevel):
 
     # ── Step 5 ─────────────────────────────────────────────────────
     def _build_step_summary(self, parent):
-        ttk.Label(parent, text="Summary", font=("", 13, "bold")).pack(anchor="w", pady=(0, 2))
+        tk.Label(parent, text="Summary", bg="#f5f6fa", fg="#1c2833",
+                 font=("", 13, "bold")).pack(anchor="w", pady=(0, 2))
         self._summary_text = scrolledtext.ScrolledText(
             parent, height=8, font=("Courier", 9), state="disabled", wrap="word")
         self._summary_text.pack(fill="x", pady=(0, 10))
@@ -2306,24 +2430,45 @@ class WirePlannerApp(tk.Tk):
         self.bind("<Control-q>", lambda _: self.quit())
 
     def _build_ui(self):
-        # ── Top toolbar: project name, mode toggle, exports ────────
-        tb = ttk.Frame(self, padding=(6, 4)); tb.pack(fill="x")
-        ttk.Label(tb, text="Project:").pack(side="left")
+        # ── Dark branded header bar ─────────────────────────────────
+        hdr = tk.Frame(self, bg="#1c2833"); hdr.pack(fill="x")
+
+        tk.Label(hdr, text="Red-Line-Routing", bg="#1c2833", fg="white",
+                 font=("", 11, "bold"), padx=14).pack(side="left", ipady=7)
+        tk.Frame(hdr, bg="#2e4053", width=1).pack(side="left", fill="y", padx=6, pady=5)
+
+        tk.Label(hdr, text="Project:", bg="#1c2833", fg="#85929e",
+                 font=("", 9), padx=2).pack(side="left")
         self.project_var = tk.StringVar()
-        ttk.Entry(tb, textvariable=self.project_var, width=22).pack(side="left", padx=(4, 10))
-        ttk.Separator(tb, orient="vertical").pack(side="left", fill="y", padx=6)
-        ttk.Label(tb, text="Mode:").pack(side="left")
+        tk.Entry(hdr, textvariable=self.project_var, width=22,
+                 bg="#2e4053", fg="white", insertbackground="white",
+                 relief="flat", font=("", 9), bd=0).pack(side="left", padx=(3, 0), ipady=5)
+        tk.Frame(hdr, bg="#2e4053", width=1).pack(side="left", fill="y", padx=10, pady=5)
+
+        # Mode toggle — styled buttons, active state updated in _update_mode_buttons
         self.mode_var = tk.StringVar(value="planner")
-        for text, val, bg in [("Planner", "planner", "#2c3e50"),
-                               ("Implementation", "impl", "#16a085")]:
-            tk.Button(tb, text=text, fg="white", bg=bg, relief="flat", padx=8, pady=2,
-                      cursor="hand2",
-                      command=lambda v=val: self._set_mode(v)).pack(side="left", padx=2)
-        rf = ttk.Frame(tb); rf.pack(side="right")
-        for lbl, cmd in [("HTML / PDF", self._export_html), ("Export CSV", self._export_csv),
-                          ("Export Table", self._export_table), ("Export Report", self._export_report),
+        self._mode_btns = {}
+        for text, val, act_bg in [("  Planner  ", "planner", "#2980b9"),
+                                   ("  Implementation  ", "impl", "#27ae60")]:
+            btn = tk.Button(hdr, text=text, bg="#1c2833", fg="#7f8c8d",
+                            relief="flat", padx=4, bd=0, cursor="hand2", font=("", 9),
+                            activebackground=act_bg, activeforeground="white",
+                            command=lambda v=val: self._set_mode(v))
+            btn.pack(side="left", padx=2, ipady=5)
+            self._mode_btns[val] = (btn, act_bg)
+
+        # Right: export buttons
+        rf = tk.Frame(hdr, bg="#1c2833"); rf.pack(side="right", padx=6)
+        for lbl, cmd in [("HTML / PDF", self._export_html), ("CSV", self._export_csv),
+                          ("Table", self._export_table), ("Report", self._export_report),
                           ("Preview", self._preview_report)]:
-            ttk.Button(rf, text=lbl, command=cmd).pack(side="right", padx=2)
+            tk.Button(rf, text=lbl, bg="#2e4053", fg="#bdc3c7", relief="flat",
+                      padx=7, bd=0, cursor="hand2", font=("", 8),
+                      activebackground="#3d5166", activeforeground="white",
+                      command=cmd).pack(side="left", padx=2, ipady=4, pady=6)
+
+        self._update_mode_buttons("planner")
+        tk.Frame(self, bg="#2980b9", height=2).pack(fill="x")
 
         # Status bar (always at bottom, packed before main area)
         self.status_var = tk.StringVar(value="Ready  —  no jobs loaded")
@@ -2870,8 +3015,16 @@ class WirePlannerApp(tk.Tk):
 
     # ── Mode switching ────────────────────────────────────────────
 
+    def _update_mode_buttons(self, active):
+        for val, (btn, act_bg) in self._mode_btns.items():
+            if val == active:
+                btn.configure(bg=act_bg, fg="white")
+            else:
+                btn.configure(bg="#1c2833", fg="#7f8c8d")
+
     def _set_mode(self, mode):
         self.mode_var.set(mode)
+        self._update_mode_buttons(mode)
         if mode == "planner":
             self.impl_frame.pack_forget()
             self.planner_frame.pack(fill="both", expand=True, padx=6, pady=(0, 4))
