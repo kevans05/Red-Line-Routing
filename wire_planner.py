@@ -3286,7 +3286,8 @@ class RedLineApp(tk.Tk):
                 ("base_relay_url",    "Base Relay URL:",    "Used to pre-fill URLs when adding relay settings"),
             ]),
             ("Tailboard", [
-                ("tailboard_url",     "Tailboard URL:",     "PDF downloaded automatically when a project is open"),
+                ("tailboard_url",  "Tailboard URL:",  "Reference URL only — place tailboard-template.pdf in the project root folder"),
+                ("crew_email",     "Crew Email(s):",  "Default recipients when emailing a completed tailboard (comma-separated)"),
             ]),
         ]
 
@@ -3937,7 +3938,7 @@ try {{
         tb_bar.pack(fill="x", padx=4, pady=(4, 0))
         tk.Label(tb_bar, text="⚠  SAFETY", bg="#1c3a5a", fg="#f39c12",
                  font=("", 9, "bold"), padx=8, pady=6).pack(side="left")
-        ttk.Button(tb_bar, text="Update Tailboard",
+        ttk.Button(tb_bar, text="Save Tailboard",
                    command=self._update_tailboard).pack(side="left", padx=(0, 10), pady=4)
         self._tb_status_var = tk.StringVar(value="")
         tk.Label(tb_bar, textvariable=self._tb_status_var, bg="#1c3a5a",
@@ -4108,9 +4109,9 @@ try {{
 
         # TAILBOARD — always the very first step
         tb_done = self.title_page.get("tailboard_done", False)
-        tb_path = self._tailboard_current_path()
-        tb_hint = ("Open tailboard PDF" if (tb_path and os.path.exists(tb_path))
-                   else "⬇ Not downloaded — configure URL in Software Settings")
+        tb_path = self._tailboard_template_path()
+        tb_hint = ("Click to preview template" if tb_path
+                   else "Place tailboard-template.pdf in project root")
         self.impl_tree.insert("", "end", iid="__tailboard__",
             values=("☑" if tb_done else "☐", "", "TAILBOARD",
                     f"Complete tailboard before starting work  ·  {tb_hint}"),
@@ -4439,20 +4440,15 @@ try {{
             return None
         return os.path.join(self.project_folder, "Tailboards")
 
-    def _tailboard_current_path(self):
-        """Return path to the downloaded tailboard template (any extension), or None."""
-        d = self._tailboard_dir()
-        if not d:
+    def _tailboard_template_path(self):
+        """Return path to tailboard-template.pdf in the project root, or None."""
+        if not self.project_folder:
             return None
-        for ext in (".pdf", ".docx", ".doc", ".xlsx", ".xls", ".png"):
-            p = os.path.join(d, "tailboard_current" + ext)
-            if os.path.exists(p):
-                return p
-        return None   # not yet downloaded
+        p = os.path.join(self.project_folder, "tailboard-template.pdf")
+        return p if os.path.exists(p) else None
 
     def _schedule_tailboard_check(self):
-        """Create Tailboards folder and start background download/freshness check."""
-        url = self.app_config.get("tailboard_url", "").strip()
+        """Create Tailboards/Completed folder and refresh the status label."""
         tb_dir = self._tailboard_dir()
         if not tb_dir:
             return
@@ -4460,77 +4456,36 @@ try {{
             os.makedirs(os.path.join(tb_dir, "Completed"), exist_ok=True)
         except Exception:
             pass
-        if not url:
-            return
-        threading.Thread(target=self._check_tailboard_bg, daemon=True).start()
+        self._update_tailboard_status()
 
-    def _check_tailboard_bg(self):
-        """Background: download the tailboard template or confirm it is still current."""
-        url = self.app_config.get("tailboard_url", "").strip()
-        if not url:
-            return
-        tb_dir = self._tailboard_dir()
-        if not tb_dir:
-            return
-
-        url_ext = os.path.splitext(url.split("?")[0])[-1].lower() or ".pdf"
-        dest    = os.path.join(tb_dir, "tailboard_current" + url_ext)
-        hdrs    = {"User-Agent": "RedLineRouting/1.0", **self._parse_request_headers()}
-
-        try:
-            # If the file already exists, do a lightweight HEAD check first
-            if os.path.exists(dest):
-                try:
-                    head = urllib.request.Request(url, headers=hdrs, method="HEAD")
-                    with urllib.request.urlopen(head, timeout=10) as r:
-                        lm = r.headers.get("Last-Modified", "")
-                    if lm:
-                        import email.utils
-                        srv_ts  = email.utils.parsedate_to_datetime(lm).timestamp()
-                        file_ts = os.path.getmtime(dest)
-                        if srv_ts <= file_ts:
-                            self.after(0, lambda: self._set_tailboard_status("ok"))
-                            return
-                except Exception:
-                    pass  # HEAD failed — fall through to re-download
-
-            self.after(0, lambda: self._set_tailboard_status("downloading"))
-            req = urllib.request.Request(url, headers=hdrs)
-            with urllib.request.urlopen(req, timeout=30) as r:
-                data = r.read()
-            with open(dest, "wb") as fh:
-                fh.write(data)
-            self.after(0, lambda: self._set_tailboard_status("ok"))
-
-        except urllib.error.HTTPError as exc:
-            self.after(0, lambda c=exc.code: self._set_tailboard_status(
-                "error", f"HTTP {c} — check URL/headers in Software Settings"))
-        except Exception as exc:
-            self.after(0, lambda e=str(exc): self._set_tailboard_status("error", e[:60]))
-
-    def _set_tailboard_status(self, status, detail=""):
+    def _update_tailboard_status(self):
+        """Show the timestamp of the most recently saved tailboard in the toolbar."""
         if not hasattr(self, "_tb_status_var"):
             return
-        msgs = {
-            "ok":          "✓  Tailboard current",
-            "downloading": "⬇  Downloading tailboard…",
-            "error":       f"⚠  {detail}",
-        }
-        self._tb_status_var.set(msgs.get(status, ""))
-        if status == "ok" and self.mode_var.get() == "impl":
-            self._refresh_impl_list()
+        tb_dir = self._tailboard_dir()
+        completed_dir = os.path.join(tb_dir, "Completed") if tb_dir else None
+        if completed_dir and os.path.isdir(completed_dir):
+            files = sorted(
+                (f for f in os.listdir(completed_dir) if not f.startswith(".")),
+                reverse=True)
+            if files:
+                ts = files[0].replace("tailboard_", "").rsplit(".", 1)[0].replace("_", " ")
+                self._tb_status_var.set(f"Last saved: {ts}")
+                return
+        self._tb_status_var.set("No tailboard saved yet")
 
     def _show_impl_tailboard(self):
-        """Show tailboard info in step details and preview the PDF."""
-        tb_path = self._tailboard_current_path()
-        lines   = ["=" * 60, "  SAFETY TAILBOARD", "=" * 60, ""]
+        """Show tailboard info in step details and preview the template PDF."""
+        tmpl  = self._tailboard_template_path()
+        lines = ["=" * 60, "  SAFETY TAILBOARD", "=" * 60, ""]
 
-        if tb_path:
-            lines += [f"  Template : {os.path.basename(tb_path)}",
-                      f"  Path     : {tb_path}", ""]
+        if tmpl:
+            lines += [f"  Template : {os.path.basename(tmpl)}",
+                      f"  Path     : {tmpl}", ""]
         else:
-            lines += ["  No tailboard template downloaded.",
-                      "  Set the Tailboard URL in File → Software Settings.", ""]
+            lines += ["  Place  tailboard-template.pdf  in the project root folder.",
+                      f"  Expected: {os.path.join(self.project_folder or '…', 'tailboard-template.pdf')}",
+                      ""]
 
         tb_dir        = self._tailboard_dir()
         completed_dir = os.path.join(tb_dir, "Completed") if tb_dir else None
@@ -4539,59 +4494,123 @@ try {{
                 (f for f in os.listdir(completed_dir) if not f.startswith(".")),
                 reverse=True)
             if done:
-                lines += ["  COMPLETED TAILBOARDS", "-" * 40]
+                lines += ["  SAVED TAILBOARDS", "-" * 40]
                 for fn in done[:15]:
                     lines.append(f"  {fn}")
             else:
-                lines += ["  No completed tailboards archived yet.",
-                          "  Click 'Update Tailboard' after completing your tailboard."]
+                lines += ["  No tailboards saved yet.",
+                          "  Click 'Save Tailboard' to record a completed tailboard."]
 
         self.impl_preview.configure(state="normal")
         self.impl_preview.delete("1.0", "end")
         self.impl_preview.insert("1.0", "\n".join(lines))
         self.impl_preview.configure(state="disabled")
 
-        if tb_path and os.path.exists(tb_path):
-            self.file_nb.select(0)   # switch to Drawings tab to show preview
-            self._preview_file(tb_path)
+        if tmpl:
+            self.file_nb.select(0)
+            self._preview_file(tmpl)
 
     def _update_tailboard(self):
-        """Archive a dated copy of the current tailboard template and mark step done."""
+        """Save a new timestamped tailboard record, then offer to email it to the crew."""
         tb_dir = self._tailboard_dir()
         if not tb_dir:
             messagebox.showinfo("Save First",
                 "Save the project first so the Tailboards folder location is known.")
             return
 
-        src = self._tailboard_current_path()
-        if not src or not os.path.exists(src):
-            messagebox.showinfo("No Tailboard Template",
-                "No tailboard template has been downloaded yet.\n\n"
-                "Configure the Tailboard URL in File → Software Settings\n"
-                "and wait for the background download to finish.")
+        tmpl = self._tailboard_template_path()
+        if not tmpl:
+            messagebox.showinfo("Template Not Found",
+                "Place  tailboard-template.pdf  in the project root folder:\n\n"
+                f"{self.project_folder or '(save project first)'}")
             return
 
         completed_dir = os.path.join(tb_dir, "Completed")
         os.makedirs(completed_dir, exist_ok=True)
 
-        ext = os.path.splitext(src)[-1]
         ts  = datetime.now().strftime("%Y-%m-%d_%H%M")
-        dst = os.path.join(completed_dir, f"tailboard_{ts}{ext}")
+        dst = os.path.join(completed_dir, f"tailboard_{ts}.pdf")
 
         try:
-            shutil.copy2(src, dst)
+            shutil.copy2(tmpl, dst)
         except Exception as exc:
-            messagebox.showerror("Copy Failed", str(exc))
+            messagebox.showerror("Save Failed", str(exc))
             return
 
         self.title_page["tailboard_done"] = True
         self._refresh_impl_list()
-        # Re-select the tailboard row so the details pane updates
         self.impl_tree.selection_set("__tailboard__")
         self._show_impl_tailboard()
-        messagebox.showinfo("Tailboard Archived",
-            f"Saved completed tailboard as:\n{os.path.basename(dst)}\n\n"
-            "Tailboard step marked complete.")
+        self._update_tailboard_status()
+
+        if messagebox.askyesno("Tailboard Saved",
+                f"Saved as:\n{os.path.basename(dst)}\n\n"
+                "Email this tailboard to the crew?"):
+            self._email_tailboard(dst)
+
+    def _email_tailboard(self, file_path):
+        """Show an email compose dialog and open the system mail client."""
+        dlg = tk.Toplevel(self)
+        dlg.title("Email Tailboard to Crew")
+        dlg.grab_set()
+        dlg.resizable(True, False)
+
+        f = ttk.Frame(dlg, padding=14)
+        f.pack(fill="both", expand=True)
+
+        fname = os.path.basename(file_path)
+        ttk.Label(f, text="File:", foreground="grey", font=("", 8)
+                  ).grid(row=0, column=0, sticky="e", padx=(0,6), pady=3)
+        ttk.Label(f, text=fname, font=("Courier", 9)
+                  ).grid(row=0, column=1, sticky="w", pady=3)
+
+        ttk.Label(f, text="To:").grid(row=1, column=0, sticky="e", padx=(0,6), pady=4)
+        to_var = tk.StringVar(value=self.app_config.get("crew_email", ""))
+        ttk.Entry(f, textvariable=to_var, width=52).grid(row=1, column=1, sticky="ew", pady=4)
+
+        proj = self.project_var.get().strip() or "Project"
+        ts   = fname.replace("tailboard_", "").replace(".pdf", "").replace("_", " ")
+        ttk.Label(f, text="Subject:").grid(row=2, column=0, sticky="e", padx=(0,6), pady=4)
+        subj_var = tk.StringVar(value=f"Tailboard — {proj} — {ts}")
+        ttk.Entry(f, textvariable=subj_var, width=52).grid(row=2, column=1, sticky="ew", pady=4)
+
+        ttk.Label(f, text="Body:").grid(row=3, column=0, sticky="ne", padx=(0,6), pady=4)
+        body_txt = tk.Text(f, height=5, width=52, wrap="word", font=("", 9))
+        body_txt.grid(row=3, column=1, sticky="ew", pady=4)
+        body_txt.insert("1.0",
+            f"Hi team,\n\nPlease find the attached tailboard for {proj}.\n\n"
+            f"File: {fname}\nPath: {file_path}")
+
+        ttk.Label(f,
+                  text="Tip: attach  " + fname + "  manually after your email client opens.",
+                  foreground="grey", font=("", 8), wraplength=420, justify="left"
+                  ).grid(row=4, column=0, columnspan=2, sticky="w", pady=(2, 4))
+
+        f.columnconfigure(1, weight=1)
+
+        bf = ttk.Frame(dlg, padding=(14, 6)); bf.pack(fill="x")
+        ttk.Button(bf, text="Cancel", command=dlg.destroy).pack(side="right", padx=4)
+
+        def _copy_path():
+            dlg.clipboard_clear()
+            dlg.clipboard_append(file_path)
+        ttk.Button(bf, text="Copy File Path", command=_copy_path).pack(side="right", padx=4)
+
+        def _open_client():
+            to   = to_var.get().strip()
+            subj = subj_var.get().strip()
+            body = body_txt.get("1.0", "end").strip()
+            if to:
+                self.app_config["crew_email"] = to
+                self._save_app_config()
+            mailto = (f"mailto:{urllib.parse.quote(to)}"
+                      f"?subject={urllib.parse.quote(subj)}"
+                      f"&body={urllib.parse.quote(body)}")
+            webbrowser.open(mailto)
+            dlg.destroy()
+
+        ttk.Button(bf, text="Open Email Client", command=_open_client).pack(side="right")
+        _center_window(dlg)
 
     def _show_impl_prep(self):
         """Generate the project briefing shown when the PREP row is selected."""
