@@ -3597,10 +3597,10 @@ class RedLineApp(tk.Tk):
         ttk.Label(vf_top, text="  click to preview  ·  double-click to open",
                   foreground="grey", font=("", 8)).pack(side="left", padx=8)
 
-        # MB warning strip — hidden until a step with MB enabled is selected
+        # Mirrored Bits warning strip — hidden until a step with MB enabled is selected
         self._mb_warn_frame = tk.Frame(viewer_f, bg="#7d3c00")
         tk.Label(self._mb_warn_frame,
-                 text="!  MODBUS ENABLED — verify MB isolation before proceeding",
+                 text="!  MIRRORED BITS ENABLED — verify MB isolation before proceeding",
                  bg="#7d3c00", fg="#fdebd0", font=("", 9, "bold"),
                  padx=10, pady=4).pack(side="left")
         self._mb_remote_lbl = tk.Label(self._mb_warn_frame, text="",
@@ -3680,21 +3680,124 @@ class RedLineApp(tk.Tk):
         setattr(self, attr, lb)
 
     def _build_relay_impl_tab(self, parent):
-        """Relay Settings tab in implementation view — read-only file list."""
-        ttk.Label(parent,
-                  text="Files in Relay Settings/  ·  double-click to open  "
-                       "·  import files via Add/Edit relay in Planning",
-                  foreground="grey", font=("", 8)).pack(anchor="w", padx=6, pady=(4, 2))
-        lb_f = ttk.Frame(parent)
-        lb_f.pack(fill="both", expand=True, padx=4, pady=(0, 4))
+        """Relay Settings tab — file list (left) + formatted setting preview (right)."""
+        pw = ttk.PanedWindow(parent, orient="horizontal")
+        pw.pack(fill="both", expand=True, padx=4, pady=4)
+
+        # File list
+        list_f = ttk.Frame(pw)
+        pw.add(list_f, weight=1)
+        hint = ttk.Label(list_f,
+                         text="click to preview  ·  double-click to open  "
+                              "·  import via Add/Edit relay in Planning",
+                         foreground="grey", font=("", 8))
+        hint.pack(anchor="w", padx=2, pady=(0, 2))
+        lb_f = ttk.Frame(list_f)
+        lb_f.pack(fill="both", expand=True)
         lb = tk.Listbox(lb_f, selectmode="browse", font=("Courier", 9),
                         activestyle="none", relief="flat", borderwidth=0)
         vsb = ttk.Scrollbar(lb_f, orient="vertical", command=lb.yview)
         lb.configure(yscrollcommand=vsb.set)
         lb.pack(side="left", fill="both", expand=True)
         vsb.pack(side="right", fill="y")
-        lb.bind("<Double-1>", lambda e: self._open_impl_file(self.impl_rly_lb, "Relay Settings"))
+        lb.bind("<<ListboxSelect>>", self._on_rly_select)
+        lb.bind("<Double-1>",        self._on_rly_double_click)
         self.impl_rly_lb = lb
+
+        # Formatted preview
+        prev_f = ttk.Frame(pw)
+        pw.add(prev_f, weight=3)
+        self.impl_rly_preview = scrolledtext.ScrolledText(
+            prev_f, font=("Courier", 9), state="disabled", wrap="none")
+        self.impl_rly_preview.tag_configure("section",
+            foreground="#1a5276", font=("Courier", 9, "bold"))
+        self.impl_rly_preview.tag_configure("key",   foreground="#117a65")
+        self.impl_rly_preview.tag_configure("value", foreground="#2c3e50")
+        self.impl_rly_preview.tag_configure("info",  foreground="#7f8c8d", font=("Courier", 8))
+        self.impl_rly_preview.pack(fill="both", expand=True)
+
+    def _on_rly_select(self, _=None):
+        """Preview the selected relay setting file with nice formatting."""
+        sel = self.impl_rly_lb.curselection()
+        if not sel:
+            return
+        fname = self.impl_rly_lb.get(sel[0])
+        if not self.project_folder or fname.startswith("("):
+            return
+        path = os.path.join(self.project_folder, "Relay Settings", fname)
+        if not os.path.isfile(path):
+            return
+        self._render_relay_setting(path)
+
+    def _on_rly_double_click(self, _=None):
+        """Open the selected relay setting file in the system text editor."""
+        sel = self.impl_rly_lb.curselection()
+        if not sel:
+            return
+        fname = self.impl_rly_lb.get(sel[0])
+        if not self.project_folder or fname.startswith("("):
+            return
+        path = os.path.join(self.project_folder, "Relay Settings", fname)
+        if os.path.isfile(path):
+            _open_file(path)
+
+    def _render_relay_setting(self, path):
+        """Parse and display a relay setting .txt file with coloured formatting.
+
+        Supports the export format used by the relay settings tool:
+          [SECTION]
+          SETTINGNAME,"value"   or   KEY=value
+        """
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as fh:
+                raw = fh.read()
+        except Exception as exc:
+            self._rly_preview_plain(f"Cannot read file:\n{exc}")
+            return
+
+        tv = self.impl_rly_preview
+        tv.configure(state="normal")
+        tv.delete("1.0", "end")
+
+        for line in raw.splitlines():
+            stripped = line.strip()
+            if not stripped:
+                tv.insert("end", "\n")
+                continue
+
+            # Section header  [NAME]
+            if stripped.startswith("[") and stripped.endswith("]"):
+                tv.insert("end", "\n" + stripped + "\n", "section")
+                tv.insert("end", "─" * len(stripped) + "\n", "info")
+                continue
+
+            # KEY,"value"  format (comma-quoted)
+            if ',"' in stripped:
+                key, _, rest = stripped.partition(',"')
+                value = rest.rstrip('"')
+                tv.insert("end", f"  {key:<30}", "key")
+                tv.insert("end", f"  {value}\n", "value")
+                continue
+
+            # KEY=value  format
+            if "=" in stripped:
+                key, _, value = stripped.partition("=")
+                tv.insert("end", f"  {key:<30}", "key")
+                tv.insert("end", f"  {value}\n", "value")
+                continue
+
+            # Anything else — plain
+            tv.insert("end", "  " + stripped + "\n")
+
+        tv.configure(state="disabled")
+        tv.see("1.0")
+
+    def _rly_preview_plain(self, msg):
+        tv = self.impl_rly_preview
+        tv.configure(state="normal")
+        tv.delete("1.0", "end")
+        tv.insert("1.0", msg)
+        tv.configure(state="disabled")
 
     def _import_relay_file(self):
         """Let the user pick any file and save it (optionally renamed) into Relay Settings/."""
@@ -3774,6 +3877,7 @@ class RedLineApp(tk.Tk):
         # Relay Settings tab (flat folder)
         lb = self.impl_rly_lb
         lb.delete(0, "end")
+        self._rly_preview_plain("")   # clear preview
         if not self.project_folder:
             lb.insert("end", "(save project first to see files)")
             return
@@ -3783,7 +3887,7 @@ class RedLineApp(tk.Tk):
             for fn in files:
                 lb.insert("end", fn)
             if not files:
-                lb.insert("end", "(no files yet — use Import File…)")
+                lb.insert("end", "(no files yet — import via Add/Edit relay in Planning)")
         else:
             lb.insert("end", "(Relay Settings/ folder not found)")
 
@@ -3960,7 +4064,8 @@ class RedLineApp(tk.Tk):
                     first_local = len(self._impl_drw_paths)
                 self.impl_drw_lb.insert("end", f"  {label}")
                 self._impl_drw_paths.append(path)
-            if url:
+            # Only show URL when no local file exists yet
+            if not local and url:
                 self.impl_drw_lb.insert("end", f"  ↗ {name}  [web]")
                 self._impl_drw_paths.append(url)
             if not local and not url:
@@ -3991,13 +4096,15 @@ class RedLineApp(tk.Tk):
                         self.impl_drw_lb.insert("end", os.path.relpath(fpath, base))
                         self._impl_drw_paths.append(fpath)
                         local_count += 1
-        # Registry URL entries
-        url_entries = [(n, i.get("url", "").strip())
-                       for n, i in sorted(self.drawing_registry.items())
-                       if i.get("url", "").strip()]
+        # URL-only entries: show only for registry drawings that have no local file
+        url_entries = []
+        for name, info in sorted(self.drawing_registry.items()):
+            url = info.get("url", "").strip()
+            if url and not self._find_drawing_files({name}):
+                url_entries.append((name, url))
         if url_entries:
             if local_count:
-                self.impl_drw_lb.insert("end", "── registry URLs ──")
+                self.impl_drw_lb.insert("end", "── not yet downloaded ──")
                 self._impl_drw_paths.append(None)   # sentinel — not openable
             for name, url in url_entries:
                 self.impl_drw_lb.insert("end", f"  ↗ {name}  [web]")
