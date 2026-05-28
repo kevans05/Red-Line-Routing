@@ -19,6 +19,8 @@ from copy import deepcopy
 from datetime import datetime
 import threading
 import urllib.request
+import urllib.error
+import queue
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -2874,56 +2876,15 @@ class RedLineApp(tk.Tk):
             messagebox.showinfo("Save First",
                 "Please save the project first so the Drawings folder location is known.")
             return
-        drawings_dir = os.path.join(self.project_folder, "Drawings")
-        os.makedirs(drawings_dir, exist_ok=True)
-
         targets = [(name, info["url"]) for name, info in self.drawing_registry.items()
-                   if info.get("url","").strip()]
+                   if info.get("url", "").strip()]
         if not targets:
             messagebox.showinfo("No URLs", "No drawing URLs are set in the registry."); return
-
-        # Progress dialog
-        dlg = tk.Toplevel(self)
-        dlg.title("Downloading Drawings")
-        dlg.geometry("420x200"); dlg.resizable(False,False)
-        dlg.grab_set()
-        ttk.Label(dlg, text="Downloading drawings…", font=("",10,"bold")).pack(pady=(14,4))
-        prog_var = tk.StringVar(value="Starting…")
-        ttk.Label(dlg, textvariable=prog_var, wraplength=380).pack(pady=4)
-        import tkinter.ttk as _ttk
-        bar = _ttk.Progressbar(dlg, length=360, maximum=len(targets))
-        bar.pack(pady=8)
-        results_var = tk.StringVar(value="")
-        ttk.Label(dlg, textvariable=results_var, foreground="grey", font=("",8)).pack()
-
-        def _run():
-            ok, fail = 0, []
-            for i, (name, url) in enumerate(targets):
-                prog_var.set(f"Downloading: {name}")
-                bar["value"] = i
-                # Determine file extension from URL, default to .pdf
-                ext = os.path.splitext(url.split("?")[0])[-1].lower()
-                if ext not in (".pdf",".png",".jpg",".jpeg",".tif",".tiff",".svg",".dwg",".dxf"):
-                    ext = ".pdf"
-                dest = os.path.join(drawings_dir, name + ext)
-                try:
-                    req = urllib.request.Request(url, headers={"User-Agent": "RedLineRouting/1.0"})
-                    with urllib.request.urlopen(req, timeout=30) as resp, \
-                         open(dest, "wb") as out:
-                        out.write(resp.read())
-                    ok += 1
-                except Exception as e:
-                    fail.append(f"{name}: {e}")
-            bar["value"] = len(targets)
-            prog_var.set("Done.")
-            msg = f"{ok} downloaded"
-            if fail:
-                msg += f", {len(fail)} failed:\n" + "\n".join(fail[:5])
-                if len(fail) > 5: msg += f"\n…and {len(fail)-5} more"
-            results_var.set(msg)
-            ttk.Button(dlg, text="Close", command=dlg.destroy).pack(pady=6)
-
-        threading.Thread(target=_run, daemon=True).start()
+        self._download_with_progress(
+            "Downloading Drawings",
+            targets,
+            os.path.join(self.project_folder, "Drawings"),
+        )
 
     # ── Relay Settings CRUD ───────────────────────────────────────
 
@@ -2990,48 +2951,167 @@ class RedLineApp(tk.Tk):
         if not self.project_folder:
             messagebox.showinfo("Save First",
                 "Please save the project first so the Relay Settings folder location is known."); return
-        dest_dir = os.path.join(self.project_folder, "Relay Settings")
-        os.makedirs(dest_dir, exist_ok=True)
         targets = [(dev_id, info["url"]) for dev_id, info in self.relay_registry.items()
                    if info.get("url", "").strip()]
         if not targets:
             messagebox.showinfo("No URLs", "No relay setting URLs are set."); return
+        self._download_with_progress(
+            "Downloading Relay Settings",
+            targets,
+            os.path.join(self.project_folder, "Relay Settings"),
+        )
 
+    def _download_with_progress(self, title, targets, dest_dir):
+        """Shared download engine with thread-safe progress dialog.
+
+        Uses a queue.Queue so the worker thread never touches tkinter directly —
+        all widget updates happen on the main thread via after() polling.
+        """
+        os.makedirs(dest_dir, exist_ok=True)
+
+        # ── Dialog ────────────────────────────────────────────────
         dlg = tk.Toplevel(self)
-        dlg.title("Downloading Relay Settings"); dlg.geometry("420x200"); dlg.resizable(False, False)
+        dlg.title(title)
+        dlg.resizable(True, False)
         dlg.grab_set()
-        ttk.Label(dlg, text="Downloading relay settings…", font=("", 10, "bold")).pack(pady=(14, 4))
-        prog_var = tk.StringVar(value="Starting…")
-        ttk.Label(dlg, textvariable=prog_var, wraplength=380).pack(pady=4)
-        bar = ttk.Progressbar(dlg, length=360, maximum=len(targets))
-        bar.pack(pady=8)
-        res_var = tk.StringVar()
-        ttk.Label(dlg, textvariable=res_var, foreground="grey", font=("", 8)).pack()
+
+        hdr = tk.Frame(dlg, bg="#1c2833"); hdr.pack(fill="x")
+        tk.Label(hdr, text=title, bg="#1c2833", fg="white",
+                 font=("", 11, "bold"), padx=14, pady=10).pack(side="left")
+        tk.Label(hdr, text=f"{len(targets)} file(s)", bg="#1c2833", fg="#85929e",
+                 font=("", 9), padx=8).pack(side="right", pady=10)
+
+        body = ttk.Frame(dlg, padding=(14, 10, 14, 4)); body.pack(fill="both", expand=True)
+
+        # Current file label
+        cur_lbl = tk.StringVar(value="Waiting…")
+        ttk.Label(body, text="File:").grid(row=0, column=0, sticky="e", padx=(0, 6), pady=2)
+        ttk.Label(body, textvariable=cur_lbl, foreground="#2980b9",
+                  font=("", 9, "bold"), wraplength=430,
+                  anchor="w").grid(row=0, column=1, sticky="w", pady=2)
+
+        # Destination label
+        dest_lbl = tk.StringVar(value="")
+        ttk.Label(body, text="Saving to:").grid(row=1, column=0, sticky="e", padx=(0, 6), pady=2)
+        ttk.Label(body, textvariable=dest_lbl, foreground="#566573",
+                  font=("", 8), wraplength=430,
+                  anchor="w").grid(row=1, column=1, sticky="w", pady=2)
+
+        # Progress bar + counter
+        bar = ttk.Progressbar(body, length=500, maximum=len(targets))
+        bar.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(8, 2))
+        cnt_lbl = tk.StringVar(value=f"0 / {len(targets)}")
+        ttk.Label(body, textvariable=cnt_lbl, foreground="grey",
+                  font=("", 8), anchor="e").grid(row=3, column=0, columnspan=2, sticky="e")
+        body.columnconfigure(1, weight=1)
+
+        # Scrollable log
+        ttk.Label(body, text="Log:", font=("", 8)).grid(
+            row=4, column=0, columnspan=2, sticky="w", pady=(10, 2))
+        log = scrolledtext.ScrolledText(body, height=8, font=("Courier", 8),
+                                        state="disabled", wrap="word",
+                                        bg="#1c2833", fg="#ecf0f1",
+                                        insertbackground="white")
+        log.grid(row=5, column=0, columnspan=2, sticky="nsew", pady=(0, 4))
+        log.tag_configure("ok",   foreground="#27ae60")
+        log.tag_configure("err",  foreground="#e74c3c")
+        log.tag_configure("info", foreground="#85929e")
+        body.rowconfigure(5, weight=1)
+
+        # Footer
+        tk.Frame(dlg, bg="#d5d8dc", height=1).pack(fill="x")
+        bf = ttk.Frame(dlg, padding=(14, 8)); bf.pack(fill="x")
+        close_btn = ttk.Button(bf, text="Close", state="disabled", command=dlg.destroy)
+        close_btn.pack(side="right")
+        cancel_flag = [False]
+        ttk.Button(bf, text="Cancel",
+                   command=lambda: cancel_flag.__setitem__(0, True)).pack(side="right", padx=6)
+        folder_btn = ttk.Button(bf, text="Open Folder",
+                                command=lambda: _open_file(dest_dir))
+        folder_btn.pack(side="left")
+
+        _center_window(dlg, 560, 420)
+
+        # ── Worker thread ─────────────────────────────────────────
+        q = queue.Queue()
+        _VALID_EXTS = {".pdf", ".png", ".jpg", ".jpeg",
+                       ".tif", ".tiff", ".svg", ".dwg", ".dxf"}
 
         def _run():
-            ok, fail = 0, []
-            for i, (dev_id, url) in enumerate(targets):
-                prog_var.set(f"Downloading: {dev_id}")
-                bar["value"] = i
+            ok = 0
+            for i, (name, url) in enumerate(targets):
+                if cancel_flag[0]:
+                    q.put(("log", f"Cancelled after {i} of {len(targets)} file(s).", "info"))
+                    break
+
                 ext = os.path.splitext(url.split("?")[0])[-1].lower()
-                if ext not in (".pdf",".png",".jpg",".jpeg",".tif",".tiff",".svg",".dwg"):
+                if ext not in _VALID_EXTS:
                     ext = ".pdf"
+                dest = os.path.join(dest_dir, name + ext)
+                q.put(("progress", i, name, dest))
+
                 try:
-                    req = urllib.request.Request(url, headers={"User-Agent": "RedLineRouting/1.0"})
-                    with urllib.request.urlopen(req, timeout=30) as resp, \
-                         open(os.path.join(dest_dir, dev_id + ext), "wb") as out:
-                        out.write(resp.read())
+                    req = urllib.request.Request(
+                        url, headers={"User-Agent": "RedLineRouting/1.0"})
+                    with urllib.request.urlopen(req, timeout=30) as resp:
+                        data = resp.read()
+                    with open(dest, "wb") as fh:
+                        fh.write(data)
+                    kb = len(data) // 1024
+                    q.put(("log", f"✓  {name}  ({kb} KB)  →  {os.path.basename(dest)}", "ok"))
                     ok += 1
-                except Exception as e:
-                    fail.append(f"{dev_id}: {e}")
-            bar["value"] = len(targets)
-            prog_var.set("Done.")
-            msg = f"{ok} downloaded"
-            if fail: msg += f", {len(fail)} failed:\n" + "\n".join(fail[:5])
-            res_var.set(msg)
-            ttk.Button(dlg, text="Close", command=dlg.destroy).pack(pady=6)
+                except urllib.error.HTTPError as exc:
+                    q.put(("log",
+                           f"✗  {name}: HTTP {exc.code} {exc.reason}  [{url}]", "err"))
+                except urllib.error.URLError as exc:
+                    q.put(("log",
+                           f"✗  {name}: Cannot reach server — {exc.reason}", "err"))
+                except OSError as exc:
+                    q.put(("log",
+                           f"✗  {name}: File write error — {exc}", "err"))
+                except Exception as exc:
+                    q.put(("log", f"✗  {name}: {exc}", "err"))
+
+            q.put(("done", ok))
+
+        # ── Main-thread poller ────────────────────────────────────
+        def _poll():
+            try:
+                while True:
+                    item = q.get_nowait()
+                    kind = item[0]
+                    if kind == "progress":
+                        _, i, name, dest = item
+                        cur_lbl.set(f"{i + 1} of {len(targets)}:  {name}")
+                        dest_lbl.set(dest)
+                        bar["value"] = i
+                        cnt_lbl.set(f"{i} / {len(targets)}")
+                    elif kind == "log":
+                        _, msg, tag = item
+                        log.configure(state="normal")
+                        log.insert("end", msg + "\n", tag)
+                        log.see("end")
+                        log.configure(state="disabled")
+                    elif kind == "done":
+                        ok = item[1]
+                        bar["value"] = len(targets)
+                        cnt_lbl.set(f"{len(targets)} / {len(targets)}")
+                        cur_lbl.set("Complete")
+                        dest_lbl.set(f"All files saved to: {dest_dir}")
+                        log.configure(state="normal")
+                        log.insert("end",
+                                   f"\n─── {ok} downloaded, "
+                                   f"{len(targets) - ok} failed ───\n", "info")
+                        log.see("end")
+                        log.configure(state="disabled")
+                        close_btn.configure(state="normal")
+                        return
+            except queue.Empty:
+                pass
+            dlg.after(80, _poll)
 
         threading.Thread(target=_run, daemon=True).start()
+        dlg.after(80, _poll)
 
     # ── Software / Global Settings ────────────────────────────────
 
@@ -3580,18 +3660,36 @@ class RedLineApp(tk.Tk):
         if messagebox.askyesno("Exported",f"Saved to:\n{path}\n\nOpen now?"): _open_file(path)
 
     def _export_html(self):
-        if not self.jobs: messagebox.showinfo("No Jobs","Add at least one job first."); return
-        path = filedialog.asksaveasfilename(defaultextension=".html",
-                   filetypes=[("HTML files","*.html"),("All files","*.*")],
-                   initialfile=f"wire_table_{datetime.now().strftime('%Y%m%d')}.html")
-        if not path: return
-        tp = dict(self.title_page); tp["notes"] = self.title_notes.get("1.0","end").strip()
-        html = generate_html_table(self.jobs,self.project_var.get().strip(),self.drawing_registry,title_page=tp)
-        with open(path,"w",encoding="utf-8") as fh: fh.write(html)
+        if not self.jobs:
+            messagebox.showinfo("No Jobs", "Add at least one job first."); return
+
+        proj = self.project_var.get().strip()
+        safe = "".join(c if c not in r'<>:"/\|?*' else "_" for c in proj) if proj else "RedLine_Export"
+        default_name = safe + ".html"
+
+        if self.project_folder:
+            # Auto-save into the project root folder — no dialog needed
+            path = os.path.join(self.project_folder, default_name)
+        else:
+            path = filedialog.asksaveasfilename(
+                defaultextension=".html",
+                filetypes=[("HTML files", "*.html"), ("All files", "*.*")],
+                initialfile=default_name)
+            if not path: return
+
+        tp = dict(self.title_page); tp["notes"] = self.title_notes.get("1.0", "end").strip()
+        html = generate_html_table(self.jobs, proj, self.drawing_registry, title_page=tp)
+        try:
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(html)
+        except OSError as exc:
+            messagebox.showerror("Export Error", f"Could not write HTML:\n{exc}"); return
         self.status_var.set(f"HTML exported → {path}")
         webbrowser.open(path)
-        messagebox.showinfo("HTML Opened",
-            "The file has been opened in your browser.\n\nTo save as PDF:\nCtrl+P  →  Destination: Save as PDF")
+        messagebox.showinfo("HTML Saved",
+            f"Saved to:\n{path}\n\n"
+            "Opened in your browser.\n"
+            "Ctrl+P → Save as PDF to create a PDF copy.")
 
     # ──────────────────────────────────────────────────────────────────
     # Save / Load
