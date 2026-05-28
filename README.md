@@ -37,14 +37,14 @@ When you save or complete the wizard, a folder is created:
 
 ```
 <ProjectName>/
-  <ProjectName>.wirePlan    ← JSON file (open this to reload a project)
+  <ProjectName>.redline    ← JSON file (open this to reload a project)
   Drawings/                 ← auto-downloaded drawing files
   Relay Settings/           ← auto-downloaded relay setting files
   CROW Outage/
   Other/
 ```
 
-Open an existing project with **File → Open** and browse to the `.wirePlan` file.
+Open an existing project with **File → Open** and browse to the `.redline` file.
 
 ## Tabs
 
@@ -124,9 +124,9 @@ Stored in `~/.redlinerouting.json`. Accessible via **File → Software Settings*
 | `base_crow_url` | Pre-fills the URL field when adding a CROW |
 | `base_relay_url` | Pre-fills the URL field when adding a relay setting |
 
-## .wirePlan file format
+## .redline file format
 
-The `.wirePlan` file is plain JSON and can be inspected or edited in any text editor.
+The `.redline` file is plain JSON and can be inspected or edited in any text editor.
 
 ```json
 {

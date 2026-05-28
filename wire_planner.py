@@ -3,7 +3,7 @@
 Red-Line-Routing
 ----------------
 All-in-one electrical job planner: work orders, drawings, relay settings, CROWs.
-Save/load plans as project folders with .wirePlan JSON and organised subfolders.
+Save/load plans as project folders with .redline JSON and organised subfolders.
 Export detailed report, table, CSV, or colour-coded HTML/PDF.
 """
 
@@ -1831,7 +1831,7 @@ class LandingDialog(tk.Toplevel):
                 w.bind("<Button-1>", lambda _, c=cmd: c())
 
         _action_card(body, "📂", "Open Existing Project",
-                     "Browse for a .wirePlan file",
+                     "Browse for a .redline file",
                      "#1a5276", "#21618c", lambda: self._choose("open"))
         _action_card(body, "✦", "Create New Project",
                      "Quick start or step-through setup wizard",
@@ -2389,7 +2389,7 @@ class ProjectWizard(tk.Toplevel):
 # Main application
 # ──────────────────────────────────────────────────────────────────
 
-class WirePlannerApp(tk.Tk):
+class RedLineApp(tk.Tk):
     TYPE_FG = {"REMOVE":"#c0392b","ADD":"#1a7a3c","MOVE":"#1a5a99",
                "BLOCK":"#d35400","UNBLOCK":"#16a085","TESTING":"#6c3483"}
 
@@ -2475,7 +2475,7 @@ class WirePlannerApp(tk.Tk):
             messagebox.showerror("Error", f"Could not create project folder:\n{exc}"); return
 
         self.project_folder = folder
-        path = os.path.join(folder, safe + ".wirePlan")
+        path = os.path.join(folder, safe + ".redline")
         self.current_file = path
 
         self.title_notes.delete("1.0", "end")
@@ -3529,7 +3529,7 @@ class WirePlannerApp(tk.Tk):
         # After loading we re-scan jobs to backfill any drawings that exist in job
         # endpoints but are missing from the registry (handles files saved by older
         # versions that lacked the registry), then rebuild ep_history from scratch.
-        path = filedialog.askopenfilename(filetypes=[("Wire Plan","*.wirePlan"),("JSON","*.json"),("All","*.*")])
+        path = filedialog.askopenfilename(filetypes=[("Red-Line Plan","*.redline"),("Legacy wirePlan","*.wirePlan"),("JSON","*.json"),("All","*.*")])
         if not path: return
         try:
             with open(path,encoding="utf-8") as fh: data = json.load(fh)
@@ -3568,7 +3568,7 @@ class WirePlannerApp(tk.Tk):
         except Exception as exc:
             messagebox.showerror("Save Error", f"Could not create project folder:\n{exc}"); return
         self.project_folder = folder
-        path = os.path.join(folder, safe + ".wirePlan")
+        path = os.path.join(folder, safe + ".redline")
         self.current_file = path
         self._write(path)
 
@@ -3603,5 +3603,5 @@ def _open_file(path):
 
 
 if __name__ == "__main__":
-    app = WirePlannerApp()
+    app = RedLineApp()
     app.mainloop()

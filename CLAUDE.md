@@ -36,11 +36,11 @@ All code lives in `wire_planner.py`. Reading top-to-bottom follows the dependenc
 | 640 – 1015 | Job and protection dialogs (`JobDialog`, `DrawingEditDialog`, …) |
 | 1016 – 1497 | Plain-text / HTML / CSV export generators (no GUI) |
 | 1498 – 2320 | Startup flow dialogs and the project wizard |
-| 2324 – 3507 | `WirePlannerApp` — the main `tk.Tk` window |
+| 2324 – 3507 | `RedLineApp` — the main `tk.Tk` window |
 
 ## Key data model
 
-`WirePlannerApp` owns these instance attributes; they are serialised together into the `.wirePlan` JSON:
+`RedLineApp` owns these instance attributes; they are serialised together into the `.redline` JSON:
 
 ```python
 self.jobs             # list of job dicts (see empty_job())
@@ -82,7 +82,7 @@ Walks the full widget tree under `frame` and binds `<Enter>`/`<Leave>` to swap b
 ## Startup flow
 
 ```
-WirePlannerApp.__init__
+RedLineApp.__init__
   └── after_idle(_startup_flow)
         ├── SoftwareSetupDialog  (first run only — writes ~/.redlinerouting.json)
         ├── LandingDialog        (open existing / new quick / wizard)
@@ -104,7 +104,7 @@ These four functions are pure and can be called or tested independently:
 
 ```
 <ProjectName>/
-  <ProjectName>.wirePlan   ← JSON (the source of truth)
+  <ProjectName>.redline   ← JSON (the source of truth)
   Drawings/                ← downloaded drawing files
   Relay Settings/          ← downloaded relay setting files
   CROW Outage/             ← CROW-related files
