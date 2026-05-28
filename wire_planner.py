@@ -2566,12 +2566,14 @@ class RedLineApp(tk.Tk):
         folder = os.path.join(result["save_location"], safe)
         try:
             os.makedirs(folder, exist_ok=True)
-            for sub in ("Drawings", "Relay Settings", "CROW Outage", "Other"):
+            for sub in ("Drawings", "Relay Settings", "CROW Outage", "Other",
+                        os.path.join("Tailboards", "Completed")):
                 os.makedirs(os.path.join(folder, sub), exist_ok=True)
         except Exception as exc:
             messagebox.showerror("Error", f"Could not create project folder:\n{exc}"); return
 
         self.project_folder = folder
+        self._schedule_tailboard_check()
         path = os.path.join(folder, safe + ".redline")
         self.current_file = path
 
@@ -3283,6 +3285,9 @@ class RedLineApp(tk.Tk):
             ("Relay Settings", [
                 ("base_relay_url",    "Base Relay URL:",    "Used to pre-fill URLs when adding relay settings"),
             ]),
+            ("Tailboard", [
+                ("tailboard_url",     "Tailboard URL:",     "PDF downloaded automatically when a project is open"),
+            ]),
         ]
 
         cfg_vars = {}
@@ -3927,6 +3932,17 @@ try {{
     # ──────────────────────────────────────────────────────────────────
 
     def _build_impl_view(self, parent):
+        # ── Safety / Tailboard toolbar ─────────────────────────────
+        tb_bar = tk.Frame(parent, bg="#1c3a5a")
+        tb_bar.pack(fill="x", padx=4, pady=(4, 0))
+        tk.Label(tb_bar, text="⚠  SAFETY", bg="#1c3a5a", fg="#f39c12",
+                 font=("", 9, "bold"), padx=8, pady=6).pack(side="left")
+        ttk.Button(tb_bar, text="Update Tailboard",
+                   command=self._update_tailboard).pack(side="left", padx=(0, 10), pady=4)
+        self._tb_status_var = tk.StringVar(value="")
+        tk.Label(tb_bar, textvariable=self._tb_status_var, bg="#1c3a5a",
+                 fg="#85c1e9", font=("", 8)).pack(side="left")
+
         pw_main = ttk.PanedWindow(parent, orient="horizontal")
         pw_main.pack(fill="both", expand=True, padx=4, pady=4)
 
@@ -4053,7 +4069,7 @@ try {{
         # Drawings: honour the current filter mode
         sel = self.impl_tree.selection()
         if (self._drw_filter_var.get() == "step"
-                and sel and sel[0] != "__prep__"):
+                and sel and sel[0] not in ("__prep__", "__tailboard__")):
             idx = int(sel[0])
             if 0 <= idx < len(self.jobs):
                 self._filter_drawings_to_job(self.jobs[idx])
@@ -4089,6 +4105,20 @@ try {{
 
     def _refresh_impl_list(self):
         for iid in self.impl_tree.get_children(): self.impl_tree.delete(iid)
+
+        # TAILBOARD — always the very first step
+        tb_done = self.title_page.get("tailboard_done", False)
+        tb_path = self._tailboard_current_path()
+        tb_hint = ("Open tailboard PDF" if (tb_path and os.path.exists(tb_path))
+                   else "⬇ Not downloaded — configure URL in Software Settings")
+        self.impl_tree.insert("", "end", iid="__tailboard__",
+            values=("☑" if tb_done else "☐", "", "TAILBOARD",
+                    f"Complete tailboard before starting work  ·  {tb_hint}"),
+            tags=("TAILBOARD", "COMPLETED") if tb_done else ("TAILBOARD",))
+        self.impl_tree.tag_configure("TAILBOARD",
+            foreground="#e67e22", font=("", 9, "bold"))
+
+        # PREP briefing row
         self.impl_tree.insert("", "end", iid="__prep__",
             values=("▶", "", "PREP", "Project Briefing  —  CROWs · Drawings · Relay Settings"),
             tags=("PREP",))
@@ -4109,6 +4139,9 @@ try {{
     def _on_impl_select(self, _=None):
         sel = self.impl_tree.selection()
         if not sel: return
+        if sel[0] == "__tailboard__":
+            self._show_impl_tailboard()
+            return
         if sel[0] == "__prep__":
             self._show_impl_prep()
             return
@@ -4133,7 +4166,7 @@ try {{
             self._drw_filter_var.set("step")
             self._drw_filter_btn.configure(text="Show All")
             sel = self.impl_tree.selection()
-            if sel and sel[0] != "__prep__":
+            if sel and sel[0] not in ("__prep__", "__tailboard__"):
                 idx = int(sel[0])
                 if 0 <= idx < len(self.jobs):
                     self._filter_drawings_to_job(self.jobs[idx])
@@ -4399,6 +4432,167 @@ try {{
         if path and os.path.exists(path):
             _open_file(path)
 
+    # ── Tailboard ─────────────────────────────────────────────────
+
+    def _tailboard_dir(self):
+        if not self.project_folder:
+            return None
+        return os.path.join(self.project_folder, "Tailboards")
+
+    def _tailboard_current_path(self):
+        """Return path to the downloaded tailboard template (any extension), or None."""
+        d = self._tailboard_dir()
+        if not d:
+            return None
+        for ext in (".pdf", ".docx", ".doc", ".xlsx", ".xls", ".png"):
+            p = os.path.join(d, "tailboard_current" + ext)
+            if os.path.exists(p):
+                return p
+        return None   # not yet downloaded
+
+    def _schedule_tailboard_check(self):
+        """Create Tailboards folder and start background download/freshness check."""
+        url = self.app_config.get("tailboard_url", "").strip()
+        tb_dir = self._tailboard_dir()
+        if not tb_dir:
+            return
+        try:
+            os.makedirs(os.path.join(tb_dir, "Completed"), exist_ok=True)
+        except Exception:
+            pass
+        if not url:
+            return
+        threading.Thread(target=self._check_tailboard_bg, daemon=True).start()
+
+    def _check_tailboard_bg(self):
+        """Background: download the tailboard template or confirm it is still current."""
+        url = self.app_config.get("tailboard_url", "").strip()
+        if not url:
+            return
+        tb_dir = self._tailboard_dir()
+        if not tb_dir:
+            return
+
+        url_ext = os.path.splitext(url.split("?")[0])[-1].lower() or ".pdf"
+        dest    = os.path.join(tb_dir, "tailboard_current" + url_ext)
+        hdrs    = {"User-Agent": "RedLineRouting/1.0", **self._parse_request_headers()}
+
+        try:
+            # If the file already exists, do a lightweight HEAD check first
+            if os.path.exists(dest):
+                try:
+                    head = urllib.request.Request(url, headers=hdrs, method="HEAD")
+                    with urllib.request.urlopen(head, timeout=10) as r:
+                        lm = r.headers.get("Last-Modified", "")
+                    if lm:
+                        import email.utils
+                        srv_ts  = email.utils.parsedate_to_datetime(lm).timestamp()
+                        file_ts = os.path.getmtime(dest)
+                        if srv_ts <= file_ts:
+                            self.after(0, lambda: self._set_tailboard_status("ok"))
+                            return
+                except Exception:
+                    pass  # HEAD failed — fall through to re-download
+
+            self.after(0, lambda: self._set_tailboard_status("downloading"))
+            req = urllib.request.Request(url, headers=hdrs)
+            with urllib.request.urlopen(req, timeout=30) as r:
+                data = r.read()
+            with open(dest, "wb") as fh:
+                fh.write(data)
+            self.after(0, lambda: self._set_tailboard_status("ok"))
+
+        except urllib.error.HTTPError as exc:
+            self.after(0, lambda c=exc.code: self._set_tailboard_status(
+                "error", f"HTTP {c} — check URL/headers in Software Settings"))
+        except Exception as exc:
+            self.after(0, lambda e=str(exc): self._set_tailboard_status("error", e[:60]))
+
+    def _set_tailboard_status(self, status, detail=""):
+        if not hasattr(self, "_tb_status_var"):
+            return
+        msgs = {
+            "ok":          "✓  Tailboard current",
+            "downloading": "⬇  Downloading tailboard…",
+            "error":       f"⚠  {detail}",
+        }
+        self._tb_status_var.set(msgs.get(status, ""))
+        if status == "ok" and self.mode_var.get() == "impl":
+            self._refresh_impl_list()
+
+    def _show_impl_tailboard(self):
+        """Show tailboard info in step details and preview the PDF."""
+        tb_path = self._tailboard_current_path()
+        lines   = ["=" * 60, "  SAFETY TAILBOARD", "=" * 60, ""]
+
+        if tb_path:
+            lines += [f"  Template : {os.path.basename(tb_path)}",
+                      f"  Path     : {tb_path}", ""]
+        else:
+            lines += ["  No tailboard template downloaded.",
+                      "  Set the Tailboard URL in File → Software Settings.", ""]
+
+        tb_dir        = self._tailboard_dir()
+        completed_dir = os.path.join(tb_dir, "Completed") if tb_dir else None
+        if completed_dir and os.path.isdir(completed_dir):
+            done = sorted(
+                (f for f in os.listdir(completed_dir) if not f.startswith(".")),
+                reverse=True)
+            if done:
+                lines += ["  COMPLETED TAILBOARDS", "-" * 40]
+                for fn in done[:15]:
+                    lines.append(f"  {fn}")
+            else:
+                lines += ["  No completed tailboards archived yet.",
+                          "  Click 'Update Tailboard' after completing your tailboard."]
+
+        self.impl_preview.configure(state="normal")
+        self.impl_preview.delete("1.0", "end")
+        self.impl_preview.insert("1.0", "\n".join(lines))
+        self.impl_preview.configure(state="disabled")
+
+        if tb_path and os.path.exists(tb_path):
+            self.file_nb.select(0)   # switch to Drawings tab to show preview
+            self._preview_file(tb_path)
+
+    def _update_tailboard(self):
+        """Archive a dated copy of the current tailboard template and mark step done."""
+        tb_dir = self._tailboard_dir()
+        if not tb_dir:
+            messagebox.showinfo("Save First",
+                "Save the project first so the Tailboards folder location is known.")
+            return
+
+        src = self._tailboard_current_path()
+        if not src or not os.path.exists(src):
+            messagebox.showinfo("No Tailboard Template",
+                "No tailboard template has been downloaded yet.\n\n"
+                "Configure the Tailboard URL in File → Software Settings\n"
+                "and wait for the background download to finish.")
+            return
+
+        completed_dir = os.path.join(tb_dir, "Completed")
+        os.makedirs(completed_dir, exist_ok=True)
+
+        ext = os.path.splitext(src)[-1]
+        ts  = datetime.now().strftime("%Y-%m-%d_%H%M")
+        dst = os.path.join(completed_dir, f"tailboard_{ts}{ext}")
+
+        try:
+            shutil.copy2(src, dst)
+        except Exception as exc:
+            messagebox.showerror("Copy Failed", str(exc))
+            return
+
+        self.title_page["tailboard_done"] = True
+        self._refresh_impl_list()
+        # Re-select the tailboard row so the details pane updates
+        self.impl_tree.selection_set("__tailboard__")
+        self._show_impl_tailboard()
+        messagebox.showinfo("Tailboard Archived",
+            f"Saved completed tailboard as:\n{os.path.basename(dst)}\n\n"
+            "Tailboard step marked complete.")
+
     def _show_impl_prep(self):
         """Generate the project briefing shown when the PREP row is selected."""
         lines = []
@@ -4447,7 +4641,7 @@ try {{
         if self.impl_tree.identify_region(event.x, event.y) != "cell": return
         if self.impl_tree.identify_column(event.x) != "#1": return
         row = self.impl_tree.identify_row(event.y)
-        if not row or row == "__prep__": return
+        if not row or row in ("__prep__", "__tailboard__"): return
         idx = int(row)
         if 0 <= idx < len(self.jobs):
             self.jobs[idx]["completed"] = not self.jobs[idx].get("completed", False)
@@ -4729,6 +4923,7 @@ try {{
             self.title_page = data.get("title_page", {"notes": "", "crows": []})
             self.current_file = path
             self.project_folder = os.path.dirname(path)
+            self._schedule_tailboard_check()
             self._scan_jobs_for_drawings()
             self._rebuild_history()
             self.title_notes.delete("1.0", "end")
@@ -4752,11 +4947,13 @@ try {{
         folder = os.path.join(parent, safe)
         try:
             os.makedirs(folder, exist_ok=True)
-            for sub in ("Drawings", "Relay Settings", "CROW Outage", "Other"):
+            for sub in ("Drawings", "Relay Settings", "CROW Outage", "Other",
+                        os.path.join("Tailboards", "Completed")):
                 os.makedirs(os.path.join(folder, sub), exist_ok=True)
         except Exception as exc:
             messagebox.showerror("Save Error", f"Could not create project folder:\n{exc}"); return
         self.project_folder = folder
+        self._schedule_tailboard_check()
         path = os.path.join(folder, safe + ".redline")
         self.current_file = path
         self._write(path)
