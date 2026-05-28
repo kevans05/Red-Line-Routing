@@ -2961,6 +2961,28 @@ class RedLineApp(tk.Tk):
             os.path.join(self.project_folder, "Relay Settings"),
         )
 
+    def _parse_request_headers(self):
+        """Parse request_headers from app_config into a dict.
+
+        Reads self.app_config.get("request_headers", ""), parses it as
+        Header-Name: value lines (one per line, skips blanks and lines
+        without ':'), and returns a dict with whitespace-stripped keys/values.
+        """
+        raw = self.app_config.get("request_headers", "")
+        headers = {}
+        for line in raw.splitlines():
+            if ":" not in line:
+                continue
+            line = line.strip()
+            if not line:
+                continue
+            key, _, value = line.partition(":")
+            key = key.strip()
+            value = value.strip()
+            if key:
+                headers[key] = value
+        return headers
+
     def _download_with_progress(self, title, targets, dest_dir):
         """Shared download engine with thread-safe progress dialog.
 
@@ -3051,8 +3073,8 @@ class RedLineApp(tk.Tk):
                 q.put(("progress", i, name, dest))
 
                 try:
-                    req = urllib.request.Request(
-                        url, headers={"User-Agent": "RedLineRouting/1.0"})
+                    hdrs = {"User-Agent": "RedLineRouting/1.0", **self._parse_request_headers()}
+                    req = urllib.request.Request(url, headers=hdrs)
                     with urllib.request.urlopen(req, timeout=30) as resp:
                         data = resp.read()
                     with open(dest, "wb") as fh:
@@ -3061,8 +3083,10 @@ class RedLineApp(tk.Tk):
                     q.put(("log", f"✓  {name}  ({kb} KB)  →  {os.path.basename(dest)}", "ok"))
                     ok += 1
                 except urllib.error.HTTPError as exc:
-                    q.put(("log",
-                           f"✗  {name}: HTTP {exc.code} {exc.reason}  [{url}]", "err"))
+                    msg = f"✗  {name}: HTTP {exc.code} {exc.reason}  [{url}]"
+                    if exc.code in (401, 403):
+                        msg += "\n  → Tip: add a Cookie or Authorization header in File → Software Settings"
+                    q.put(("log", msg, "err"))
                 except urllib.error.URLError as exc:
                     q.put(("log",
                            f"✗  {name}: Cannot reach server — {exc.reason}", "err"))
@@ -3134,7 +3158,7 @@ class RedLineApp(tk.Tk):
     def _open_software_settings(self):
         dlg = tk.Toplevel(self)
         dlg.title("Software Settings")
-        dlg.resizable(False, False)
+        dlg.resizable(True, True)
         dlg.grab_set()
 
         f = ttk.Frame(dlg, padding=14)
@@ -3172,11 +3196,22 @@ class RedLineApp(tk.Tk):
         ttk.Label(f, text="These settings apply to all projects and are stored globally.",
                   foreground="grey", font=("",8)).pack(anchor="w", pady=(4,0))
 
+        auth_lf = ttk.LabelFrame(f, text="Authentication / Request Headers", padding=8)
+        auth_lf.pack(fill="x", pady=(0, 8))
+        ttk.Label(auth_lf,
+                  text="Headers sent with every download request. One per line as  Header-Name: value\n"
+                       "Tip: copy your session cookie from browser DevTools → Application → Cookies",
+                  foreground="grey", font=("", 8), wraplength=480, justify="left").pack(anchor="w", pady=(0, 4))
+        headers_txt = scrolledtext.ScrolledText(auth_lf, height=4, font=("Courier", 9), wrap="none")
+        headers_txt.pack(fill="x")
+        headers_txt.insert("1.0", self.app_config.get("request_headers", ""))
+
         bf = ttk.Frame(f); bf.pack(fill="x", pady=(10,0))
         ttk.Button(bf, text="Cancel", command=dlg.destroy).pack(side="right", padx=4)
 
         def _save():
-            self.app_config = {k: v.get().strip() for k, v in cfg_vars.items()}
+            self.app_config.update({k: v.get().strip() for k, v in cfg_vars.items()})
+            self.app_config["request_headers"] = headers_txt.get("1.0", "end").strip()
             self._save_app_config()
             dlg.destroy()
 
@@ -3423,6 +3458,11 @@ class RedLineApp(tk.Tk):
 
     def _refresh_impl_list(self):
         for iid in self.impl_tree.get_children(): self.impl_tree.delete(iid)
+        self.impl_tree.insert("", "end", iid="__prep__",
+            values=("▶", "", "PREP", "Project Briefing  —  CROWs · Drawings · Relay Settings"),
+            tags=("PREP",))
+        self.impl_tree.tag_configure("PREP",
+            foreground="#2980b9", font=("", 9, "bold"))
         disp = {"REMOVE":"REMOVE","ADD":"ADD","MOVE":"MOVE",
                 "BLOCK":"BLOCK PROT.","UNBLOCK":"UNBLOCK PROT.","TESTING":"TESTING"}
         for i, job in enumerate(self.jobs):
@@ -3437,6 +3477,9 @@ class RedLineApp(tk.Tk):
     def _on_impl_select(self, _=None):
         sel = self.impl_tree.selection()
         if not sel: return
+        if sel[0] == "__prep__":
+            self._show_impl_prep()
+            return
         idx = int(sel[0])
         if 0 <= idx < len(self.jobs):
             text = format_job(idx, self.jobs[idx])
@@ -3445,11 +3488,55 @@ class RedLineApp(tk.Tk):
             self.impl_preview.insert("1.0", text)
             self.impl_preview.configure(state="disabled")
 
+    def _show_impl_prep(self):
+        """Generate the project briefing shown when the PREP row is selected."""
+        lines = []
+        proj = self.project_var.get().strip() or "(unnamed project)"
+        lines += [f"{'='*60}", f"  PROJECT BRIEFING", f"  {proj}", f"{'='*60}", ""]
+
+        notes = self.title_notes.get("1.0", "end").strip()
+        if notes:
+            lines += ["NOTES", "-"*40, notes, ""]
+
+        crows = self.title_page.get("crows", [])
+        if crows:
+            lines += ["CROW OUTAGE RECORDS", "-"*40]
+            for c in crows:
+                num = c.get("outage_number", "")
+                url = c.get("url", "")
+                lines.append(f"  {num:<20}  {url}")
+            lines.append("")
+
+        if self.drawing_registry:
+            lines += ["DRAWINGS", "-"*40]
+            for name, info in sorted(self.drawing_registry.items()):
+                rev  = f"  Rev {info['rev']}" if info.get("rev") else ""
+                titl = f"  {info['title']}"   if info.get("title") else ""
+                url  = f"\n    {info['url']}" if info.get("url") else ""
+                lines.append(f"  {name}{rev}{titl}{url}")
+            lines.append("")
+
+        if self.relay_registry:
+            lines += ["RELAY / DEVICE SETTINGS", "-"*40]
+            for dev_id, info in sorted(self.relay_registry.items()):
+                eng  = f"  Eng: {info['engineer']}"    if info.get("engineer") else ""
+                rev  = f"  Rev {info['revision']}"     if info.get("revision") else ""
+                url  = f"\n    {info['url']}"          if info.get("url") else ""
+                lines.append(f"  {dev_id}{rev}{eng}{url}")
+            lines.append("")
+
+        lines += [f"{'─'*60}", f"  Total work order steps: {len(self.jobs)}", f"{'─'*60}"]
+
+        self.impl_preview.configure(state="normal")
+        self.impl_preview.delete("1.0", "end")
+        self.impl_preview.insert("1.0", "\n".join(lines))
+        self.impl_preview.configure(state="disabled")
+
     def _on_impl_tree_click(self, event):
         if self.impl_tree.identify_region(event.x, event.y) != "cell": return
         if self.impl_tree.identify_column(event.x) != "#1": return
         row = self.impl_tree.identify_row(event.y)
-        if not row: return
+        if not row or row == "__prep__": return
         idx = int(row)
         if 0 <= idx < len(self.jobs):
             self.jobs[idx]["completed"] = not self.jobs[idx].get("completed", False)
