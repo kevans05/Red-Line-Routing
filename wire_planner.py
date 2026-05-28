@@ -3913,15 +3913,73 @@ try {{
 
         vf_top = ttk.Frame(viewer_f); vf_top.pack(fill="x", pady=(0, 4))
         ttk.Button(vf_top, text="⟳ Refresh", command=self._refresh_file_tabs).pack(side="left")
-        ttk.Label(vf_top, text="Downloaded files from project folder  —  double-click to open",
+        self._drw_filter_var = tk.StringVar(value="step")
+        self._drw_filter_btn = ttk.Button(vf_top, text="Show All",
+                                           command=self._toggle_drawing_filter)
+        self._drw_filter_btn.pack(side="left", padx=(6, 0))
+        ttk.Label(vf_top, text="  click to preview  ·  double-click to open",
                   foreground="grey", font=("", 8)).pack(side="left", padx=8)
 
         self.file_nb = ttk.Notebook(viewer_f)
         self.file_nb.pack(fill="both", expand=True)
 
-        drw_tab = ttk.Frame(self.file_nb); self.file_nb.add(drw_tab,   text="  Drawings  ")
-        rly_tab = ttk.Frame(self.file_nb); self.file_nb.add(rly_tab,   text="  Relay Settings  ")
-        self._build_file_listbox(drw_tab, "impl_drw_lb", "Drawings")
+        # ── Drawings tab: file list (left) + PDF preview (right) ──
+        drw_tab = ttk.Frame(self.file_nb)
+        self.file_nb.add(drw_tab, text="  Drawings  ")
+
+        pw_drw = ttk.PanedWindow(drw_tab, orient="horizontal")
+        pw_drw.pack(fill="both", expand=True)
+
+        drw_list_f = ttk.Frame(pw_drw)
+        pw_drw.add(drw_list_f, weight=1)
+        self.impl_drw_lb = tk.Listbox(drw_list_f, selectmode="browse",
+                                       font=("Courier", 9), activestyle="none",
+                                       relief="flat", borderwidth=0)
+        drw_vsb = ttk.Scrollbar(drw_list_f, orient="vertical",   command=self.impl_drw_lb.yview)
+        drw_hsb = ttk.Scrollbar(drw_list_f, orient="horizontal", command=self.impl_drw_lb.xview)
+        self.impl_drw_lb.configure(yscrollcommand=drw_vsb.set, xscrollcommand=drw_hsb.set)
+        drw_vsb.pack(side="right", fill="y")
+        drw_hsb.pack(side="bottom", fill="x")
+        self.impl_drw_lb.pack(fill="both", expand=True)
+        self.impl_drw_lb.bind("<<ListboxSelect>>", self._on_drw_select)
+        self.impl_drw_lb.bind("<Double-1>",        self._on_drw_double_click)
+        self._impl_drw_paths: list = []   # parallel full-path list for listbox items
+
+        # Preview pane
+        prev_f = ttk.Frame(pw_drw)
+        pw_drw.add(prev_f, weight=2)
+
+        nav_f = ttk.Frame(prev_f); nav_f.pack(fill="x", pady=(0, 2))
+        self._pdf_page     = [1]    # current page number
+        self._pdf_total    = [0]    # total pages (0 = unknown/single)
+        self._pdf_cur_path = [None] # path being previewed
+        self._pdf_photo    = [None] # PhotoImage ref (prevents GC)
+        self._pdf_prev_btn = ttk.Button(nav_f, text="◀", width=3,
+                                         command=lambda: self._pdf_nav(-1))
+        self._pdf_prev_btn.pack(side="left")
+        self._pdf_page_lbl = tk.StringVar(value="")
+        ttk.Label(nav_f, textvariable=self._pdf_page_lbl,
+                  width=14, anchor="center").pack(side="left", padx=4)
+        self._pdf_next_btn = ttk.Button(nav_f, text="▶", width=3,
+                                         command=lambda: self._pdf_nav(+1))
+        self._pdf_next_btn.pack(side="left")
+        ttk.Button(nav_f, text="Open ↗",
+                   command=self._open_previewed_file).pack(side="right")
+
+        canvas_f = ttk.Frame(prev_f); canvas_f.pack(fill="both", expand=True)
+        self._pdf_canvas = tk.Canvas(canvas_f, bg="#2c2c2c")
+        c_vsb = ttk.Scrollbar(canvas_f, orient="vertical",   command=self._pdf_canvas.yview)
+        c_hsb = ttk.Scrollbar(canvas_f, orient="horizontal", command=self._pdf_canvas.xview)
+        self._pdf_canvas.configure(yscrollcommand=c_vsb.set, xscrollcommand=c_hsb.set)
+        c_vsb.pack(side="right", fill="y")
+        c_hsb.pack(side="bottom", fill="x")
+        self._pdf_canvas.pack(fill="both", expand=True)
+        self._pdf_canvas.create_text(10, 10, anchor="nw", fill="#888",
+            text="Select a drawing to preview", font=("", 9), tags=("hint",))
+
+        # ── Relay Settings tab ─────────────────────────────────────
+        rly_tab = ttk.Frame(self.file_nb)
+        self.file_nb.add(rly_tab, text="  Relay Settings  ")
         self._build_file_listbox(rly_tab, "impl_rly_lb", "Relay Settings")
 
     def _build_file_listbox(self, parent, attr, subfolder):
@@ -3935,20 +3993,34 @@ try {{
         setattr(self, attr, lb)
 
     def _refresh_file_tabs(self):
-        for attr, subfolder in [("impl_drw_lb", "Drawings"), ("impl_rly_lb", "Relay Settings")]:
-            lb = getattr(self, attr)
-            lb.delete(0, "end")
-            if not self.project_folder:
-                lb.insert("end", "(save project first to see downloaded files)"); continue
-            folder = os.path.join(self.project_folder, subfolder)
-            if os.path.isdir(folder):
-                files = sorted(f for f in os.listdir(folder) if not f.startswith("."))
-                if files:
-                    for fn in files: lb.insert("end", fn)
-                else:
-                    lb.insert("end", f"(no files in {subfolder}/ yet — use ⬇ Download All)")
+        # Drawings: honour the current filter mode
+        sel = self.impl_tree.selection()
+        if (self._drw_filter_var.get() == "step"
+                and sel and sel[0] != "__prep__"):
+            idx = int(sel[0])
+            if 0 <= idx < len(self.jobs):
+                self._filter_drawings_to_job(self.jobs[idx])
+                # fall through to refresh relay tab
             else:
-                lb.insert("end", f"({subfolder}/ folder not found)")
+                self._show_all_drawings()
+        else:
+            self._show_all_drawings()
+
+        # Relay Settings tab (flat folder, no organisation)
+        lb = self.impl_rly_lb
+        lb.delete(0, "end")
+        if not self.project_folder:
+            lb.insert("end", "(save project first to see downloaded files)")
+            return
+        folder = os.path.join(self.project_folder, "Relay Settings")
+        if os.path.isdir(folder):
+            files = sorted(f for f in os.listdir(folder) if not f.startswith("."))
+            for fn in files:
+                lb.insert("end", fn)
+            if not files:
+                lb.insert("end", "(no files yet — use ⬇ Download All)")
+        else:
+            lb.insert("end", "(Relay Settings/ folder not found)")
 
     def _open_impl_file(self, lb, subfolder):
         sel = lb.curselection()
@@ -3989,6 +4061,281 @@ try {{
             self.impl_preview.delete("1.0", "end")
             self.impl_preview.insert("1.0", text)
             self.impl_preview.configure(state="disabled")
+            if self._drw_filter_var.get() == "step":
+                self._filter_drawings_to_job(self.jobs[idx])
+
+    # ── Drawing filter helpers ─────────────────────────────────────
+
+    def _toggle_drawing_filter(self):
+        if self._drw_filter_var.get() == "step":
+            self._drw_filter_var.set("all")
+            self._drw_filter_btn.configure(text="Step Only")
+            self._show_all_drawings()
+        else:
+            self._drw_filter_var.set("step")
+            self._drw_filter_btn.configure(text="Show All")
+            sel = self.impl_tree.selection()
+            if sel and sel[0] != "__prep__":
+                idx = int(sel[0])
+                if 0 <= idx < len(self.jobs):
+                    self._filter_drawings_to_job(self.jobs[idx])
+                    return
+            self._show_all_drawings()
+
+    def _job_drawing_names(self, job):
+        """Return a set of all drawing name strings referenced in a job."""
+        names = set()
+        for ep_key in ("start", "end", "add_start", "add_end"):
+            d = (job.get(ep_key) or {}).get("drawing", "").strip()
+            if d:
+                names.add(d)
+        for d in (job.get("protection") or {}).get("drawings", []):
+            if d.strip():
+                names.add(d.strip())
+        return names
+
+    def _find_drawing_files(self, drawing_names):
+        """Find downloaded files for the given drawing names.
+        Returns [(display_label, full_path)] searching the organised subfolders first,
+        then falling back to a flat Drawings/ scan."""
+        if not self.project_folder:
+            return []
+        base = os.path.join(self.project_folder, "Drawings")
+        results = []
+        found = set()
+        for name in drawing_names:
+            sub = _drawing_subdir(base, name)
+            if os.path.isdir(sub):
+                for fname in sorted(os.listdir(sub)):
+                    fpath = os.path.join(sub, fname)
+                    if os.path.isfile(fpath) and not fname.startswith("."):
+                        stem = os.path.splitext(fname)[0]
+                        if stem.lower().startswith(name.lower()):
+                            rel = os.path.relpath(fpath, base)
+                            results.append((rel, fpath))
+                            found.add(name)
+            # Flat fallback
+            if name not in found and os.path.isdir(base):
+                for fname in os.listdir(base):
+                    fpath = os.path.join(base, fname)
+                    if os.path.isfile(fpath):
+                        if os.path.splitext(fname)[0].lower() == name.lower():
+                            results.append((fname, fpath))
+                            found.add(name)
+        return results
+
+    def _filter_drawings_to_job(self, job):
+        """Show only the drawings for this job in the drawings listbox."""
+        self.impl_drw_lb.delete(0, "end")
+        self._impl_drw_paths = []
+        names = self._job_drawing_names(job)
+        if not names:
+            self.impl_drw_lb.insert("end", "(no drawings on this step)")
+            return
+        files = self._find_drawing_files(names)
+        if not files:
+            self.impl_drw_lb.insert("end", "(drawing files not downloaded yet)")
+            for n in sorted(names):
+                self.impl_drw_lb.insert("end", f"  ⬇ {n}")
+            return
+        for label, path in files:
+            self.impl_drw_lb.insert("end", label)
+            self._impl_drw_paths.append(path)
+        # Auto-select and preview the first result
+        self.impl_drw_lb.selection_set(0)
+        self._preview_file(files[0][1])
+
+    def _show_all_drawings(self):
+        """List every downloaded drawing file, walking subfolders (skip Archive/)."""
+        self.impl_drw_lb.delete(0, "end")
+        self._impl_drw_paths = []
+        if not self.project_folder:
+            self.impl_drw_lb.insert("end", "(save project first)")
+            return
+        base = os.path.join(self.project_folder, "Drawings")
+        if not os.path.isdir(base):
+            self.impl_drw_lb.insert("end", "(Drawings/ folder not found)")
+            return
+        found = []
+        for root, dirs, files in os.walk(base):
+            dirs[:] = sorted(d for d in dirs if d != "Archive")
+            for fname in sorted(files):
+                if not fname.startswith("."):
+                    fpath = os.path.join(root, fname)
+                    found.append((os.path.relpath(fpath, base), fpath))
+        if found:
+            for label, path in found:
+                self.impl_drw_lb.insert("end", label)
+                self._impl_drw_paths.append(path)
+        else:
+            self.impl_drw_lb.insert("end", "(no drawings downloaded yet — use ⬇ Download All)")
+
+    # ── Drawing list click handlers ───────────────────────────────
+
+    def _on_drw_select(self, _=None):
+        sel = self.impl_drw_lb.curselection()
+        if not sel:
+            return
+        idx = sel[0]
+        if idx < len(self._impl_drw_paths):
+            self._preview_file(self._impl_drw_paths[idx])
+
+    def _on_drw_double_click(self, _=None):
+        sel = self.impl_drw_lb.curselection()
+        if not sel:
+            return
+        idx = sel[0]
+        if idx < len(self._impl_drw_paths):
+            path = self._impl_drw_paths[idx]
+            if os.path.exists(path):
+                _open_file(path)
+
+    # ── PDF / image preview ───────────────────────────────────────
+
+    def _preview_file(self, path):
+        if not path or not os.path.exists(path):
+            return
+        self._pdf_cur_path[0] = path
+        self._pdf_page[0]     = 1
+        ext = os.path.splitext(path)[-1].lower()
+        if ext == ".pdf":
+            self._render_and_show_pdf()
+        elif ext in (".png", ".ppm", ".pgm", ".gif"):
+            self._show_image_preview(path)
+        else:
+            self._pdf_canvas.delete("all")
+            self._pdf_page_lbl.set("")
+            self._pdf_canvas.create_text(
+                10, 10, anchor="nw", fill="#888",
+                text=f"No preview for {ext} files.\nDouble-click to open.",
+                font=("", 9))
+
+    def _render_and_show_pdf(self):
+        """Start a background render of the current PDF page."""
+        path = self._pdf_cur_path[0]
+        page = self._pdf_page[0]
+        self._pdf_canvas.delete("all")
+        self._pdf_canvas.create_text(10, 10, anchor="nw", fill="#888",
+            text=f"Rendering page {page}…", font=("", 9))
+        self._pdf_prev_btn.configure(state="disabled")
+        self._pdf_next_btn.configure(state="disabled")
+        self._pdf_page_lbl.set(f"Page {page}")
+
+        q: queue.Queue = queue.Queue()
+        def _worker():
+            q.put(self._render_pdf_page(path, page))
+        threading.Thread(target=_worker, daemon=True).start()
+
+        def _poll():
+            if q.empty():
+                self.after(80, _poll)
+                return
+            # Stale if the user navigated elsewhere while rendering
+            if self._pdf_cur_path[0] != path or self._pdf_page[0] != page:
+                return
+            img, total = q.get()
+            self._pdf_total[0] = total
+            self._pdf_canvas.delete("all")
+            if img:
+                self._pdf_photo[0] = img
+                self._pdf_canvas.create_image(0, 0, anchor="nw", image=img)
+                self._pdf_canvas.configure(
+                    scrollregion=(0, 0, img.width(), img.height()))
+                lbl = f"Page {page}"
+                if total > 1:
+                    lbl += f" / {total}"
+                self._pdf_page_lbl.set(lbl)
+                self._pdf_prev_btn.configure(
+                    state="normal" if page > 1 else "disabled")
+                self._pdf_next_btn.configure(
+                    state="normal" if total > 1 and page < total else "disabled")
+            else:
+                self._pdf_page_lbl.set("")
+                self._pdf_canvas.create_text(
+                    10, 10, anchor="nw", fill="#888",
+                    text="PDF preview unavailable.\n"
+                         "Install poppler-utils (pdftoppm) for in-app preview.\n"
+                         "Double-click the file to open it.",
+                    font=("", 9))
+        self.after(80, _poll)
+
+    def _render_pdf_page(self, pdf_path, page=1):
+        """Convert one PDF page to a tk.PhotoImage via pdftoppm.
+        Returns (PhotoImage, total_pages) or (None, 0) if pdftoppm is absent."""
+        pdftoppm = shutil.which("pdftoppm")
+        if not pdftoppm:
+            return None, 0
+        tmp_base = None
+        try:
+            # Page count via pdfinfo (optional — graceful if missing)
+            total = 0
+            pdfinfo = shutil.which("pdfinfo")
+            if pdfinfo:
+                r = subprocess.run([pdfinfo, pdf_path],
+                                   capture_output=True, text=True, timeout=5)
+                for line in r.stdout.splitlines():
+                    if line.lower().startswith("pages:"):
+                        try:
+                            total = int(line.split(":", 1)[1].strip())
+                        except ValueError:
+                            pass
+                        break
+
+            fd, tmp_base = tempfile.mkstemp()
+            os.close(fd)
+            os.unlink(tmp_base)   # pdftoppm appends its own suffix
+
+            subprocess.run(
+                [pdftoppm, "-r", "120", "-f", str(page), "-l", str(page),
+                 pdf_path, tmp_base],
+                capture_output=True, timeout=20, check=True)
+
+            ppm_files = sorted(glob.glob(tmp_base + "*.ppm"))
+            if not ppm_files:
+                return None, total
+            img = tk.PhotoImage(file=ppm_files[0])
+            return img, max(total, page)
+        except Exception:
+            return None, 0
+        finally:
+            if tmp_base:
+                for f in glob.glob(tmp_base + "*.ppm"):
+                    try:
+                        os.unlink(f)
+                    except Exception:
+                        pass
+
+    def _show_image_preview(self, path):
+        """Display a PNG/PPM/GIF directly (no external tool needed)."""
+        try:
+            img = tk.PhotoImage(file=path)
+            self._pdf_photo[0] = img
+            self._pdf_canvas.delete("all")
+            self._pdf_canvas.create_image(0, 0, anchor="nw", image=img)
+            self._pdf_canvas.configure(
+                scrollregion=(0, 0, img.width(), img.height()))
+            self._pdf_page_lbl.set("")
+            self._pdf_prev_btn.configure(state="disabled")
+            self._pdf_next_btn.configure(state="disabled")
+        except Exception:
+            self._pdf_canvas.delete("all")
+            self._pdf_canvas.create_text(10, 10, anchor="nw", fill="#888",
+                text="Could not display image.", font=("", 9))
+
+    def _pdf_nav(self, delta):
+        if not self._pdf_cur_path[0]:
+            return
+        total   = self._pdf_total[0]
+        new_pg  = self._pdf_page[0] + delta
+        if new_pg < 1 or (total > 0 and new_pg > total):
+            return
+        self._pdf_page[0] = new_pg
+        self._render_and_show_pdf()
+
+    def _open_previewed_file(self):
+        path = self._pdf_cur_path[0]
+        if path and os.path.exists(path):
+            _open_file(path)
 
     def _show_impl_prep(self):
         """Generate the project briefing shown when the PREP row is selected."""
