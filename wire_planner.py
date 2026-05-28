@@ -9,7 +9,7 @@ Export detailed report, table, CSV, or colour-coded HTML/PDF.
 
 # stdlib
 import tkinter as tk
-from tkinter import ttk, messagebox, filedialog, scrolledtext
+from tkinter import ttk, messagebox, filedialog, scrolledtext, simpledialog
 import json
 import os
 import subprocess
@@ -2523,6 +2523,65 @@ class RedLineApp(tk.Tk):
         for job in self.jobs:
             self._collect_history(job)
 
+    # ── Device registry ───────────────────────────────────────────
+    # Devices live in self.history["device"] so they persist with the project
+    # and automatically populate the Device field autocomplete in every job dialog.
+
+    def _refresh_device_list(self):
+        """Repopulate the Devices listbox from history."""
+        if not hasattr(self, "device_lb"):
+            return
+        self.device_lb.delete(0, "end")
+        for name in sorted(self.history.get("device", []), key=str.lower):
+            self.device_lb.insert("end", name)
+
+    def _add_device(self):
+        name = simpledialog.askstring("Add Device", "Device name:", parent=self)
+        if not name or not name.strip():
+            return
+        name = name.strip()
+        existing = self.history.setdefault("device", [])
+        if name not in existing:
+            existing.insert(0, name)
+            self._refresh_device_list()
+
+    def _edit_device(self):
+        sel = self.device_lb.curselection()
+        if not sel:
+            return
+        old = self.device_lb.get(sel[0])
+        new = simpledialog.askstring("Edit Device", "Device name:", initialvalue=old, parent=self)
+        if not new or not new.strip() or new.strip() == old:
+            return
+        new = new.strip()
+        devices = self.history.setdefault("device", [])
+        if old in devices:
+            idx = devices.index(old)
+            devices[idx] = new
+        self._refresh_device_list()
+
+    def _remove_device(self):
+        sel = self.device_lb.curselection()
+        if not sel:
+            return
+        name = self.device_lb.get(sel[0])
+        # Warn if jobs still reference this device so the user doesn't lose autocomplete accidentally
+        in_use = sum(
+            1 for job in self.jobs
+            for ep_key in ("start", "end", "add_start", "add_end")
+            if isinstance(job.get(ep_key), dict) and job[ep_key].get("device") == name
+        )
+        if in_use:
+            if not messagebox.askyesno(
+                    "Device in use",
+                    f"'{name}' is referenced in {in_use} job(s).\n"
+                    "Remove from the device list anyway?", parent=self):
+                return
+        devices = self.history.setdefault("device", [])
+        if name in devices:
+            devices.remove(name)
+        self._refresh_device_list()
+
     # ── Menu ──────────────────────────────────────────────────────
 
     def _build_menu(self):
@@ -2631,7 +2690,36 @@ class RedLineApp(tk.Tk):
 
         pw = ttk.PanedWindow(parent, orient="horizontal")
         pw.pack(fill="both", expand=True, padx=4, pady=4)
-        lf = ttk.LabelFrame(pw, text="Work Order", padding=4); pw.add(lf, weight=1)
+
+        # ── Left pane: Devices panel + Work Order list ─────────────
+        left_pane = ttk.Frame(pw); pw.add(left_pane, weight=1)
+
+        # Devices panel — registered device names that feed all endpoint autocompletes
+        dev_lf = ttk.LabelFrame(left_pane, text="Devices", padding=(4, 2))
+        dev_lf.pack(fill="x", pady=(0, 4))
+
+        dev_inner = ttk.Frame(dev_lf); dev_inner.pack(fill="x")
+        self.device_lb = tk.Listbox(dev_inner, height=4, selectmode="browse",
+                                    font=("", 9), activestyle="none",
+                                    relief="flat", borderwidth=1,
+                                    bg="white", fg="#1c2833",
+                                    selectbackground="#2980b9", selectforeground="white")
+        dev_vsb = ttk.Scrollbar(dev_inner, orient="vertical", command=self.device_lb.yview)
+        self.device_lb.configure(yscrollcommand=dev_vsb.set)
+        self.device_lb.pack(side="left", fill="both", expand=True)
+        dev_vsb.pack(side="right", fill="y")
+        self.device_lb.bind("<Double-1>", lambda _: self._edit_device())
+
+        dev_btns = ttk.Frame(dev_lf); dev_btns.pack(fill="x", pady=(4, 0))
+        ttk.Button(dev_btns, text="+ Add Device",    command=self._add_device).pack(side="left", padx=2)
+        ttk.Button(dev_btns, text="Edit",            command=self._edit_device).pack(side="left", padx=2)
+        ttk.Button(dev_btns, text="Remove",          command=self._remove_device).pack(side="left", padx=2)
+        ttk.Label(dev_btns, text="Drives autocomplete in all jobs",
+                  foreground="grey", font=("", 8)).pack(side="left", padx=6)
+
+        # Work Order job list
+        lf = ttk.LabelFrame(left_pane, text="Work Order", padding=4)
+        lf.pack(fill="both", expand=True)
         cols = ("Done","Seq","Type","Description")
         self.tree = ttk.Treeview(lf, columns=cols, show="headings", selectmode="extended")
         self.tree.heading("Done",text="✓"); self.tree.heading("Seq",text="#")
@@ -2647,6 +2735,8 @@ class RedLineApp(tk.Tk):
         self.tree.bind("<<TreeviewSelect>>", self._on_select)
         self.tree.bind("<Double-1>", lambda _: self._edit_job())
         self.tree.bind("<Button-1>", self._on_tree_click)
+
+        # ── Right pane: Job Preview ─────────────────────────────────
         pf = ttk.LabelFrame(pw, text="Job Preview", padding=4); pw.add(pf, weight=2)
         self.preview = scrolledtext.ScrolledText(pf, font=("Courier",9), state="disabled", wrap="none")
         self.preview.pack(fill="both", expand=True)
@@ -3301,6 +3391,7 @@ class RedLineApp(tk.Tk):
                 tags=tags)
         self._update_status()
         self._refresh_impl_list()
+        self._refresh_device_list()
 
     def _on_tree_click(self, event):
         """Toggle completed on click in the ☐/☑ Done column."""
