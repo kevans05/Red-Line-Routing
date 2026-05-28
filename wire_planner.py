@@ -1607,16 +1607,23 @@ class RelaySettingDialog(tk.Toplevel):
 # Startup / wizard dialogs  —  shared UI helpers
 # ──────────────────────────────────────────────────────────────────
 
-def _center_window(win, w, h):
+def _center_window(win, w=None, h=None):
+    """Center win on screen.  If w/h are omitted the window auto-sizes to content."""
     try:
         win.update_idletasks()
+        if w is None: w = win.winfo_reqwidth()  + 40
+        if h is None: h = win.winfo_reqheight() + 20
         sw = win.winfo_screenwidth()
         sh = win.winfo_screenheight()
+        # Don't let the window exceed 90 % of screen
+        w = min(w, int(sw * 0.90))
+        h = min(h, int(sh * 0.90))
         x = max(0, (sw - w) // 2)
         y = max(0, (sh - h) // 2 - 40)
         win.geometry(f"{w}x{h}+{x}+{y}")
     except Exception:
-        win.geometry(f"{w}x{h}")
+        if w and h:
+            win.geometry(f"{w}x{h}")
 
 def _hover_btn(frame, bg_normal, bg_hover):
     """Add Enter/Leave colour-swap to a tk.Frame used as a clickable button."""
@@ -1658,7 +1665,8 @@ class SoftwareSetupDialog(tk.Toplevel):
         self.result = None
         self._cfg_vars = {}
         self._build(dict(app_config))
-        _center_window(self, 560, 580)
+        self.resizable(True, True)
+        _center_window(self)          # auto-size to content
         self.grab_set()
         self.wait_window()
 
@@ -1721,7 +1729,8 @@ class LandingDialog(tk.Toplevel):
         self.result = None
         self.protocol("WM_DELETE_WINDOW", lambda: self._choose("new_quick"))
         self._build()
-        _center_window(self, 540, 400)
+        self.resizable(True, True)
+        _center_window(self)          # auto-size to content
         self.grab_set()
         self.wait_window()
 
@@ -1783,7 +1792,8 @@ class NewProjectChoiceDialog(tk.Toplevel):
         self.resizable(False, False)
         self.result = None
         self._build()
-        _center_window(self, 460, 280)
+        self.resizable(True, True)
+        _center_window(self)          # auto-size to content
         self.grab_set()
         self.wait_window()
 
@@ -1903,7 +1913,7 @@ class ProjectWizard(tk.Toplevel):
         super().__init__(parent)
         self.title("New Project Wizard")
         self.resizable(True, True)
-        self.minsize(680, 500)
+        self.minsize(720, 540)
         self.result = None
         self.app_config = app_config or {}
         self._step = 0
@@ -1913,7 +1923,16 @@ class ProjectWizard(tk.Toplevel):
         self.wiz_relays   = {}
         self.wiz_crows    = []
         self._build()
-        _center_window(self, 820, 640)
+        # Size wizard to 85 % of screen width/height, min 860×660
+        self.update_idletasks()
+        try:
+            sw = self.winfo_screenwidth()
+            sh = self.winfo_screenheight()
+            w = max(860, min(int(sw * 0.85), 1200))
+            h = max(660, min(int(sh * 0.85), 900))
+        except Exception:
+            w, h = 860, 660
+        _center_window(self, w, h)
         self.grab_set()
         self.wait_window()
 
@@ -2311,7 +2330,19 @@ class WirePlannerApp(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("Red-Line-Routing")
-        self.geometry("1080x720")
+        self.minsize(900, 600)
+        # Start maximised; fall back to a safe fixed size on headless/CI
+        try:
+            self.update_idletasks()
+            sw = self.winfo_screenwidth()
+            sh = self.winfo_screenheight()
+            w = max(1000, int(sw * 0.90))
+            h = max(650,  int(sh * 0.90))
+            x = (sw - w) // 2
+            y = max(0, (sh - h) // 2 - 20)
+            self.geometry(f"{w}x{h}+{x}+{y}")
+        except Exception:
+            self.geometry("1080x720")
         self.jobs = []
         self.drawing_registry = {}
         self.current_file = None
