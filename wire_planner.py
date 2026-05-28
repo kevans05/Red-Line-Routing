@@ -4556,19 +4556,23 @@ try {{
             else:
                 self._pdf_page_lbl.set("")
                 script_dir = os.path.dirname(os.path.abspath(__file__))
+                if sys.platform == "win32":
+                    hint = ("PDF preview unavailable.\n\n"
+                            "Windows 10/11: preview should work automatically via the built-in\n"
+                            "Windows.Data.Pdf engine (no downloads needed). If it failed,\n"
+                            "check that PowerShell is not blocked by system policy.\n\n"
+                            "For faster rendering, place  pdftoppm.exe  beside wire_planner.py:\n"
+                            f"  {script_dir}\n\n"
+                            "Double-click the file to open it externally.")
+                else:
+                    hint = ("PDF preview unavailable — pdftoppm not found.\n\n"
+                            f"Place  pdftoppm  beside  wire_planner.py:\n  {script_dir}\n\n"
+                            "Linux:  sudo apt install poppler-utils\n"
+                            "macOS:  brew install poppler\n\n"
+                            "Double-click the file to open it externally.")
                 self._pdf_canvas.create_text(
                     10, 10, anchor="nw", fill="#888",
-                    text="PDF preview unavailable — pdftoppm not found.\n\n"
-                         "To enable in-app preview, place  pdftoppm  (and optionally  pdfinfo)\n"
-                         "beside  wire_planner.py:\n\n"
-                         f"  {script_dir}\n\n"
-                         "Windows: download the portable Poppler release from\n"
-                         "  github.com/oschwartz10612/poppler-windows/releases\n"
-                         "  and copy pdftoppm.exe (and pdfinfo.exe) there.\n\n"
-                         "Linux:  sudo apt install poppler-utils\n"
-                         "macOS:  brew install poppler\n\n"
-                         "Double-click the file to open it externally.",
-                    font=("", 9), width=460)
+                    text=hint, font=("", 9), width=460)
         self.after(80, _poll)
 
     def _find_poppler_bin(self, name):
@@ -4580,12 +4584,85 @@ try {{
                 return p
         return shutil.which(name)
 
+    def _render_pdf_with_powershell(self, pdf_path, page=1):
+        """Render a PDF page using the Windows.Data.Pdf WinRT API via PowerShell.
+        Uses the same rendering engine as Microsoft Edge — no downloads required.
+        Returns (PhotoImage, total_pages) or (None, 0) on failure or non-Windows."""
+        if sys.platform != "win32":
+            return None, 0
+
+        # PowerShell script: renders one page to a raw PPM file.
+        # Uses param() so paths pass safely without shell-escaping headaches.
+        _PS_SCRIPT = r"""
+param([string]$PdfPath, [string]$OutputPath, [int]$PageIndex)
+Add-Type -AssemblyName System.Runtime.WindowsRuntime
+$null = [Windows.Data.Pdf.PdfDocument,Windows.Data.Pdf,ContentType=WindowsRuntime]
+$null = [Windows.Storage.StorageFile,Windows.Storage,ContentType=WindowsRuntime]
+$null = [Windows.Storage.Streams.InMemoryRandomAccessStream,Windows.Storage.Streams,ContentType=WindowsRuntime]
+$null = [Windows.Graphics.Imaging.BitmapDecoder,Windows.Graphics.Imaging,ContentType=WindowsRuntime]
+$awaitM = ([System.WindowsRuntimeSystemExtensions].GetMethods() |
+    Where-Object { $_.Name -eq 'AsTask' -and $_.GetParameters().Count -eq 1 -and
+                   $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncOperation`1' })[0]
+function Await($t,$T) { $m=$awaitM.MakeGenericMethod($T); $a=$m.Invoke($null,@($t)); $a.Wait(); $a.Result }
+try {
+    $f   = Await ([Windows.Storage.StorageFile]::GetFileFromPathAsync($PdfPath)) ([Windows.Storage.IStorageFile])
+    $doc = Await ([Windows.Data.Pdf.PdfDocument]::LoadFromFileAsync($f)) ([Windows.Data.Pdf.PdfDocument])
+    Write-Output "PAGES:$($doc.PageCount)"
+    if ($PageIndex -ge $doc.PageCount) { Write-Output "ERROR:page out of range"; exit 1 }
+    $pg  = $doc.GetPage($PageIndex)
+    $ms  = [Windows.Storage.Streams.InMemoryRandomAccessStream]::new()
+    $opt = [Windows.Data.Pdf.PdfPageRenderOptions]::new(); $opt.DestinationWidth = 950
+    Await ($pg.RenderToStreamAsync($ms,$opt)) ([System.Object])
+    $dec = Await ([Windows.Graphics.Imaging.BitmapDecoder]::CreateAsync($ms)) ([Windows.Graphics.Imaging.BitmapDecoder])
+    $px  = (Await ($dec.GetPixelDataAsync()) ([Windows.Graphics.Imaging.PixelDataProvider])).DetachPixelData()
+    $w=$dec.PixelWidth; $h=$dec.PixelHeight
+    $hdr = [System.Text.Encoding]::ASCII.GetBytes("P6`n$w $h`n255`n")
+    $rgb = [byte[]]::new($w*$h*3)
+    for ($i=0;$i -lt $w*$h;$i++) { $rgb[$i*3]=$px[$i*4+2]; $rgb[$i*3+1]=$px[$i*4+1]; $rgb[$i*3+2]=$px[$i*4] }
+    [System.IO.File]::WriteAllBytes($OutputPath, ($hdr+$rgb))
+    Write-Output "OK"
+} catch { Write-Output "ERROR:$_" }
+"""
+        fd_ps,  tmp_ps  = tempfile.mkstemp(suffix=".ps1")
+        fd_ppm, tmp_ppm = tempfile.mkstemp(suffix=".ppm")
+        try:
+            os.close(fd_ps); os.close(fd_ppm)
+            with open(tmp_ps, "w", encoding="utf-8") as fh:
+                fh.write(_PS_SCRIPT)
+            r = subprocess.run(
+                ["powershell", "-NoProfile", "-NonInteractive",
+                 "-ExecutionPolicy", "Bypass", "-File", tmp_ps,
+                 "-PdfPath",   os.path.abspath(pdf_path),
+                 "-OutputPath", tmp_ppm,
+                 "-PageIndex",  str(page - 1)],
+                capture_output=True, text=True, timeout=40)
+            total = 0
+            for line in r.stdout.splitlines():
+                if line.startswith("PAGES:"):
+                    try:
+                        total = int(line[6:].strip())
+                    except ValueError:
+                        pass
+            if os.path.exists(tmp_ppm) and os.path.getsize(tmp_ppm) > 200:
+                img = tk.PhotoImage(file=tmp_ppm)
+                return img, max(total, page)
+            return None, 0
+        except Exception:
+            return None, 0
+        finally:
+            for p in (tmp_ps, tmp_ppm):
+                try:
+                    os.unlink(p)
+                except Exception:
+                    pass
+
     def _render_pdf_page(self, pdf_path, page=1):
-        """Convert one PDF page to a tk.PhotoImage via pdftoppm.
-        Returns (PhotoImage, total_pages) or (None, 0) if pdftoppm is absent."""
+        """Convert one PDF page to a tk.PhotoImage.
+        Tries pdftoppm first (fastest), then the Windows.Data.Pdf WinRT API on
+        Windows 10+ (no download needed), and returns (None, 0) if both fail."""
         pdftoppm = self._find_poppler_bin("pdftoppm")
         if not pdftoppm:
-            return None, 0
+            return self._render_pdf_with_powershell(pdf_path, page)
         tmp_base = None
         try:
             # Page count via pdfinfo (optional — graceful if missing)
