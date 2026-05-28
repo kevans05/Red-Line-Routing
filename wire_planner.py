@@ -1923,16 +1923,14 @@ class ProjectWizard(tk.Toplevel):
         self.wiz_relays   = {}
         self.wiz_crows    = []
         self._build()
-        # Size wizard to 85 % of screen width/height, min 860×660
-        self.update_idletasks()
+        # Maximize on open (platform-safe)
         try:
-            sw = self.winfo_screenwidth()
-            sh = self.winfo_screenheight()
-            w = max(860, min(int(sw * 0.85), 1200))
-            h = max(660, min(int(sh * 0.85), 900))
+            self.attributes("-zoomed", True)   # Linux/X11
         except Exception:
-            w, h = 860, 660
-        _center_window(self, w, h)
+            try:
+                self.state("zoomed")           # Windows
+            except Exception:
+                _center_window(self, 900, 680)
         self.grab_set()
         self.wait_window()
 
