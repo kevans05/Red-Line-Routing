@@ -10,6 +10,7 @@ Export detailed report, table, CSV, or colour-coded HTML/PDF.
 # stdlib
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog, scrolledtext, simpledialog
+import tkinter.font as tkfont
 import json
 import os
 import subprocess
@@ -49,7 +50,7 @@ def _drawing_subdir(base_dir, drawing_name):
     Falls back to base_dir for names that don't match the 4-part convention.
     """
     parts = drawing_name.strip().split("-")
-    if len(parts) >= 4:
+    if len(parts) >= 3:
         facility  = parts[0]   # XXXX
         type_subj = parts[1]   # YZZ  (drawing type + subject combined)
         serial    = parts[2]   # NNNNN
@@ -99,6 +100,9 @@ def empty_job(job_type="REMOVE"):
         return {"type": job_type, "description": "", "protection": empty_protection()}
     if job_type == "TESTING":
         return {"type": "TESTING", "description": "", "notes": ""}
+    if job_type in ("DEVICE ADD", "DEVICE REMOVE"):
+        return {"type": job_type, "description": "",
+                "endpoint": empty_endpoint(), "notes": ""}
     job = {"type": job_type, "description": "", "wire": "",
            "start": empty_endpoint(), "end": empty_endpoint()}
     if job_type == "MOVE":
@@ -823,7 +827,8 @@ class ProtectionFrame(ttk.LabelFrame):
 
 class JobDialog(tk.Toplevel):
     TYPE_COLOR = {"REMOVE":"#c0392b","ADD":"#27ae60","MOVE":"#2980b9",
-                  "BLOCK":"#d35400","UNBLOCK":"#16a085","TESTING":"#6c3483"}
+                  "BLOCK":"#d35400","UNBLOCK":"#16a085","TESTING":"#6c3483",
+                  "DEVICE ADD":"#117a65","DEVICE REMOVE":"#784212"}
 
     def __init__(self, parent, job_type, existing=None, registry=None,
                  history=None, ep_history=None, jobs=None, settings=None):
@@ -876,7 +881,10 @@ class JobDialog(tk.Toplevel):
         ttk.Button(btn_row, text="Cancel", command=self.destroy).pack(side="right", padx=2)
         ttk.Button(btn_row, text="Save",   command=self._save).pack(side="right", padx=2)
 
-        self.geometry("660x600" if self.job_type in ("BLOCK","UNBLOCK","TESTING") else "960x640")
+        if self.job_type in ("BLOCK","UNBLOCK","TESTING","DEVICE ADD","DEVICE REMOVE"):
+            self.geometry("660x560")
+        else:
+            self.geometry("960x640")
 
     def _section_label(self, parent, row, text, color):
         ttk.Separator(parent, orient="horizontal").grid(
@@ -987,6 +995,18 @@ class JobDialog(tk.Toplevel):
             self.ep_prot.grid(row=row, column=0, columnspan=2, sticky="ew", pady=2)
             self.ep_prot.set(ex.get("protection",{}))
 
+        elif self.job_type in ("DEVICE ADD", "DEVICE REMOVE"):
+            verb = "INSTALL" if self.job_type == "DEVICE ADD" else "REMOVE"
+            self._section_label(f, row, f"── {verb} DEVICE ──", color); row += 2
+            self.ep_device = _ep("Device / Location")
+            self.ep_device.grid(row=row, column=0, columnspan=2, sticky="ew", pady=2)
+            self.ep_device.set(ex.get("endpoint", {}))
+            row += 1
+            ttk.Label(f, text="Notes:").grid(row=row, column=0, sticky="ne", padx=(0,6), pady=(8,2))
+            self._dev_notes_widget = tk.Text(f, width=58, height=5, wrap="word", font=("",9))
+            self._dev_notes_widget.grid(row=row, column=0, columnspan=2, sticky="ew", pady=(8,2))
+            self._dev_notes_widget.insert("1.0", ex.get("notes",""))
+
         elif self.job_type == "TESTING":
             self._section_label(f, row, "── TESTING / NOTE ──", color); row += 2
             ttk.Label(f, text="Notes:").grid(row=row, column=0, sticky="ne", padx=(0,6), pady=2)
@@ -1023,6 +1043,11 @@ class JobDialog(tk.Toplevel):
             eq = self.ep_prot.vars.get("equipment", tk.StringVar()).get().strip() or "?"
             action = "Block" if jt == "BLOCK" else "Unblock"
             desc = f"{action} protection on {eq}"
+        elif jt in ("DEVICE ADD", "DEVICE REMOVE"):
+            d = dev(self.ep_device)
+            loc = self.ep_device.vars.get("location", tk.StringVar()).get().strip()
+            verb = "Install" if jt == "DEVICE ADD" else "Remove"
+            desc = f"{verb} device {d}" + (f" at {loc}" if loc else "")
         elif jt == "TESTING":
             return  # no auto-fill for free-form notes
         else:
@@ -1044,6 +1069,9 @@ class JobDialog(tk.Toplevel):
             job["add_end"]   = self.ep_add_end.get()
         elif self.job_type in ("BLOCK","UNBLOCK"):
             job["protection"] = self.ep_prot.get()
+        elif self.job_type in ("DEVICE ADD","DEVICE REMOVE"):
+            job["endpoint"] = self.ep_device.get()
+            job["notes"]    = self._dev_notes_widget.get("1.0","end").strip()
         elif self.job_type == "TESTING":
             job["notes"] = self._test_notes_widget.get("1.0","end").strip()
         self.result = job
@@ -1153,7 +1181,8 @@ def _prot_block(prot, label):
 def format_job(index, job):
     jtype = job["type"]
     labels = {"REMOVE":"REMOVE WIRE","ADD":"ADD WIRE","MOVE":"MOVE WIRE",
-              "BLOCK":"BLOCK PROTECTION","UNBLOCK":"UNBLOCK PROTECTION","TESTING":"TESTING / NOTE"}
+              "BLOCK":"BLOCK PROTECTION","UNBLOCK":"UNBLOCK PROTECTION","TESTING":"TESTING / NOTE",
+              "DEVICE ADD":"INSTALL DEVICE","DEVICE REMOVE":"REMOVE DEVICE"}
     lines = [_bar(), f"  JOB #{index+1}   [{labels.get(jtype,jtype)}]", _bar()]
     if job.get("description"):
         lines += ["","  DESCRIPTION", f"    {job['description']}"]
@@ -1173,6 +1202,10 @@ def format_job(index, job):
     elif jtype in ("BLOCK","UNBLOCK"):
         lbl = "BLOCK PROTECTION" if jtype=="BLOCK" else "UNBLOCK PROTECTION"
         lines += ["",_prot_block(job.get("protection",{}), lbl)]
+    elif jtype in ("DEVICE ADD", "DEVICE REMOVE"):
+        lines += ["", _ep_block(job.get("endpoint", {}), "DEVICE / LOCATION")]
+        if job.get("notes"):
+            lines += ["", "  NOTES", *[f"    {ln}" for ln in job["notes"].splitlines()]]
     elif jtype == "TESTING":
         if job.get("notes"):
             lines += ["","  NOTES", *[f"    {ln}" for ln in job["notes"].splitlines()]]
@@ -1265,7 +1298,8 @@ def generate_table(jobs, project="", drawing_registry=None):
         lines += ["",""]
     lines += [hdr, div]
     type_labels = {"REMOVE":"REMOVE WIRE","ADD":"ADD WIRE","MOVE":"MOVE WIRE",
-                   "BLOCK":"BLOCK PROT.","UNBLOCK":"UNBLOCK PROT.","TESTING":"TESTING"}
+                   "BLOCK":"BLOCK PROT.","UNBLOCK":"UNBLOCK PROT.","TESTING":"TESTING",
+                   "DEVICE ADD":"INSTALL DEVICE","DEVICE REMOVE":"REMOVE DEVICE"}
     seq = 1
     for job in jobs:
         jtype = job["type"]; desc = job.get("description",""); tl = type_labels.get(jtype,jtype)
@@ -1289,7 +1323,8 @@ def generate_csv(jobs, project="", drawing_registry=None):
     w.writerow([])
     w.writerow(["#","Type","Description","Start Point / Device","Wire","End Point / Device"])
     type_labels = {"REMOVE":"REMOVE WIRE","ADD":"ADD WIRE","MOVE":"MOVE WIRE",
-                   "BLOCK":"BLOCK PROTECTION","UNBLOCK":"UNBLOCK PROTECTION","TESTING":"TESTING"}
+                   "BLOCK":"BLOCK PROTECTION","UNBLOCK":"UNBLOCK PROTECTION","TESTING":"TESTING",
+                   "DEVICE ADD":"INSTALL DEVICE","DEVICE REMOVE":"REMOVE DEVICE"}
     seq = 1
     for job in jobs:
         jtype = job["type"]; desc = job.get("description",""); tl = type_labels.get(jtype,jtype)
@@ -2436,7 +2471,8 @@ class ProjectWizard(tk.Toplevel):
 
 class RedLineApp(tk.Tk):
     TYPE_FG = {"REMOVE":"#c0392b","ADD":"#1a7a3c","MOVE":"#1a5a99",
-               "BLOCK":"#d35400","UNBLOCK":"#16a085","TESTING":"#6c3483"}
+               "BLOCK":"#d35400","UNBLOCK":"#16a085","TESTING":"#6c3483",
+               "DEVICE ADD":"#117a65","DEVICE REMOVE":"#784212"}
 
     def __init__(self):
         super().__init__()
@@ -2717,7 +2753,10 @@ class RedLineApp(tk.Tk):
         # Job-type buttons
         tb1 = ttk.Frame(parent, padding=(4, 4, 4, 2)); tb1.pack(fill="x")
         for label, jtype, color in [
-                ("+ Remove", "REMOVE", "#c0392b"), ("+ Add", "ADD", "#27ae60"),
+                ("+ Remove Wire", "REMOVE", "#c0392b"), ("+ Add Wire", "ADD", "#27ae60"),
+                ("+ Move Wire", "MOVE", "#1a5a99"),
+                ("+ Install Device", "DEVICE ADD", "#117a65"),
+                ("+ Remove Device", "DEVICE REMOVE", "#784212"),
                 ("+ Block", "BLOCK", "#d35400"), ("+ Unblock", "UNBLOCK", "#16a085"),
                 ("+ Testing", "TESTING", "#6c3483")]:
             tk.Button(tb1, text=label, fg="white", bg=color, relief="flat", padx=7, pady=3,
@@ -2773,7 +2812,8 @@ class RedLineApp(tk.Tk):
         self.tree.column("Seq",width=35,stretch=False); self.tree.column("Type",width=110,stretch=False)
         self.tree.column("Description",width=230)
         for t,fg in self.TYPE_FG.items(): self.tree.tag_configure(t, foreground=fg)
-        self.tree.tag_configure("COMPLETED", foreground="#aaaaaa")
+        _strike = tkfont.Font(overstrike=True)
+        self.tree.tag_configure("COMPLETED", foreground="#aaaaaa", font=_strike)
         vsb = ttk.Scrollbar(lf, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=vsb.set)
         self.tree.pack(side="left", fill="both", expand=True); vsb.pack(side="right", fill="y")
@@ -3890,7 +3930,8 @@ try {{
         self.impl_tree.column("Description", width=190)
         for t, fg in self.TYPE_FG.items():
             self.impl_tree.tag_configure(t, foreground=fg)
-        self.impl_tree.tag_configure("COMPLETED", foreground="#aaaaaa")
+        _strike = tkfont.Font(overstrike=True)
+        self.impl_tree.tag_configure("COMPLETED", foreground="#aaaaaa", font=_strike)
         ivsb = ttk.Scrollbar(left, orient="vertical", command=self.impl_tree.yview)
         self.impl_tree.configure(yscrollcommand=ivsb.set)
         self.impl_tree.pack(side="left", fill="both", expand=True)
@@ -4038,7 +4079,8 @@ try {{
         self.impl_tree.tag_configure("PREP",
             foreground="#2980b9", font=("", 9, "bold"))
         disp = {"REMOVE":"REMOVE","ADD":"ADD","MOVE":"MOVE",
-                "BLOCK":"BLOCK PROT.","UNBLOCK":"UNBLOCK PROT.","TESTING":"TESTING"}
+                "BLOCK":"BLOCK PROT.","UNBLOCK":"UNBLOCK PROT.","TESTING":"TESTING",
+                "DEVICE ADD":"INSTALL DEVICE","DEVICE REMOVE":"REMOVE DEVICE"}
         for i, job in enumerate(self.jobs):
             done = job.get("completed", False)
             tags = (job["type"], "COMPLETED") if done else (job["type"],)
@@ -4085,13 +4127,17 @@ try {{
     def _job_drawing_names(self, job):
         """Return a set of all drawing name strings referenced in a job."""
         names = set()
-        for ep_key in ("start", "end", "add_start", "add_end"):
+        for ep_key in ("start", "end", "add_start", "add_end", "endpoint"):
             d = (job.get(ep_key) or {}).get("drawing", "").strip()
             if d:
                 names.add(d)
         for d in (job.get("protection") or {}).get("drawings", []):
-            if d.strip():
-                names.add(d.strip())
+            if isinstance(d, dict):
+                dname = d.get("drawing", "").strip()
+            else:
+                dname = str(d).strip()
+            if dname:
+                names.add(dname)
         return names
 
     def _find_drawing_files(self, drawing_names):
@@ -4397,7 +4443,9 @@ try {{
 
     def _refresh_list(self):
         for iid in self.tree.get_children(): self.tree.delete(iid)
-        disp = {"REMOVE":"REMOVE","ADD":"ADD","MOVE":"MOVE","BLOCK":"BLOCK PROT.","UNBLOCK":"UNBLOCK PROT.","TESTING":"TESTING"}
+        disp = {"REMOVE":"REMOVE","ADD":"ADD","MOVE":"MOVE","BLOCK":"BLOCK PROT.",
+                "UNBLOCK":"UNBLOCK PROT.","TESTING":"TESTING",
+                "DEVICE ADD":"INSTALL DEVICE","DEVICE REMOVE":"REMOVE DEVICE"}
         for i,job in enumerate(self.jobs):
             done = job.get("completed", False)
             tags = (job["type"], "COMPLETED") if done else (job["type"],)
