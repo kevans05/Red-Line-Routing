@@ -3938,8 +3938,8 @@ try {{
         tb_bar.pack(fill="x", padx=4, pady=(4, 0))
         tk.Label(tb_bar, text="⚠  SAFETY", bg="#1c3a5a", fg="#f39c12",
                  font=("", 9, "bold"), padx=8, pady=6).pack(side="left")
-        ttk.Button(tb_bar, text="Save Tailboard",
-                   command=self._update_tailboard).pack(side="left", padx=(0, 10), pady=4)
+        ttk.Button(tb_bar, text="Tailboard ▸",
+                   command=self._goto_tailboard_step).pack(side="left", padx=(0, 10), pady=4)
         self._tb_status_var = tk.StringVar(value="")
         tk.Label(tb_bar, textvariable=self._tb_status_var, bg="#1c3a5a",
                  fg="#85c1e9", font=("", 8)).pack(side="left")
@@ -3978,9 +3978,13 @@ try {{
 
         details_f = ttk.LabelFrame(pw_right, text="Step Details", padding=4)
         pw_right.add(details_f, weight=2)
+        # Regular step detail text — shown for all steps except TAILBOARD
         self.impl_preview = scrolledtext.ScrolledText(
             details_f, font=("Courier", 9), state="disabled", wrap="none")
         self.impl_preview.pack(fill="both", expand=True)
+        # Custom tailboard panel — built but hidden; swapped in when TAILBOARD is selected
+        self.impl_tb_frame = ttk.Frame(details_f)
+        self._build_tailboard_panel(self.impl_tb_frame)
 
         viewer_f = ttk.LabelFrame(pw_right, text="Reference Files", padding=4)
         pw_right.add(viewer_f, weight=3)
@@ -4107,24 +4111,21 @@ try {{
     def _refresh_impl_list(self):
         for iid in self.impl_tree.get_children(): self.impl_tree.delete(iid)
 
-        # TAILBOARD — always the very first step
+        # PREP briefing — always first
+        self.impl_tree.insert("", "end", iid="__prep__",
+            values=("▶", "", "PREP", "Project Briefing  —  CROWs · Drawings · Relay Settings"),
+            tags=("PREP",))
+        self.impl_tree.tag_configure("PREP", foreground="#2980b9", font=("", 9, "bold"))
+
+        # TAILBOARD — always second (before work steps)
         tb_done = self.title_page.get("tailboard_done", False)
         tb_path = self._tailboard_template_path()
-        tb_hint = ("Click to preview template" if tb_path
-                   else "Place tailboard-template.pdf in project root")
+        tb_hint = ("Open template ↗" if tb_path else "tailboard-template.pdf not found beside script")
         self.impl_tree.insert("", "end", iid="__tailboard__",
             values=("☑" if tb_done else "☐", "", "TAILBOARD",
                     f"Complete tailboard before starting work  ·  {tb_hint}"),
             tags=("TAILBOARD", "COMPLETED") if tb_done else ("TAILBOARD",))
-        self.impl_tree.tag_configure("TAILBOARD",
-            foreground="#e67e22", font=("", 9, "bold"))
-
-        # PREP briefing row
-        self.impl_tree.insert("", "end", iid="__prep__",
-            values=("▶", "", "PREP", "Project Briefing  —  CROWs · Drawings · Relay Settings"),
-            tags=("PREP",))
-        self.impl_tree.tag_configure("PREP",
-            foreground="#2980b9", font=("", 9, "bold"))
+        self.impl_tree.tag_configure("TAILBOARD", foreground="#e67e22", font=("", 9, "bold"))
         disp = {"REMOVE":"REMOVE","ADD":"ADD","MOVE":"MOVE",
                 "BLOCK":"BLOCK PROT.","UNBLOCK":"UNBLOCK PROT.","TESTING":"TESTING",
                 "DEVICE ADD":"INSTALL DEVICE","DEVICE REMOVE":"REMOVE DEVICE"}
@@ -4141,8 +4142,11 @@ try {{
         sel = self.impl_tree.selection()
         if not sel: return
         if sel[0] == "__tailboard__":
-            self._show_impl_tailboard()
+            self._show_tailboard_panel()
             return
+        # All other rows: hide tailboard panel, show text preview
+        self.impl_tb_frame.pack_forget()
+        self.impl_preview.pack(fill="both", expand=True)
         if sel[0] == "__prep__":
             self._show_impl_prep()
             return
@@ -4441,10 +4445,9 @@ try {{
         return os.path.join(self.project_folder, "Tailboards")
 
     def _tailboard_template_path(self):
-        """Return path to tailboard-template.pdf in the project root, or None."""
-        if not self.project_folder:
-            return None
-        p = os.path.join(self.project_folder, "tailboard-template.pdf")
+        """Return path to tailboard-template.pdf beside the script, or None."""
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        p = os.path.join(script_dir, "tailboard-template.pdf")
         return p if os.path.exists(p) else None
 
     def _schedule_tailboard_check(self):
@@ -4473,80 +4476,6 @@ try {{
                 self._tb_status_var.set(f"Last saved: {ts}")
                 return
         self._tb_status_var.set("No tailboard saved yet")
-
-    def _show_impl_tailboard(self):
-        """Show tailboard info in step details and preview the template PDF."""
-        tmpl  = self._tailboard_template_path()
-        lines = ["=" * 60, "  SAFETY TAILBOARD", "=" * 60, ""]
-
-        if tmpl:
-            lines += [f"  Template : {os.path.basename(tmpl)}",
-                      f"  Path     : {tmpl}", ""]
-        else:
-            lines += ["  Place  tailboard-template.pdf  in the project root folder.",
-                      f"  Expected: {os.path.join(self.project_folder or '…', 'tailboard-template.pdf')}",
-                      ""]
-
-        tb_dir        = self._tailboard_dir()
-        completed_dir = os.path.join(tb_dir, "Completed") if tb_dir else None
-        if completed_dir and os.path.isdir(completed_dir):
-            done = sorted(
-                (f for f in os.listdir(completed_dir) if not f.startswith(".")),
-                reverse=True)
-            if done:
-                lines += ["  SAVED TAILBOARDS", "-" * 40]
-                for fn in done[:15]:
-                    lines.append(f"  {fn}")
-            else:
-                lines += ["  No tailboards saved yet.",
-                          "  Click 'Save Tailboard' to record a completed tailboard."]
-
-        self.impl_preview.configure(state="normal")
-        self.impl_preview.delete("1.0", "end")
-        self.impl_preview.insert("1.0", "\n".join(lines))
-        self.impl_preview.configure(state="disabled")
-
-        if tmpl:
-            self.file_nb.select(0)
-            self._preview_file(tmpl)
-
-    def _update_tailboard(self):
-        """Save a new timestamped tailboard record, then offer to email it to the crew."""
-        tb_dir = self._tailboard_dir()
-        if not tb_dir:
-            messagebox.showinfo("Save First",
-                "Save the project first so the Tailboards folder location is known.")
-            return
-
-        tmpl = self._tailboard_template_path()
-        if not tmpl:
-            messagebox.showinfo("Template Not Found",
-                "Place  tailboard-template.pdf  in the project root folder:\n\n"
-                f"{self.project_folder or '(save project first)'}")
-            return
-
-        completed_dir = os.path.join(tb_dir, "Completed")
-        os.makedirs(completed_dir, exist_ok=True)
-
-        ts  = datetime.now().strftime("%Y-%m-%d_%H%M")
-        dst = os.path.join(completed_dir, f"tailboard_{ts}.pdf")
-
-        try:
-            shutil.copy2(tmpl, dst)
-        except Exception as exc:
-            messagebox.showerror("Save Failed", str(exc))
-            return
-
-        self.title_page["tailboard_done"] = True
-        self._refresh_impl_list()
-        self.impl_tree.selection_set("__tailboard__")
-        self._show_impl_tailboard()
-        self._update_tailboard_status()
-
-        if messagebox.askyesno("Tailboard Saved",
-                f"Saved as:\n{os.path.basename(dst)}\n\n"
-                "Email this tailboard to the crew?"):
-            self._email_tailboard(dst)
 
     def _email_tailboard(self, file_path):
         """Show an email compose dialog and open the system mail client."""
@@ -4612,6 +4541,257 @@ try {{
         ttk.Button(bf, text="Open Email Client", command=_open_client).pack(side="right")
         _center_window(dlg)
 
+    # ── Tailboard panel (rich custom detail view) ──────────────────
+
+    def _build_tailboard_panel(self, parent):
+        """Build the tailboard detail panel inside details_f (hidden until selected)."""
+        # Template row
+        tmpl_f = ttk.LabelFrame(parent, text="Template", padding=6)
+        tmpl_f.pack(fill="x", padx=4, pady=(4, 2))
+        self._tb_tmpl_lbl = ttk.Label(tmpl_f, text="(loading…)", foreground="#2980b9",
+                                       cursor="hand2", font=("", 9))
+        self._tb_tmpl_lbl.pack(side="left", expand=True, fill="x")
+        self._tb_tmpl_lbl.bind("<Button-1>", lambda _: self._open_tailboard_template())
+        ttk.Button(tmpl_f, text="Open ↗",
+                   command=self._open_tailboard_template).pack(side="right")
+
+        # Middle: sign-ons (left) + saved tailboards / revisions (right)
+        mid_f = ttk.Frame(parent)
+        mid_f.pack(fill="both", expand=True, padx=4, pady=2)
+
+        so_f = ttk.LabelFrame(mid_f, text="Sign-ons", padding=4)
+        so_f.pack(side="left", fill="both", expand=True, padx=(0, 4))
+
+        so_tree_f = ttk.Frame(so_f)
+        so_tree_f.pack(fill="both", expand=True)
+        self._tb_signon_tree = ttk.Treeview(
+            so_tree_f, columns=("Name", "Email"),
+            show="headings", height=6, selectmode="browse")
+        self._tb_signon_tree.heading("Name",  text="Name")
+        self._tb_signon_tree.heading("Email", text="Email")
+        self._tb_signon_tree.column("Name",  width=130)
+        self._tb_signon_tree.column("Email", width=170)
+        so_vsb = ttk.Scrollbar(so_tree_f, orient="vertical",
+                                command=self._tb_signon_tree.yview)
+        self._tb_signon_tree.configure(yscrollcommand=so_vsb.set)
+        so_vsb.pack(side="right", fill="y")
+        self._tb_signon_tree.pack(fill="both", expand=True)
+
+        so_btn_f = ttk.Frame(so_f)
+        so_btn_f.pack(fill="x", pady=(4, 0))
+        ttk.Button(so_btn_f, text="+ Add",
+                   command=self._tb_add_signon).pack(side="left")
+        ttk.Button(so_btn_f, text="Remove",
+                   command=self._tb_remove_signon).pack(side="left", padx=4)
+
+        rv_f = ttk.LabelFrame(mid_f, text="Saved Tailboards", padding=4)
+        rv_f.pack(side="left", fill="both", expand=True)
+
+        self._tb_rev_lb = tk.Listbox(rv_f, font=("Courier", 8), selectmode="browse",
+                                      activestyle="none", relief="flat", borderwidth=0)
+        rv_vsb = ttk.Scrollbar(rv_f, orient="vertical",
+                                command=self._tb_rev_lb.yview)
+        self._tb_rev_lb.configure(yscrollcommand=rv_vsb.set)
+        rv_vsb.pack(side="right", fill="y")
+        self._tb_rev_lb.pack(fill="both", expand=True)
+        self._tb_rev_lb.bind("<Double-1>", self._tb_open_revision)
+
+        # Action buttons
+        act_f = ttk.Frame(parent)
+        act_f.pack(fill="x", padx=4, pady=(2, 4))
+        ttk.Button(act_f, text="Save Tailboard",
+                   command=self._save_tailboard_record).pack(side="left")
+        ttk.Button(act_f, text="Email to Crew ✉",
+                   command=self._tb_email_latest).pack(side="left", padx=6)
+
+    def _show_tailboard_panel(self):
+        """Swap step-details area to show the tailboard panel."""
+        self.impl_preview.pack_forget()
+        self.impl_tb_frame.pack(fill="both", expand=True)
+        self._refresh_tailboard_panel()
+
+    def _goto_tailboard_step(self):
+        """Select the TAILBOARD row and show the tailboard panel."""
+        self.impl_tree.selection_set("__tailboard__")
+        self.impl_tree.see("__tailboard__")
+        self._show_tailboard_panel()
+
+    def _refresh_tailboard_panel(self):
+        """Update template label and revisions list to reflect current state."""
+        tmpl = self._tailboard_template_path()
+        if tmpl:
+            self._tb_tmpl_lbl.configure(
+                text=f"tailboard-template.pdf  —  {tmpl}",
+                foreground="#2980b9")
+        else:
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            self._tb_tmpl_lbl.configure(
+                text=f"Not found — place tailboard-template.pdf beside wire_planner.py"
+                     f"\n({script_dir})",
+                foreground="#c0392b")
+        self._refresh_tb_signons()
+        self._refresh_tb_revisions()
+
+    def _refresh_tb_signons(self):
+        """Reload sign-on treeview from title_page data."""
+        for iid in self._tb_signon_tree.get_children():
+            self._tb_signon_tree.delete(iid)
+        for entry in self.title_page.get("tailboard_signons", []):
+            self._tb_signon_tree.insert("", "end",
+                values=(entry.get("name", ""), entry.get("email", "")))
+
+    def _refresh_tb_revisions(self):
+        """Reload the saved tailboards listbox."""
+        self._tb_rev_lb.delete(0, "end")
+        tb_dir = self._tailboard_dir()
+        completed_dir = os.path.join(tb_dir, "Completed") if tb_dir else None
+        if not (completed_dir and os.path.isdir(completed_dir)):
+            return
+        files = sorted(
+            (f for f in os.listdir(completed_dir) if not f.startswith(".")),
+            reverse=True)
+        for fn in files:
+            self._tb_rev_lb.insert("end", fn)
+
+    def _tb_open_revision(self, _=None):
+        """Open the double-clicked revision file."""
+        sel = self._tb_rev_lb.curselection()
+        if not sel:
+            return
+        fn = self._tb_rev_lb.get(sel[0])
+        tb_dir = self._tailboard_dir()
+        if not tb_dir:
+            return
+        path = os.path.join(tb_dir, "Completed", fn)
+        if os.path.exists(path):
+            _open_file(path)
+
+    def _tb_add_signon(self):
+        """Show a small dialog and append a new sign-on entry."""
+        dlg = tk.Toplevel(self)
+        dlg.title("Add Sign-on")
+        dlg.grab_set()
+        dlg.resizable(False, False)
+
+        f = ttk.Frame(dlg, padding=14)
+        f.pack(fill="both", expand=True)
+        ttk.Label(f, text="Name:").grid(row=0, column=0, sticky="e", padx=(0, 6), pady=4)
+        name_var = tk.StringVar()
+        name_entry = ttk.Entry(f, textvariable=name_var, width=30)
+        name_entry.grid(row=0, column=1, sticky="ew", pady=4)
+
+        ttk.Label(f, text="Email:").grid(row=1, column=0, sticky="e", padx=(0, 6), pady=4)
+        email_var = tk.StringVar()
+        ttk.Entry(f, textvariable=email_var, width=30).grid(row=1, column=1, sticky="ew", pady=4)
+        f.columnconfigure(1, weight=1)
+
+        bf = ttk.Frame(dlg, padding=(14, 4)); bf.pack(fill="x")
+        ttk.Button(bf, text="Cancel", command=dlg.destroy).pack(side="right", padx=4)
+
+        def _add():
+            name  = name_var.get().strip()
+            email = email_var.get().strip()
+            if not name:
+                messagebox.showwarning("Name Required", "Please enter a name.", parent=dlg)
+                return
+            signons = self.title_page.setdefault("tailboard_signons", [])
+            signons.append({"name": name, "email": email})
+            self._tb_signon_tree.insert("", "end", values=(name, email))
+            dlg.destroy()
+
+        ttk.Button(bf, text="Add", command=_add).pack(side="right")
+        _center_window(dlg)
+        name_entry.focus_set()
+        dlg.bind("<Return>", lambda _: _add())
+
+    def _tb_remove_signon(self):
+        """Remove the selected sign-on from the treeview and title_page data."""
+        sel = self._tb_signon_tree.selection()
+        if not sel:
+            return
+        iid = sel[0]
+        idx = self._tb_signon_tree.index(iid)
+        signons = self.title_page.get("tailboard_signons", [])
+        if 0 <= idx < len(signons):
+            signons.pop(idx)
+        self._tb_signon_tree.delete(iid)
+
+    def _save_tailboard_record(self):
+        """Save a timestamped JSON record (+ PDF copy) and offer to email crew."""
+        tb_dir = self._tailboard_dir()
+        if not tb_dir:
+            messagebox.showinfo("Save Project First",
+                "Save the project first so the Tailboards folder location is known.")
+            return
+
+        completed_dir = os.path.join(tb_dir, "Completed")
+        os.makedirs(completed_dir, exist_ok=True)
+
+        ts   = datetime.now().strftime("%Y-%m-%d_%H%M")
+        base = f"tailboard_{ts}"
+
+        # Copy the template PDF if available
+        tmpl = self._tailboard_template_path()
+        saved_pdf = None
+        if tmpl:
+            dst_pdf = os.path.join(completed_dir, f"{base}.pdf")
+            try:
+                shutil.copy2(tmpl, dst_pdf)
+                saved_pdf = dst_pdf
+            except Exception as exc:
+                messagebox.showwarning("PDF Copy Failed",
+                    f"Could not copy template PDF:\n{exc}\n\nSaving JSON record only.")
+
+        # Always save a JSON record with sign-ons
+        record = {
+            "timestamp":  ts,
+            "project":    self.project_var.get().strip(),
+            "signons":    self.title_page.get("tailboard_signons", []),
+        }
+        json_path = os.path.join(completed_dir, f"{base}.json")
+        try:
+            with open(json_path, "w") as fh:
+                json.dump(record, fh, indent=2)
+        except Exception as exc:
+            messagebox.showerror("Save Failed", str(exc))
+            return
+
+        self.title_page["tailboard_done"] = True
+        self._refresh_impl_list()
+        self.impl_tree.selection_set("__tailboard__")
+        self._show_tailboard_panel()
+        self._update_tailboard_status()
+
+        saved_name = os.path.basename(saved_pdf) if saved_pdf else os.path.basename(json_path)
+        if messagebox.askyesno("Tailboard Saved",
+                f"Saved:  {saved_name}\n\nEmail this tailboard to the crew?"):
+            self._email_tailboard(saved_pdf or json_path)
+
+    def _open_tailboard_template(self):
+        """Open the tailboard template in the system viewer."""
+        tmpl = self._tailboard_template_path()
+        if tmpl:
+            _open_file(tmpl)
+        else:
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            messagebox.showinfo("Template Not Found",
+                f"Place  tailboard-template.pdf  beside  wire_planner.py:\n\n{script_dir}")
+
+    def _tb_email_latest(self):
+        """Email the most recently saved tailboard (or show a message if none exist)."""
+        tb_dir = self._tailboard_dir()
+        completed_dir = os.path.join(tb_dir, "Completed") if tb_dir else None
+        if completed_dir and os.path.isdir(completed_dir):
+            pdfs = sorted(
+                (f for f in os.listdir(completed_dir)
+                 if f.endswith(".pdf") and not f.startswith(".")),
+                reverse=True)
+            if pdfs:
+                self._email_tailboard(os.path.join(completed_dir, pdfs[0]))
+                return
+        messagebox.showinfo("No Tailboard Saved",
+            "Save a tailboard first using the 'Save Tailboard' button.")
+
     def _show_impl_prep(self):
         """Generate the project briefing shown when the PREP row is selected."""
         lines = []
@@ -4660,7 +4840,13 @@ try {{
         if self.impl_tree.identify_region(event.x, event.y) != "cell": return
         if self.impl_tree.identify_column(event.x) != "#1": return
         row = self.impl_tree.identify_row(event.y)
-        if not row or row in ("__prep__", "__tailboard__"): return
+        if not row or row == "__prep__": return
+        if row == "__tailboard__":
+            self.title_page["tailboard_done"] = not self.title_page.get("tailboard_done", False)
+            self._refresh_impl_list()
+            self.impl_tree.selection_set("__tailboard__")
+            self._on_impl_select()
+            return
         idx = int(row)
         if 0 <= idx < len(self.jobs):
             self.jobs[idx]["completed"] = not self.jobs[idx].get("completed", False)
