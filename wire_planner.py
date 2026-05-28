@@ -20,7 +20,12 @@ from datetime import datetime
 import threading
 import urllib.request
 import urllib.error
+import urllib.parse
 import queue
+import sqlite3
+import glob
+import shutil
+import tempfile
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -3206,6 +3211,10 @@ class RedLineApp(tk.Tk):
         headers_txt.pack(fill="x")
         headers_txt.insert("1.0", self.app_config.get("request_headers", ""))
 
+        ttk.Button(auth_lf, text="Import from Browser…",
+                   command=lambda: self._import_browser_cookies(headers_txt, dlg)
+                   ).pack(anchor="e", pady=(4, 0))
+
         bf = ttk.Frame(f); bf.pack(fill="x", pady=(10,0))
         ttk.Button(bf, text="Cancel", command=dlg.destroy).pack(side="right", padx=4)
 
@@ -3216,6 +3225,236 @@ class RedLineApp(tk.Tk):
             dlg.destroy()
 
         ttk.Button(bf, text="Save", command=_save).pack(side="right")
+
+    # ── Browser cookie import ──────────────────────────────────────
+
+    def _find_browser_cookie_dbs(self):
+        """Return [(browser_name, path)] for every cookie database found on this system."""
+        found = []
+        home = os.path.expanduser("~")
+
+        # Firefox: cookies.sqlite lives inside a profile directory
+        ff_bases = [
+            os.path.join(home, ".mozilla", "firefox"),                                          # Linux
+            os.path.join(home, "Library", "Application Support", "Firefox", "Profiles"),        # macOS
+            os.path.join(os.environ.get("APPDATA", ""), "Mozilla", "Firefox", "Profiles"),      # Windows
+        ]
+        for base in ff_bases:
+            if os.path.isdir(base):
+                for db in glob.glob(os.path.join(base, "**", "cookies.sqlite"), recursive=True):
+                    found.append(("Firefox", db))
+
+        # Chromium-family on Linux: "Cookies" or "Network/Cookies"
+        chromium_linux = [
+            ("Chrome",   os.path.join(home, ".config", "google-chrome")),
+            ("Chromium", os.path.join(home, ".config", "chromium")),
+            ("Edge",     os.path.join(home, ".config", "microsoft-edge")),
+            ("Brave",    os.path.join(home, ".config", "BraveSoftware", "Brave-Browser")),
+        ]
+        for name, base in chromium_linux:
+            if os.path.isdir(base):
+                for db in glob.glob(os.path.join(base, "**", "Cookies"), recursive=True):
+                    found.append((name, db))
+                for db in glob.glob(os.path.join(base, "**", "Network", "Cookies"), recursive=True):
+                    found.append((name, db))
+
+        # Chromium-family on Windows
+        local = os.environ.get("LOCALAPPDATA", "")
+        chromium_win = [
+            ("Chrome", os.path.join(local, "Google", "Chrome", "User Data")),
+            ("Edge",   os.path.join(local, "Microsoft", "Edge", "User Data")),
+            ("Brave",  os.path.join(local, "BraveSoftware", "Brave-Browser", "User Data")),
+        ]
+        for name, base in chromium_win:
+            if os.path.isdir(base):
+                for db in glob.glob(os.path.join(base, "**", "Cookies"), recursive=True):
+                    found.append((name, db))
+                for db in glob.glob(os.path.join(base, "**", "Network", "Cookies"), recursive=True):
+                    found.append((name, db))
+
+        return found
+
+    def _read_cookies_from_db(self, browser, db_path, domain_filter=None):
+        """Return [(name, value, host)] from a browser cookie SQLite file.
+        Only returns cookies whose values can be read as plain text (Firefox always;
+        Chromium only when not AES-encrypted — i.e. when the app runs locally without
+        the system keyring key, decryption isn't possible without third-party libs)."""
+        results = []
+        tmp_path = None
+        try:
+            # Copy so we don't clash with a live browser lock
+            tmp_fd, tmp_path = tempfile.mkstemp(suffix=".sqlite")
+            os.close(tmp_fd)
+            shutil.copy2(db_path, tmp_path)
+
+            conn = sqlite3.connect(tmp_path)
+            cur  = conn.cursor()
+            tables = {r[0] for r in cur.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+
+            if "moz_cookies" in tables:
+                # Firefox: values stored as plain text
+                sql    = "SELECT name, value, host FROM moz_cookies"
+                params = []
+                if domain_filter:
+                    sql   += " WHERE host LIKE ?"
+                    params = [f"%{domain_filter.lstrip('.')}%"]
+                for name, value, host in cur.execute(sql, params):
+                    if name and value:
+                        results.append((name, value, host or ""))
+
+            elif "cookies" in tables:
+                # Chrome/Edge: values are encrypted blobs on most platforms.
+                # On Linux the blob may lack the "v1x" prefix when the keyring
+                # is unavailable — try UTF-8 decode and skip anything that looks encrypted.
+                sql    = "SELECT name, encrypted_value, host_key FROM cookies"
+                params = []
+                if domain_filter:
+                    sql   += " WHERE host_key LIKE ?"
+                    params = [f"%{domain_filter.lstrip('.')}%"]
+                for name, enc_val, host in cur.execute(sql, params):
+                    if not name or not enc_val:
+                        continue
+                    if isinstance(enc_val, bytes):
+                        if enc_val[:3] in (b"v10", b"v11"):
+                            continue  # AES-GCM encrypted — need OS keychain to decrypt
+                        try:
+                            value = enc_val.decode("utf-8")
+                            results.append((name, value, host or ""))
+                        except Exception:
+                            pass
+
+            conn.close()
+        except Exception:
+            pass
+        finally:
+            if tmp_path:
+                try:
+                    os.unlink(tmp_path)
+                except Exception:
+                    pass
+        return results
+
+    def _import_browser_cookies(self, headers_txt, parent_dlg):
+        """Scan installed browsers for cookies matching configured domains, let the
+        user pick which ones to include, then write a Cookie: header into headers_txt."""
+        dbs = self._find_browser_cookie_dbs()
+        if not dbs:
+            messagebox.showinfo(
+                "No Browsers Found",
+                "No browser cookie databases were found on this system.\n\n"
+                "Tip: paste cookies manually from DevTools → Application → Cookies.",
+                parent=parent_dlg)
+            return
+
+        # Build a domain hint from configured URLs so we filter to relevant cookies
+        domain_filter = None
+        for key in ("base_drawing_url", "base_relay_url", "base_crow_url"):
+            url = self.app_config.get(key, "").strip()
+            if url:
+                try:
+                    netloc = urllib.parse.urlparse(url).netloc
+                    if netloc:
+                        domain_filter = netloc
+                        break
+                except Exception:
+                    pass
+
+        # Gather cookies from all databases
+        raw = []
+        for browser, db_path in dbs:
+            raw.extend((n, v, h, browser)
+                       for n, v, h in self._read_cookies_from_db(browser, db_path, domain_filter))
+
+        if not raw:
+            msg = "No readable cookies found"
+            if domain_filter:
+                msg += f" for domain '{domain_filter}'"
+            msg += (".\n\n"
+                    "Note: Chrome/Edge cookies are usually encrypted and cannot be read "
+                    "without the OS keychain.\n"
+                    "Firefox cookies are always readable — try using Firefox, or paste the "
+                    "cookie manually from Edge DevTools → Application → Cookies.")
+            messagebox.showinfo("No Cookies Found", msg, parent=parent_dlg)
+            return
+
+        # Deduplicate by name, keeping the last occurrence
+        seen: dict = {}
+        for name, value, host, browser in raw:
+            seen[name] = (value, host, browser)
+
+        # --- Selection dialog ---
+        sel = tk.Toplevel(parent_dlg)
+        sel.title("Import Browser Cookies")
+        sel.grab_set()
+        sel.resizable(True, True)
+
+        hdr_txt = "Select which cookies to add as a  Cookie:  request header."
+        if domain_filter:
+            hdr_txt += f"\n(Filtered to domain: {domain_filter})"
+        ttk.Label(sel, text=hdr_txt, padding=(12, 10, 12, 4), wraplength=460,
+                  justify="left").pack(anchor="w")
+
+        # Scrollable checkbox list
+        list_fr = ttk.Frame(sel, padding=(12, 0))
+        list_fr.pack(fill="both", expand=True)
+
+        canvas = tk.Canvas(list_fr, height=260, highlightthickness=0)
+        vsb    = ttk.Scrollbar(list_fr, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=vsb.set)
+        vsb.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+
+        inner   = ttk.Frame(canvas)
+        win_id  = canvas.create_window((0, 0), window=inner, anchor="nw")
+
+        def _resize(e):
+            canvas.configure(scrollregion=canvas.bbox("all"))
+            canvas.itemconfigure(win_id, width=canvas.winfo_width())
+        inner.bind("<Configure>", _resize)
+
+        check_vars: dict = {}
+        for name in sorted(seen):
+            value, host, browser = seen[name]
+            var = tk.BooleanVar(value=True)
+            check_vars[name] = (var, value)
+            row = ttk.Frame(inner)
+            row.pack(fill="x", padx=4, pady=1)
+            ttk.Checkbutton(row, variable=var, text=name, width=32).pack(side="left")
+            ttk.Label(row, text=f"  {browser}  {host}",
+                      foreground="grey", font=("", 8)).pack(side="left")
+
+        # Select-all / none helpers
+        ctrl_fr = ttk.Frame(sel, padding=(12, 4))
+        ctrl_fr.pack(fill="x")
+        ttk.Button(ctrl_fr, text="Select All",
+                   command=lambda: [v.set(True)  for v, _ in check_vars.values()]
+                   ).pack(side="left", padx=(0, 4))
+        ttk.Button(ctrl_fr, text="Deselect All",
+                   command=lambda: [v.set(False) for v, _ in check_vars.values()]
+                   ).pack(side="left")
+
+        bf = ttk.Frame(sel, padding=(12, 6))
+        bf.pack(fill="x")
+        ttk.Button(bf, text="Cancel", command=sel.destroy).pack(side="right", padx=4)
+
+        def _do_import():
+            selected = [(n, v) for n, (var, v) in check_vars.items() if var.get()]
+            if not selected:
+                sel.destroy()
+                return
+            cookie_line = "Cookie: " + "; ".join(f"{n}={v}" for n, v in selected)
+            # Replace any existing Cookie: line, otherwise append
+            existing = headers_txt.get("1.0", "end").rstrip()
+            lines = [l for l in existing.splitlines()
+                     if not l.strip().lower().startswith("cookie:")]
+            lines.append(cookie_line)
+            headers_txt.delete("1.0", "end")
+            headers_txt.insert("1.0", "\n".join(lines))
+            sel.destroy()
+
+        ttk.Button(bf, text="Import Selected", command=_do_import).pack(side="right")
+        _center_window(sel)
 
     # ── Title page tab ────────────────────────────────────────────
 
