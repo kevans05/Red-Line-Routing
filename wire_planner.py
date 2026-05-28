@@ -3211,9 +3211,14 @@ class RedLineApp(tk.Tk):
         headers_txt.pack(fill="x")
         headers_txt.insert("1.0", self.app_config.get("request_headers", ""))
 
-        ttk.Button(auth_lf, text="Import from Browser…",
+        btn_row = ttk.Frame(auth_lf)
+        btn_row.pack(fill="x", pady=(4, 0))
+        ttk.Button(btn_row, text="Import from Browser…",
                    command=lambda: self._import_browser_cookies(headers_txt, dlg)
-                   ).pack(anchor="e", pady=(4, 0))
+                   ).pack(side="right", padx=(4, 0))
+        ttk.Button(btn_row, text="Get Windows Auth Cookies…",
+                   command=lambda: self._fetch_windows_auth_cookies(headers_txt, dlg)
+                   ).pack(side="right")
 
         bf = ttk.Frame(f); bf.pack(fill="x", pady=(10,0))
         ttk.Button(bf, text="Cancel", command=dlg.destroy).pack(side="right", padx=4)
@@ -3225,6 +3230,220 @@ class RedLineApp(tk.Tk):
             dlg.destroy()
 
         ttk.Button(bf, text="Save", command=_save).pack(side="right")
+
+    # ── Windows Integrated Auth cookie fetch ──────────────────────
+
+    # PowerShell script template: authenticates with domain credentials via NTLM/Kerberos,
+    # captures the resulting session cookies, and returns them as JSON.
+    _PS_COOKIE_SCRIPT = """\
+$ErrorActionPreference = "Stop"
+$url = '{url}'
+$session = New-Object Microsoft.PowerShell.Commands.WebRequestSession
+try {{
+    $result = Invoke-WebRequest -Uri $url -UseDefaultCredentials -UseBasicParsing -SessionVariable session
+    $raw = @($session.Cookies.GetCookies($url))
+    $list = $raw | ForEach-Object {{
+        [PSCustomObject]@{{ name = $_.Name; value = $_.Value; domain = $_.Domain }}
+    }}
+    [PSCustomObject]@{{ status = [int]$result.StatusCode; cookies = @($list) }} | ConvertTo-Json -Depth 4
+}} catch {{
+    [PSCustomObject]@{{ error = $_.Exception.Message; status = 0; cookies = @() }} | ConvertTo-Json
+}}
+"""
+
+    def _fetch_windows_auth_cookies(self, headers_txt, parent_dlg):
+        """Authenticate to a configured URL using Windows Integrated Auth (NTLM/Kerberos)
+        via PowerShell -UseDefaultCredentials, then offer the returned cookies for import.
+        Falls back to a copy-paste script dialog when PowerShell is not available."""
+
+        # Pick the URL to authenticate against — prefer drawing URL then others
+        url = ""
+        for key in ("base_drawing_url", "base_relay_url", "base_crow_url"):
+            url = self.app_config.get(key, "").strip()
+            if url:
+                break
+
+        url = simpledialog.askstring(
+            "Authentication URL",
+            "URL to authenticate against (Windows domain credentials will be used):",
+            initialvalue=url,
+            parent=parent_dlg) or ""
+        if not url:
+            return
+
+        ps_script = self._PS_COOKIE_SCRIPT.format(url=url.replace("'", "''"))
+
+        # Detect powershell executable
+        ps_exe = None
+        for candidate in ("powershell.exe", "powershell", "pwsh.exe", "pwsh"):
+            try:
+                r = subprocess.run([candidate, "-Version"],
+                                   capture_output=True, timeout=5)
+                ps_exe = candidate
+                break
+            except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
+                pass
+
+        if not ps_exe:
+            self._show_ps_script_dialog(ps_script, parent_dlg)
+            return
+
+        # Write script to temp file (avoids command-line quoting issues)
+        fd, tmp_ps = tempfile.mkstemp(suffix=".ps1")
+        try:
+            with os.fdopen(fd, "w") as fh:
+                fh.write(ps_script)
+        except Exception:
+            os.close(fd)
+            os.unlink(tmp_ps)
+            raise
+
+        # Progress dialog while PS runs in background thread
+        wait_dlg = tk.Toplevel(parent_dlg)
+        wait_dlg.title("Authenticating…")
+        wait_dlg.grab_set()
+        wait_dlg.resizable(False, False)
+        ttk.Label(wait_dlg,
+                  text="Running PowerShell with your Windows credentials…\n"
+                       "This may take a few seconds.",
+                  padding=20).pack()
+        pb = ttk.Progressbar(wait_dlg, mode="indeterminate", length=280)
+        pb.pack(padx=20, pady=(0, 20))
+        pb.start(10)
+        _center_window(wait_dlg)
+
+        result_q: queue.Queue = queue.Queue()
+
+        def _run():
+            try:
+                proc = subprocess.run(
+                    [ps_exe, "-NoProfile", "-NonInteractive",
+                     "-ExecutionPolicy", "Bypass", "-File", tmp_ps],
+                    capture_output=True, text=True, timeout=30)
+                result_q.put(("ok", proc.stdout, proc.stderr, proc.returncode))
+            except subprocess.TimeoutExpired:
+                result_q.put(("timeout", "", "", -1))
+            except Exception as exc:
+                result_q.put(("error", "", str(exc), -1))
+            finally:
+                try:
+                    os.unlink(tmp_ps)
+                except Exception:
+                    pass
+
+        threading.Thread(target=_run, daemon=True).start()
+
+        def _poll():
+            if result_q.empty():
+                parent_dlg.after(120, _poll)
+                return
+            pb.stop()
+            wait_dlg.destroy()
+            kind, stdout, stderr, rc = result_q.get()
+            self._handle_ps_cookie_result(
+                kind, stdout, stderr, rc, url, headers_txt, parent_dlg, ps_script)
+
+        parent_dlg.after(120, _poll)
+
+    def _handle_ps_cookie_result(self, kind, stdout, stderr, rc,
+                                  url, headers_txt, parent_dlg, ps_script):
+        if kind == "timeout":
+            messagebox.showerror("Timeout",
+                "PowerShell did not respond within 30 seconds.", parent=parent_dlg)
+            return
+        if kind == "error":
+            messagebox.showerror("Error", stderr or "Unknown error", parent=parent_dlg)
+            return
+
+        try:
+            data = json.loads(stdout)
+        except json.JSONDecodeError:
+            messagebox.showerror("Parse Error",
+                f"Could not parse PowerShell output.\n\nOutput:\n{stdout[:600]}",
+                parent=parent_dlg)
+            return
+
+        if data.get("error"):
+            messagebox.showerror("Authentication Failed",
+                f"{data['error']}\n\nMake sure you are on the domain network and the URL is correct.",
+                parent=parent_dlg)
+            return
+
+        # ConvertTo-Json unwraps a single-item array — normalise to list
+        raw_cookies = data.get("cookies", [])
+        if isinstance(raw_cookies, dict):
+            raw_cookies = [raw_cookies]
+
+        cookies = [(c["name"], c["value"]) for c in raw_cookies
+                   if c.get("name") and c.get("value")]
+
+        if not cookies:
+            messagebox.showinfo("No Cookies",
+                f"Authentication returned HTTP {data.get('status', '?')} "
+                "but no session cookies were set.\n"
+                "The site may use a different auth mechanism.",
+                parent=parent_dlg)
+            return
+
+        # Selection dialog (same pattern as browser import)
+        sel = tk.Toplevel(parent_dlg)
+        sel.title("Windows Auth Cookies")
+        sel.grab_set()
+        sel.resizable(True, True)
+        ttk.Label(sel,
+                  text=f"HTTP {data.get('status', '?')} — select cookies to import:",
+                  padding=(12, 10, 12, 4)).pack(anchor="w")
+
+        check_vars = {}
+        for name, value in cookies:
+            var = tk.BooleanVar(value=True)
+            check_vars[name] = (var, value)
+            row = ttk.Frame(sel, padding=(12, 1))
+            row.pack(fill="x")
+            ttk.Checkbutton(row, variable=var, text=name).pack(side="left")
+
+        bf = ttk.Frame(sel, padding=(12, 8))
+        bf.pack(fill="x")
+        ttk.Button(bf, text="Cancel", command=sel.destroy).pack(side="right", padx=4)
+
+        def _do_import():
+            selected = [(n, v) for n, (var, v) in check_vars.items() if var.get()]
+            if selected:
+                cookie_line = "Cookie: " + "; ".join(f"{n}={v}" for n, v in selected)
+                existing = headers_txt.get("1.0", "end").rstrip()
+                lines = [l for l in existing.splitlines()
+                         if not l.strip().lower().startswith("cookie:")]
+                lines.append(cookie_line)
+                headers_txt.delete("1.0", "end")
+                headers_txt.insert("1.0", "\n".join(lines))
+            sel.destroy()
+
+        ttk.Button(bf, text="Import Selected", command=_do_import).pack(side="right")
+        _center_window(sel)
+
+    def _show_ps_script_dialog(self, ps_script, parent_dlg):
+        """Show the PowerShell script so the user can run it manually on a Windows machine."""
+        dlg = tk.Toplevel(parent_dlg)
+        dlg.title("PowerShell Not Found")
+        dlg.resizable(True, True)
+        ttk.Label(dlg,
+                  text="PowerShell was not found on this system.\n"
+                       "Run the script below on your Windows machine, copy the JSON output,\n"
+                       "and paste the Cookie value manually into the headers box.",
+                  padding=(12, 10), wraplength=520, justify="left").pack(anchor="w")
+        txt = scrolledtext.ScrolledText(dlg, height=18, font=("Courier", 9), wrap="none")
+        txt.pack(fill="both", expand=True, padx=12, pady=(0, 8))
+        txt.insert("1.0", ps_script)
+        txt.configure(state="disabled")
+        bf = ttk.Frame(dlg, padding=(12, 6))
+        bf.pack(fill="x")
+        ttk.Button(bf, text="Close", command=dlg.destroy).pack(side="right")
+
+        def _copy():
+            dlg.clipboard_clear()
+            dlg.clipboard_append(ps_script)
+        ttk.Button(bf, text="Copy Script", command=_copy).pack(side="right", padx=4)
+        _center_window(dlg)
 
     # ── Browser cookie import ──────────────────────────────────────
 
