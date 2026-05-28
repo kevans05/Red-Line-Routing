@@ -3875,6 +3875,7 @@ try {{
         ttk.Button(tb, text="Edit",         command=self._edit_relay).pack(side="left", padx=2)
         ttk.Button(tb, text="Delete",       command=self._delete_relay).pack(side="left", padx=2)
         ttk.Button(tb, text="⬇ Download All", command=self._download_relay_settings).pack(side="left", padx=(10,2))
+        ttk.Button(tb, text="Import File…",  command=self._import_relay_file).pack(side="left", padx=2)
         ttk.Label(tb, text="Relay protection settings records.  Ctrl+click a row to open its URL.",
                   foreground="grey").pack(side="left", padx=8)
 
@@ -4058,7 +4059,7 @@ try {{
         # ── Relay Settings tab ─────────────────────────────────────
         rly_tab = ttk.Frame(self.file_nb)
         self.file_nb.add(rly_tab, text="  Relay Settings  ")
-        self._build_file_listbox(rly_tab, "impl_rly_lb", "Relay Settings")
+        self._build_relay_impl_tab(rly_tab)
 
     def _build_file_listbox(self, parent, attr, subfolder):
         lb = tk.Listbox(parent, selectmode="browse", font=("Courier", 9),
@@ -4069,6 +4070,87 @@ try {{
         vsb.pack(side="right", fill="y")
         lb.bind("<Double-1>", lambda e, l=lb, s=subfolder: self._open_impl_file(l, s))
         setattr(self, attr, lb)
+
+    def _build_relay_impl_tab(self, parent):
+        """Relay Settings tab in implementation view — file list + import button."""
+        btn_f = ttk.Frame(parent)
+        btn_f.pack(fill="x", padx=4, pady=(4, 2))
+        ttk.Button(btn_f, text="Import File…",
+                   command=self._import_relay_file).pack(side="left")
+        ttk.Label(btn_f, text="Import a .txt setting file into the Relay Settings folder",
+                  foreground="grey", font=("", 8)).pack(side="left", padx=8)
+
+        lb_f = ttk.Frame(parent)
+        lb_f.pack(fill="both", expand=True, padx=4, pady=(0, 4))
+        lb = tk.Listbox(lb_f, selectmode="browse", font=("Courier", 9),
+                        activestyle="none", relief="flat", borderwidth=0)
+        vsb = ttk.Scrollbar(lb_f, orient="vertical", command=lb.yview)
+        lb.configure(yscrollcommand=vsb.set)
+        lb.pack(side="left", fill="both", expand=True)
+        vsb.pack(side="right", fill="y")
+        lb.bind("<Double-1>", lambda e: self._open_impl_file(self.impl_rly_lb, "Relay Settings"))
+        self.impl_rly_lb = lb
+
+    def _import_relay_file(self):
+        """Let the user pick any file and save it (optionally renamed) into Relay Settings/."""
+        if not self.project_folder:
+            messagebox.showinfo("Save Project First",
+                "Save the project first so the Relay Settings folder location is known.")
+            return
+        src = filedialog.askopenfilename(
+            title="Select relay setting file",
+            filetypes=[("Text files", "*.txt"), ("All files", "*.*")])
+        if not src:
+            return
+
+        dest_dir = os.path.join(self.project_folder, "Relay Settings")
+        os.makedirs(dest_dir, exist_ok=True)
+
+        suggested = os.path.basename(src)
+        # Ask for a destination name
+        dlg = tk.Toplevel(self)
+        dlg.title("Save Relay Setting File")
+        dlg.grab_set()
+        dlg.resizable(False, False)
+
+        f = ttk.Frame(dlg, padding=14); f.pack(fill="both", expand=True)
+        ttk.Label(f, text="Source file:", foreground="grey", font=("", 8)
+                  ).grid(row=0, column=0, sticky="e", padx=(0, 6), pady=2)
+        ttk.Label(f, text=suggested, font=("Courier", 8)
+                  ).grid(row=0, column=1, sticky="w", pady=2)
+        ttk.Label(f, text="Save as:").grid(row=1, column=0, sticky="e", padx=(0, 6), pady=6)
+        name_var = tk.StringVar(value=suggested)
+        name_entry = ttk.Entry(f, textvariable=name_var, width=40)
+        name_entry.grid(row=1, column=1, sticky="ew", pady=6)
+        f.columnconfigure(1, weight=1)
+
+        bf = ttk.Frame(dlg, padding=(14, 4)); bf.pack(fill="x")
+        ttk.Button(bf, text="Cancel", command=dlg.destroy).pack(side="right", padx=4)
+
+        def _save():
+            dest_name = name_var.get().strip()
+            if not dest_name:
+                messagebox.showwarning("Name Required", "Enter a filename.", parent=dlg)
+                return
+            dest = os.path.join(dest_dir, dest_name)
+            if os.path.exists(dest):
+                if not messagebox.askyesno("Overwrite?",
+                        f"{dest_name} already exists. Overwrite?", parent=dlg):
+                    return
+            try:
+                shutil.copy2(src, dest)
+            except Exception as exc:
+                messagebox.showerror("Copy Failed", str(exc), parent=dlg)
+                return
+            dlg.destroy()
+            self._refresh_file_tabs()
+            self.file_nb.select(1)   # switch to Relay Settings tab
+
+        ttk.Button(bf, text="Save", command=_save).pack(side="right")
+        _center_window(dlg)
+        name_entry.focus_set()
+        name_entry.selection_range(0, "end")
+        dlg.bind("<Return>", lambda _: _save())
 
     def _refresh_file_tabs(self):
         # Drawings: honour the current filter mode
@@ -4084,11 +4166,11 @@ try {{
         else:
             self._show_all_drawings()
 
-        # Relay Settings tab (flat folder, no organisation)
+        # Relay Settings tab (flat folder)
         lb = self.impl_rly_lb
         lb.delete(0, "end")
         if not self.project_folder:
-            lb.insert("end", "(save project first to see downloaded files)")
+            lb.insert("end", "(save project first to see files)")
             return
         folder = os.path.join(self.project_folder, "Relay Settings")
         if os.path.isdir(folder):
@@ -4096,7 +4178,7 @@ try {{
             for fn in files:
                 lb.insert("end", fn)
             if not files:
-                lb.insert("end", "(no files yet — use ⬇ Download All)")
+                lb.insert("end", "(no files yet — use Import File…)")
         else:
             lb.insert("end", "(Relay Settings/ folder not found)")
 
@@ -4225,49 +4307,65 @@ try {{
         return results
 
     def _filter_drawings_to_job(self, job):
-        """Show only the drawings for this job in the drawings listbox."""
+        """Show local files then URL entries for each drawing on this step."""
         self.impl_drw_lb.delete(0, "end")
         self._impl_drw_paths = []
         names = self._job_drawing_names(job)
         if not names:
             self.impl_drw_lb.insert("end", "(no drawings on this step)")
             return
-        files = self._find_drawing_files(names)
-        if not files:
-            self.impl_drw_lb.insert("end", "(drawing files not downloaded yet)")
-            for n in sorted(names):
-                self.impl_drw_lb.insert("end", f"  ⬇ {n}")
+        first_local = None
+        for name in sorted(names):
+            local = self._find_drawing_files({name})
+            url   = self.drawing_registry.get(name, {}).get("url", "").strip()
+            for label, path in local:
+                if first_local is None:
+                    first_local = len(self._impl_drw_paths)
+                self.impl_drw_lb.insert("end", f"  {label}")
+                self._impl_drw_paths.append(path)
+            if url:
+                self.impl_drw_lb.insert("end", f"  ↗ {name}  [web]")
+                self._impl_drw_paths.append(url)
+            if not local and not url:
+                self.impl_drw_lb.insert("end", f"  (not downloaded) {name}")
+        if not self.impl_drw_lb.size():
+            self.impl_drw_lb.insert("end", "(no drawings on this step)")
             return
-        for label, path in files:
-            self.impl_drw_lb.insert("end", label)
-            self._impl_drw_paths.append(path)
-        # Auto-select and preview the first result
-        self.impl_drw_lb.selection_set(0)
-        self._preview_file(files[0][1])
+        if first_local is not None:
+            self.impl_drw_lb.selection_set(first_local)
+            self._preview_file(self._impl_drw_paths[first_local])
 
     def _show_all_drawings(self):
-        """List every downloaded drawing file, walking subfolders (skip Archive/)."""
+        """List every local drawing file then URL entries from the registry."""
         self.impl_drw_lb.delete(0, "end")
         self._impl_drw_paths = []
         if not self.project_folder:
             self.impl_drw_lb.insert("end", "(save project first)")
             return
         base = os.path.join(self.project_folder, "Drawings")
-        if not os.path.isdir(base):
-            self.impl_drw_lb.insert("end", "(Drawings/ folder not found)")
-            return
-        found = []
-        for root, dirs, files in os.walk(base):
-            dirs[:] = sorted(d for d in dirs if d != "Archive")
-            for fname in sorted(files):
-                if not fname.startswith("."):
-                    fpath = os.path.join(root, fname)
-                    found.append((os.path.relpath(fpath, base), fpath))
-        if found:
-            for label, path in found:
-                self.impl_drw_lb.insert("end", label)
-                self._impl_drw_paths.append(path)
-        else:
+        # Local files first
+        local_count = 0
+        if os.path.isdir(base):
+            for root, dirs, files in os.walk(base):
+                dirs[:] = sorted(d for d in dirs if d != "Archive")
+                for fname in sorted(files):
+                    if not fname.startswith("."):
+                        fpath = os.path.join(root, fname)
+                        self.impl_drw_lb.insert("end", os.path.relpath(fpath, base))
+                        self._impl_drw_paths.append(fpath)
+                        local_count += 1
+        # Registry URL entries
+        url_entries = [(n, i.get("url", "").strip())
+                       for n, i in sorted(self.drawing_registry.items())
+                       if i.get("url", "").strip()]
+        if url_entries:
+            if local_count:
+                self.impl_drw_lb.insert("end", "── registry URLs ──")
+                self._impl_drw_paths.append(None)   # sentinel — not openable
+            for name, url in url_entries:
+                self.impl_drw_lb.insert("end", f"  ↗ {name}  [web]")
+                self._impl_drw_paths.append(url)
+        if not local_count and not url_entries:
             self.impl_drw_lb.insert("end", "(no drawings downloaded yet — use ⬇ Download All)")
 
     # ── Drawing list click handlers ───────────────────────────────
@@ -4277,18 +4375,34 @@ try {{
         if not sel:
             return
         idx = sel[0]
-        if idx < len(self._impl_drw_paths):
-            self._preview_file(self._impl_drw_paths[idx])
+        if idx >= len(self._impl_drw_paths):
+            return
+        entry = self._impl_drw_paths[idx]
+        if entry is None:
+            return   # separator row
+        if entry.startswith("http"):
+            self._pdf_canvas.delete("all")
+            self._pdf_canvas.create_text(10, 10, anchor="nw", fill="#888",
+                text=f"Web URL — double-click to open in browser:\n\n{entry}",
+                font=("", 9), tags=("hint",), width=500)
+            self._pdf_page_lbl.set("")
+        else:
+            self._preview_file(entry)
 
     def _on_drw_double_click(self, _=None):
         sel = self.impl_drw_lb.curselection()
         if not sel:
             return
         idx = sel[0]
-        if idx < len(self._impl_drw_paths):
-            path = self._impl_drw_paths[idx]
-            if os.path.exists(path):
-                _open_file(path)
+        if idx >= len(self._impl_drw_paths):
+            return
+        entry = self._impl_drw_paths[idx]
+        if not entry:
+            return
+        if entry.startswith("http"):
+            webbrowser.open(entry)
+        elif os.path.exists(entry):
+            _open_file(entry)
 
     # ── PDF / image preview ───────────────────────────────────────
 
