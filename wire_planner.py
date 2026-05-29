@@ -1881,28 +1881,48 @@ class EngineeringStandardDialog(tk.Toplevel):
         f.pack(fill="both", expand=True)
         f.columnconfigure(1, weight=1)
 
+        stype = ex.get("standard_type", "Telecom")
+        url_default = ex.get("url", "") or (self.base_url_telecom if stype == "Telecom" else self.base_url_transmission)
+
         self.vars = {
-            "standard_id":       tk.StringVar(value=ex.get("standard_id", "")),
-            "title":             tk.StringVar(value=ex.get("title", "")),
-            "revision":          tk.StringVar(value=ex.get("revision", "")),
-            "url_telecom":       tk.StringVar(value=ex.get("url_telecom", "") or self.base_url_telecom),
-            "url_transmission":  tk.StringVar(value=ex.get("url_transmission", "") or self.base_url_transmission),
-            "notes":             tk.StringVar(value=ex.get("notes", "")),
+            "standard_id":    tk.StringVar(value=ex.get("standard_id", "")),
+            "title":          tk.StringVar(value=ex.get("title", "")),
+            "revision":       tk.StringVar(value=ex.get("revision", "")),
+            "standard_type":  tk.StringVar(value=stype),
+            "url":            tk.StringVar(value=url_default),
+            "notes":          tk.StringVar(value=ex.get("notes", "")),
         }
 
         fields = [
-            ("standard_id",      "Standard ID:"),
-            ("title",            "Title / Description:"),
-            ("revision",         "Revision:"),
-            ("url_telecom",      "URL (Telecom):"),
-            ("url_transmission", "URL (Transmission):"),
+            ("standard_id", "Standard ID:"),
+            ("title",       "Title / Description:"),
+            ("revision",    "Revision:"),
         ]
         for i, (key, label) in enumerate(fields):
             ttk.Label(f, text=label).grid(row=i, column=0, sticky="e", padx=(0, 6), pady=4)
             ttk.Entry(f, textvariable=self.vars[key], width=52).grid(
                 row=i, column=1, sticky="ew", pady=4)
 
-        row_n = len(fields)
+        # Type combobox
+        row_type = len(fields)
+        ttk.Label(f, text="Type:").grid(row=row_type, column=0, sticky="e", padx=(0, 6), pady=4)
+        type_cb = ttk.Combobox(f, textvariable=self.vars["standard_type"],
+                               values=["Telecom", "Transmission"], state="readonly", width=20)
+        type_cb.grid(row=row_type, column=1, sticky="w", pady=4)
+
+        def _on_type_change(*_):
+            if not self.vars["url"].get().strip():
+                t = self.vars["standard_type"].get()
+                self.vars["url"].set(self.base_url_telecom if t == "Telecom" else self.base_url_transmission)
+        type_cb.bind("<<ComboboxSelected>>", _on_type_change)
+
+        # URL field
+        row_url = row_type + 1
+        ttk.Label(f, text="URL:").grid(row=row_url, column=0, sticky="e", padx=(0, 6), pady=4)
+        ttk.Entry(f, textvariable=self.vars["url"], width=52).grid(
+            row=row_url, column=1, sticky="ew", pady=4)
+
+        row_n = row_url + 1
         ttk.Label(f, text="Notes:").grid(row=row_n, column=0, sticky="ne", padx=(0, 6), pady=4)
         self._notes_widget = tk.Text(f, width=52, height=4, wrap="word", font=("", 9))
         self._notes_widget.grid(row=row_n, column=1, sticky="ew", pady=4)
@@ -3287,7 +3307,7 @@ class RedLineApp(tk.Tk):
                 headers[key] = value
         return headers
 
-    def _download_with_progress(self, title, targets, dest_dir, organize=False):
+    def _download_with_progress(self, title, targets, dest_dir, organize=False, extra_headers=None):
         """Shared download engine with thread-safe progress dialog.
 
         Uses a queue.Queue so the worker thread never touches tkinter directly —
@@ -3380,6 +3400,8 @@ class RedLineApp(tk.Tk):
 
                 try:
                     hdrs = {"User-Agent": "RedLineRouting/1.0", **self._parse_request_headers()}
+                    if extra_headers:
+                        hdrs.update(extra_headers)
                     req = urllib.request.Request(url, headers=hdrs)
                     with urllib.request.urlopen(req, timeout=30) as resp:
                         data = resp.read()
@@ -3781,20 +3803,20 @@ class RedLineApp(tk.Tk):
                   foreground="grey").pack(side="left", padx=8)
 
         frame = ttk.Frame(parent); frame.pack(fill="both", expand=True, padx=4, pady=(0, 4))
-        cols = ("Standard ID", "Title", "Rev", "URL (Telecom)", "URL (Transmission)", "Notes")
+        cols = ("Standard ID", "Title", "Rev", "Type", "URL", "Notes")
         self.eng_tree = ttk.Treeview(frame, columns=cols, show="headings")
-        self.eng_tree.heading("Standard ID",        text="Standard ID")
-        self.eng_tree.heading("Title",              text="Title")
-        self.eng_tree.heading("Rev",                text="Rev")
-        self.eng_tree.heading("URL (Telecom)",      text="URL (Telecom)")
-        self.eng_tree.heading("URL (Transmission)", text="URL (Transmission)")
-        self.eng_tree.heading("Notes",              text="Notes")
-        self.eng_tree.column("Standard ID",        width=120, stretch=False)
-        self.eng_tree.column("Title",              width=180, stretch=False)
-        self.eng_tree.column("Rev",                width=55,  stretch=False)
-        self.eng_tree.column("URL (Telecom)",      width=220)
-        self.eng_tree.column("URL (Transmission)", width=220)
-        self.eng_tree.column("Notes",              width=180)
+        self.eng_tree.heading("Standard ID", text="Standard ID")
+        self.eng_tree.heading("Title",       text="Title")
+        self.eng_tree.heading("Rev",         text="Rev")
+        self.eng_tree.heading("Type",        text="Type")
+        self.eng_tree.heading("URL",         text="URL")
+        self.eng_tree.heading("Notes",       text="Notes")
+        self.eng_tree.column("Standard ID", width=120, stretch=False)
+        self.eng_tree.column("Title",       width=180, stretch=False)
+        self.eng_tree.column("Rev",         width=55,  stretch=False)
+        self.eng_tree.column("Type",        width=100, stretch=False)
+        self.eng_tree.column("URL",         width=320)
+        self.eng_tree.column("Notes",       width=180)
         vsb = ttk.Scrollbar(frame, orient="vertical", command=self.eng_tree.yview)
         self.eng_tree.configure(yscrollcommand=vsb.set)
         self.eng_tree.pack(side="left", fill="both", expand=True)
@@ -3807,11 +3829,11 @@ class RedLineApp(tk.Tk):
         for sid, info in sorted(self.engineering_standards_registry.items()):
             self.eng_tree.insert("", "end", iid=sid, values=(
                 sid,
-                info.get("title",            ""),
-                info.get("revision",         ""),
-                info.get("url_telecom",      ""),
-                info.get("url_transmission", ""),
-                info.get("notes",            ""),
+                info.get("title",         ""),
+                info.get("revision",      ""),
+                info.get("standard_type", ""),
+                info.get("url",           ""),
+                info.get("notes",         ""),
             ))
 
     def _add_engineering(self):
@@ -3823,7 +3845,12 @@ class RedLineApp(tk.Tk):
         if dlg.result:
             sid = dlg.result["standard_id"]
             self.engineering_standards_registry[sid] = {
-                k: v for k, v in dlg.result.items() if k != "standard_id"}
+                "title":         dlg.result.get("title", ""),
+                "revision":      dlg.result.get("revision", ""),
+                "standard_type": dlg.result.get("standard_type", ""),
+                "url":           dlg.result.get("url", ""),
+                "notes":         dlg.result.get("notes", ""),
+            }
             self._refresh_engineering_list()
 
     def _edit_engineering(self):
@@ -3841,7 +3868,12 @@ class RedLineApp(tk.Tk):
             if old_id != new_id and old_id in self.engineering_standards_registry:
                 del self.engineering_standards_registry[old_id]
             self.engineering_standards_registry[new_id] = {
-                k: v for k, v in dlg.result.items() if k != "standard_id"}
+                "title":         dlg.result.get("title", ""),
+                "revision":      dlg.result.get("revision", ""),
+                "standard_type": dlg.result.get("standard_type", ""),
+                "url":           dlg.result.get("url", ""),
+                "notes":         dlg.result.get("notes", ""),
+            }
             self._refresh_engineering_list()
 
     def _delete_engineering(self):
@@ -3855,8 +3887,25 @@ class RedLineApp(tk.Tk):
         row = self.eng_tree.identify_row(event.y)
         if not row: return
         info = self.engineering_standards_registry.get(row, {})
-        url = info.get("url_telecom", "").strip() or info.get("url_transmission", "").strip()
+        url = info.get("url", "").strip()
         if url: webbrowser.open(url)
+
+    def _parse_engineering_headers(self):
+        """Parse engineering_request_headers from app_config into a dict."""
+        raw = self.app_config.get("engineering_request_headers", "")
+        headers = {}
+        for line in raw.splitlines():
+            if ":" not in line:
+                continue
+            line = line.strip()
+            if not line:
+                continue
+            key, _, value = line.partition(":")
+            key = key.strip()
+            value = value.strip()
+            if key:
+                headers[key] = value
+        return headers
 
     def _download_engineering(self):
         if not self.project_folder:
@@ -3864,16 +3913,16 @@ class RedLineApp(tk.Tk):
                 "Please save the project first so the Engineering Standards folder location is known."); return
         targets = []
         for sid, info in self.engineering_standards_registry.items():
-            for url_key, suffix in (("url_telecom", "_telecom"), ("url_transmission", "_transmission")):
-                url = info.get(url_key, "").strip()
-                if url:
-                    targets.append((f"{sid}{suffix}", url))
+            url = info.get("url", "").strip()
+            if url:
+                targets.append((sid, url))
         if not targets:
             messagebox.showinfo("No URLs", "No engineering standard URLs are set."); return
         self._download_with_progress(
             "Downloading Engineering Standards",
             targets,
             os.path.join(self.project_folder, "Engineering Standards"),
+            extra_headers=self._parse_engineering_headers(),
         )
 
     # ── Mode switching ────────────────────────────────────────────
