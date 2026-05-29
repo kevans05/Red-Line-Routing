@@ -2125,7 +2125,8 @@ class SoftwareSetupDialog(tk.Toplevel):
         tk.Label(eng_hdr_row, text="Engineering Standards — Authentication", bg="white", fg="#1c2833",
                  font=("", 9, "bold"), padx=8, pady=2).pack(side="left", anchor="w")
 
-        for key, label, show in [("engineering_username", "Username", ""), ("engineering_password", "Password", "*")]:
+        for key, label, show in [("engineering_auth_mode", "Auth Mode (ntlm/sso/negotiate/basic)", ""),
+                                  ("engineering_username", "Username", ""), ("engineering_password", "Password", "*")]:
             r = tk.Frame(body, bg="white"); r.pack(fill="x", pady=2)
             tk.Label(r, text=label + ":", bg="white", fg="#5d6d7e",
                      font=("", 9), width=26, anchor="e").pack(side="left")
@@ -3645,28 +3646,38 @@ class RedLineApp(tk.Tk):
         eng_auth_lf.pack(fill="x", pady=(0, 8))
         eng_auth_lf.columnconfigure(1, weight=1)
 
-        ttk.Label(eng_auth_lf, text="Username:").grid(row=0, column=0, sticky="e", padx=(0,6), pady=3)
-        eng_user_var = tk.StringVar(value=self.app_config.get("engineering_username", ""))
-        ttk.Entry(eng_auth_lf, textvariable=eng_user_var, width=36).grid(row=0, column=1, sticky="ew", pady=3)
-
-        ttk.Label(eng_auth_lf, text="Password:").grid(row=1, column=0, sticky="e", padx=(0,6), pady=3)
-        eng_pass_var = tk.StringVar(value=self.app_config.get("engineering_password", ""))
-        ttk.Entry(eng_auth_lf, textvariable=eng_pass_var, show="*", width=36).grid(row=1, column=1, sticky="ew", pady=3)
-
+        ttk.Label(eng_auth_lf, text="Auth Method:").grid(row=0, column=0, sticky="e", padx=(0,6), pady=3)
+        eng_auth_mode_var = tk.StringVar(value=self.app_config.get("engineering_auth_mode", "ntlm"))
+        auth_mode_cb = ttk.Combobox(eng_auth_lf, textvariable=eng_auth_mode_var,
+                                     values=["ntlm", "negotiate", "sso", "basic"],
+                                     state="readonly", width=14)
+        auth_mode_cb.grid(row=0, column=1, sticky="w", pady=3)
         ttk.Label(eng_auth_lf,
-                  text="Used for HTTP Basic / Windows authentication when downloading engineering standards.\n"
-                       "Leave blank if not required. For cookie-based auth use the headers field below.",
+                  text="ntlm = Windows NTLM (username+password)  ·  negotiate = Kerberos/NTLM  ·  "
+                       "sso = use your current Windows login (no password needed)  ·  basic = plain Basic auth",
                   foreground="grey", font=("", 8), wraplength=480, justify="left").grid(
-            row=2, column=0, columnspan=2, sticky="w", pady=(2, 6))
+            row=1, column=0, columnspan=2, sticky="w", pady=(0, 6))
 
-        ttk.Label(eng_auth_lf, text="Extra Headers:").grid(row=3, column=0, sticky="ne", padx=(0,6), pady=3)
+        ttk.Label(eng_auth_lf, text="Username:").grid(row=2, column=0, sticky="e", padx=(0,6), pady=3)
+        eng_user_var = tk.StringVar(value=self.app_config.get("engineering_username", ""))
+        ttk.Entry(eng_auth_lf, textvariable=eng_user_var, width=36).grid(row=2, column=1, sticky="ew", pady=3)
+
+        ttk.Label(eng_auth_lf, text="Password:").grid(row=3, column=0, sticky="e", padx=(0,6), pady=3)
+        eng_pass_var = tk.StringVar(value=self.app_config.get("engineering_password", ""))
+        ttk.Entry(eng_auth_lf, textvariable=eng_pass_var, show="*", width=36).grid(row=3, column=1, sticky="ew", pady=3)
+        ttk.Label(eng_auth_lf,
+                  text="Leave username/password blank when using sso mode.",
+                  foreground="grey", font=("", 8), wraplength=480, justify="left").grid(
+            row=4, column=0, columnspan=2, sticky="w", pady=(0, 6))
+
+        ttk.Label(eng_auth_lf, text="Extra Headers:").grid(row=5, column=0, sticky="ne", padx=(0,6), pady=3)
         eng_headers_txt = scrolledtext.ScrolledText(eng_auth_lf, height=3, font=("Courier", 9), wrap="none")
-        eng_headers_txt.grid(row=3, column=1, sticky="ew", pady=3)
+        eng_headers_txt.grid(row=5, column=1, sticky="ew", pady=3)
         eng_headers_txt.insert("1.0", self.app_config.get("engineering_request_headers", ""))
         ttk.Label(eng_auth_lf,
-                  text="Optional extra headers (one per line as  Header-Name: value). Leave blank if username/password is enough.",
+                  text="Optional extra headers (one per line as  Header-Name: value). Usually not needed with NTLM/SSO.",
                   foreground="grey", font=("", 8), wraplength=480, justify="left").grid(
-            row=4, column=0, columnspan=2, sticky="w", pady=(0, 2))
+            row=6, column=0, columnspan=2, sticky="w", pady=(0, 2))
 
         bf = ttk.Frame(f); bf.pack(fill="x", pady=(10,0))
         ttk.Button(bf, text="Cancel", command=dlg.destroy).pack(side="right", padx=4)
@@ -3674,6 +3685,7 @@ class RedLineApp(tk.Tk):
         def _save():
             self.app_config.update({k: v.get().strip() for k, v in cfg_vars.items()})
             self.app_config["request_headers"] = headers_txt.get("1.0", "end").strip()
+            self.app_config["engineering_auth_mode"] = eng_auth_mode_var.get()
             self.app_config["engineering_username"] = eng_user_var.get().strip()
             self.app_config["engineering_password"] = eng_pass_var.get()
             self.app_config["engineering_request_headers"] = eng_headers_txt.get("1.0", "end").strip()
@@ -4017,12 +4029,45 @@ class RedLineApp(tk.Tk):
         url = info.get("url", "").strip()
         if url: webbrowser.open(url)
 
-    def _parse_engineering_headers(self):
-        """Build auth headers for engineering standards downloads.
+    def _curl_available(self):
+        """Return the path to curl if available, else None."""
+        try:
+            result = subprocess.run(
+                ["curl", "--version"], capture_output=True, timeout=5)
+            return "curl" if result.returncode == 0 else None
+        except Exception:
+            return None
 
-        Combines HTTP Basic Auth (from username/password) with any extra
-        headers typed in the Engineering Standards settings section.
-        """
+    def _download_engineering(self):
+        if not self.project_folder:
+            messagebox.showinfo("Save First",
+                "Please save the project first so the Engineering Standards folder location is known."); return
+        targets = []
+        for sid, info in self.engineering_standards_registry.items():
+            url = info.get("url", "").strip()
+            if url:
+                targets.append((sid, url))
+        if not targets:
+            messagebox.showinfo("No URLs", "No engineering standard URLs are set."); return
+
+        dest_dir = os.path.join(self.project_folder, "Engineering Standards")
+        auth_mode = self.app_config.get("engineering_auth_mode", "ntlm")
+        user      = self.app_config.get("engineering_username", "").strip()
+        pwd       = self.app_config.get("engineering_password", "")
+
+        if self._curl_available() and auth_mode in ("ntlm", "negotiate", "sso"):
+            self._download_engineering_curl(targets, dest_dir, auth_mode, user, pwd)
+        else:
+            # Fall back to urllib with Basic auth header
+            self._download_with_progress(
+                "Downloading Engineering Standards",
+                targets,
+                dest_dir,
+                extra_headers=self._build_engineering_headers(),
+            )
+
+    def _build_engineering_headers(self):
+        """Build extra HTTP headers for urllib-based engineering download."""
         import base64
         headers = {}
         user = self.app_config.get("engineering_username", "").strip()
@@ -4041,23 +4086,129 @@ class RedLineApp(tk.Tk):
                 headers[key] = value
         return headers
 
-    def _download_engineering(self):
-        if not self.project_folder:
-            messagebox.showinfo("Save First",
-                "Please save the project first so the Engineering Standards folder location is known."); return
-        targets = []
-        for sid, info in self.engineering_standards_registry.items():
-            url = info.get("url", "").strip()
-            if url:
-                targets.append((sid, url))
-        if not targets:
-            messagebox.showinfo("No URLs", "No engineering standard URLs are set."); return
-        self._download_with_progress(
-            "Downloading Engineering Standards",
-            targets,
-            os.path.join(self.project_folder, "Engineering Standards"),
-            extra_headers=self._parse_engineering_headers(),
-        )
+    def _download_engineering_curl(self, targets, dest_dir, auth_mode, user, pwd):
+        """Download engineering standards via curl with NTLM/Negotiate/SSO auth."""
+        os.makedirs(dest_dir, exist_ok=True)
+
+        dlg = tk.Toplevel(self)
+        dlg.title("Downloading Engineering Standards")
+        dlg.resizable(True, False)
+        dlg.grab_set()
+
+        hdr = tk.Frame(dlg, bg="#1c2833"); hdr.pack(fill="x")
+        tk.Label(hdr, text="Downloading Engineering Standards", bg="#1c2833", fg="white",
+                 font=("", 11, "bold"), padx=14, pady=10).pack(side="left")
+        tk.Label(hdr, text=f"{len(targets)} file(s)", bg="#1c2833", fg="#85929e",
+                 font=("", 9), padx=8).pack(side="right", pady=10)
+
+        body = ttk.Frame(dlg, padding=(14, 10, 14, 4)); body.pack(fill="both", expand=True)
+        cur_lbl = tk.StringVar(value="Waiting…")
+        ttk.Label(body, text="File:").grid(row=0, column=0, sticky="e", padx=(0,6), pady=2)
+        ttk.Label(body, textvariable=cur_lbl, foreground="#2980b9",
+                  font=("", 9, "bold"), wraplength=430, anchor="w").grid(row=0, column=1, sticky="w", pady=2)
+        bar = ttk.Progressbar(body, length=500, maximum=len(targets))
+        bar.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(8,2))
+        cnt_lbl = tk.StringVar(value=f"0 / {len(targets)}")
+        ttk.Label(body, textvariable=cnt_lbl, foreground="grey",
+                  font=("", 8), anchor="e").grid(row=2, column=0, columnspan=2, sticky="e")
+        body.columnconfigure(1, weight=1)
+
+        ttk.Label(body, text="Log:", font=("", 8)).grid(row=3, column=0, columnspan=2, sticky="w", pady=(10,2))
+        log = scrolledtext.ScrolledText(body, height=8, font=("Courier", 8),
+                                        state="disabled", wrap="word",
+                                        bg="#1c2833", fg="#ecf0f1")
+        log.tag_configure("ok",   foreground="#58d68d")
+        log.tag_configure("err",  foreground="#ec7063")
+        log.tag_configure("info", foreground="#85929e")
+        log.grid(row=4, column=0, columnspan=2, sticky="nsew", pady=(0,6))
+        body.rowconfigure(4, weight=1)
+
+        cancel_flag = [False]
+        bf = ttk.Frame(dlg, padding=(14, 0, 14, 10)); bf.pack(fill="x")
+        ttk.Button(bf, text="Cancel",
+                   command=lambda: cancel_flag.__setitem__(0, True)).pack(side="right", padx=6)
+        ttk.Button(bf, text="Open Folder",
+                   command=lambda: _open_file(dest_dir)).pack(side="left")
+
+        _center_window(dlg, 560, 420)
+
+        q = queue.Queue()
+
+        def _log(msg, tag="info"):
+            log.configure(state="normal")
+            log.insert("end", msg + "\n", tag)
+            log.see("end")
+            log.configure(state="disabled")
+
+        def _run():
+            ok = 0
+            for i, (name, url) in enumerate(targets):
+                if cancel_flag[0]:
+                    q.put(("log", f"Cancelled after {i} file(s).", "info")); break
+                q.put(("progress", i, name))
+
+                ext = os.path.splitext(url.split("?")[0])[-1].lower()
+                if ext not in {".pdf",".png",".jpg",".jpeg",".tif",".tiff",".svg",".dwg",".dxf"}:
+                    ext = ".pdf"
+                dest = os.path.join(dest_dir, name + ext)
+
+                cmd = ["curl", "--silent", "--show-error", "--location",
+                       "--output", dest, "--max-time", "60"]
+                if auth_mode == "sso" or (auth_mode == "negotiate" and not user):
+                    cmd += ["--negotiate", "--user", ":"]
+                elif auth_mode == "ntlm" and user:
+                    cmd += ["--ntlm", "--user", f"{user}:{pwd}"]
+                elif auth_mode == "negotiate" and user:
+                    cmd += ["--negotiate", "--user", f"{user}:{pwd}"]
+                elif user:
+                    cmd += ["--user", f"{user}:{pwd}"]
+                # append any extra headers
+                raw = self.app_config.get("engineering_request_headers", "")
+                for line in raw.splitlines():
+                    line = line.strip()
+                    if line and ":" in line:
+                        cmd += ["--header", line]
+                cmd.append(url)
+
+                try:
+                    result = subprocess.run(cmd, capture_output=True, timeout=90)
+                    if result.returncode == 0 and os.path.isfile(dest) and os.path.getsize(dest) > 0:
+                        kb = os.path.getsize(dest) // 1024
+                        q.put(("log", f"✓  {name}  ({kb} KB)", "ok"))
+                        ok += 1
+                    else:
+                        err = result.stderr.decode(errors="replace").strip() or f"exit code {result.returncode}"
+                        q.put(("log", f"✗  {name}: {err}", "err"))
+                        if os.path.isfile(dest) and os.path.getsize(dest) == 0:
+                            os.remove(dest)
+                except subprocess.TimeoutExpired:
+                    q.put(("log", f"✗  {name}: timed out", "err"))
+                except Exception as exc:
+                    q.put(("log", f"✗  {name}: {exc}", "err"))
+
+            q.put(("done", ok))
+
+        def _poll():
+            try:
+                while True:
+                    msg = q.get_nowait()
+                    if msg[0] == "progress":
+                        _, i, name = msg
+                        cur_lbl.set(name); bar["value"] = i
+                        cnt_lbl.set(f"{i} / {len(targets)}")
+                    elif msg[0] == "log":
+                        _log(msg[1], msg[2])
+                    elif msg[0] == "done":
+                        bar["value"] = len(targets)
+                        cnt_lbl.set(f"{msg[1]} / {len(targets)} succeeded")
+                        _log(f"Done — {msg[1]} of {len(targets)} file(s) downloaded.", "info")
+                        return
+            except queue.Empty:
+                pass
+            dlg.after(100, _poll)
+
+        threading.Thread(target=_run, daemon=True).start()
+        _poll()
 
     # ── Print helpers ─────────────────────────────────────────────
 
