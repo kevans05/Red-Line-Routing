@@ -953,6 +953,7 @@ class JobDialog(tk.Toplevel):
             ttk.Label(f, text="Wire Label / ID:").grid(row=row, column=0, sticky="e", padx=(0,6), pady=(6,2))
             self.wire_var = tk.StringVar(value=ex.get("wire",""))
             self._wire_combo(f, self.wire_var).grid(row=row, column=1, sticky="w", pady=(6,2))
+            row += 1
 
         elif self.job_type == "MOVE":
             # MOVE has two endpoint pairs: the wire being removed ("start"/"end") and
@@ -981,6 +982,7 @@ class JobDialog(tk.Toplevel):
             ttk.Label(f, text="Wire Label / ID (Add):").grid(row=row, column=0, sticky="e", padx=(0,6), pady=(6,2))
             self.add_wire_var = tk.StringVar(value=ex.get("add_wire",""))
             self._wire_combo(f, self.add_wire_var).grid(row=row, column=1, sticky="w", pady=(6,2))
+            row += 1
 
         elif self.job_type in ("BLOCK","UNBLOCK"):
             lbl = "BLOCK PROTECTION" if self.job_type == "BLOCK" else "UNBLOCK PROTECTION"
@@ -1012,6 +1014,7 @@ class JobDialog(tk.Toplevel):
                                            base_drawing_url=self.settings.get("base_drawing_url",""))
             self.ep_prot.grid(row=row, column=0, columnspan=2, sticky="ew", pady=2)
             self.ep_prot.set(ex.get("protection",{}))
+            row += 1
 
         elif self.job_type in ("DEVICE ADD", "DEVICE REMOVE"):
             verb = "INSTALL" if self.job_type == "DEVICE ADD" else "REMOVE"
@@ -1024,6 +1027,7 @@ class JobDialog(tk.Toplevel):
             self._dev_notes_widget = tk.Text(f, width=58, height=5, wrap="word", font=("",9))
             self._dev_notes_widget.grid(row=row, column=0, columnspan=2, sticky="ew", pady=(8,2))
             self._dev_notes_widget.insert("1.0", ex.get("notes",""))
+            row += 1
 
         elif self.job_type == "TESTING":
             self._section_label(f, row, "── TESTING / NOTE ──", color); row += 2
