@@ -4263,6 +4263,16 @@ class RedLineApp(tk.Tk):
         self.file_nb.add(rly_tab, text="  Relay Settings  ")
         self._build_relay_impl_tab(rly_tab)
 
+        # ── Maintenance Standards tab ───────────────────────────────
+        maint_tab = ttk.Frame(self.file_nb)
+        self.file_nb.add(maint_tab, text="  Maintenance Standards  ")
+        self._build_standards_impl_tab(maint_tab, "impl_maint_lb", "Maintenance Standards")
+
+        # ── Engineering Standards tab ───────────────────────────────
+        eng_tab = ttk.Frame(self.file_nb)
+        self.file_nb.add(eng_tab, text="  Engineering Standards  ")
+        self._build_standards_impl_tab(eng_tab, "impl_eng_lb", "Engineering Standards")
+
     def _build_file_listbox(self, parent, attr, subfolder):
         lb = tk.Listbox(parent, selectmode="browse", font=("Courier", 9),
                         activestyle="none", relief="flat", borderwidth=0)
@@ -4309,6 +4319,54 @@ class RedLineApp(tk.Tk):
         self.impl_rly_preview.tag_configure("value", foreground="#2c3e50")
         self.impl_rly_preview.tag_configure("info",  foreground="#7f8c8d", font=("Courier", 8))
         self.impl_rly_preview.pack(fill="both", expand=True)
+
+    def _build_standards_impl_tab(self, parent, lb_attr, subfolder):
+        """Simple file-list tab for Maintenance/Engineering Standards in impl view."""
+        pw = ttk.PanedWindow(parent, orient="horizontal")
+        pw.pack(fill="both", expand=True, padx=4, pady=4)
+
+        list_f = ttk.Frame(pw)
+        pw.add(list_f, weight=1)
+        ttk.Label(list_f,
+                  text="double-click to open  ·  click to preview",
+                  foreground="grey", font=("", 8)).pack(anchor="w", padx=2, pady=(0, 2))
+        lb_f = ttk.Frame(list_f); lb_f.pack(fill="both", expand=True)
+        lb = tk.Listbox(lb_f, selectmode="browse", font=("Courier", 9),
+                        activestyle="none", relief="flat", borderwidth=0)
+        vsb = ttk.Scrollbar(lb_f, orient="vertical", command=lb.yview)
+        lb.configure(yscrollcommand=vsb.set)
+        lb.pack(side="left", fill="both", expand=True)
+        vsb.pack(side="right", fill="y")
+        lb.bind("<Double-1>",        lambda e, l=lb, s=subfolder: self._open_impl_file(l, s))
+        lb.bind("<<ListboxSelect>>", lambda e, l=lb, s=subfolder: self._preview_std_file(l, s))
+        setattr(self, lb_attr, lb)
+
+        prev_f = ttk.Frame(pw)
+        pw.add(prev_f, weight=3)
+        attr_prev = lb_attr.replace("_lb", "_preview")
+        tv = scrolledtext.ScrolledText(prev_f, font=("Courier", 9), state="disabled", wrap="none")
+        tv.pack(fill="both", expand=True)
+        setattr(self, attr_prev, tv)
+
+    def _preview_std_file(self, lb, subfolder):
+        """Show plain text content of selected standards file in its preview pane."""
+        sel = lb.curselection()
+        if not sel: return
+        fname = lb.get(sel[0])
+        if not self.project_folder or fname.startswith("("): return
+        path = os.path.join(self.project_folder, subfolder, fname)
+        attr = "impl_maint_preview" if subfolder == "Maintenance Standards" else "impl_eng_preview"
+        tv = getattr(self, attr, None)
+        if tv is None or not os.path.isfile(path): return
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as fh:
+                content = fh.read()
+        except Exception:
+            content = "(binary or unreadable file — double-click to open externally)"
+        tv.configure(state="normal")
+        tv.delete("1.0", "end")
+        tv.insert("1.0", content)
+        tv.configure(state="disabled")
 
     def _on_rly_select(self, _=None):
         """Preview the selected relay setting file with nice formatting."""
@@ -4484,6 +4542,28 @@ class RedLineApp(tk.Tk):
                 lb.insert("end", "(no files yet — import via Add/Edit relay in Planning)")
         else:
             lb.insert("end", "(Relay Settings/ folder not found)")
+
+        # Maintenance Standards and Engineering Standards tabs
+        for lb_attr, subfolder, hint in [
+            ("impl_maint_lb", "Maintenance Standards",
+             "(no files yet — download via Maintenance Standards tab in Planning)"),
+            ("impl_eng_lb",   "Engineering Standards",
+             "(no files yet — download via Engineering Standards tab in Planning)"),
+        ]:
+            slb = getattr(self, lb_attr, None)
+            if slb is None:
+                continue
+            slb.delete(0, "end")
+            std_folder = os.path.join(self.project_folder, subfolder)
+            if os.path.isdir(std_folder):
+                files = sorted(f for f in os.listdir(std_folder)
+                               if not f.startswith(".") and f != "Archive")
+                for fn in files:
+                    slb.insert("end", fn)
+                if not files:
+                    slb.insert("end", hint)
+            else:
+                slb.insert("end", f"({subfolder}/ folder not found)")
 
     def _job_has_mb(self, job):
         """Return True if this job's protection sub-dict has mb_enabled set."""
