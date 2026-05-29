@@ -846,7 +846,8 @@ class JobDialog(tk.Toplevel):
                   "DEVICE ADD":"#117a65","DEVICE REMOVE":"#784212"}
 
     def __init__(self, parent, job_type, existing=None, registry=None,
-                 history=None, ep_history=None, jobs=None, settings=None):
+                 history=None, ep_history=None, jobs=None, settings=None,
+                 maintenance_standards=None, engineering_standards=None):
         super().__init__(parent)
         self.title(f"{'Edit' if existing else 'Add'} — {job_type}")
         self.result = None
@@ -856,6 +857,8 @@ class JobDialog(tk.Toplevel):
         self.ep_history= ep_history if ep_history is not None else []
         self.jobs      = jobs       if jobs       is not None else []
         self.settings  = settings   if settings   is not None else {}
+        self.maintenance_standards = maintenance_standards if maintenance_standards is not None else {}
+        self.engineering_standards = engineering_standards if engineering_standards is not None else {}
         self.resizable(True, True)
         self._build(existing)
         self.grab_set()
@@ -1024,6 +1027,18 @@ class JobDialog(tk.Toplevel):
 
         elif self.job_type == "TESTING":
             self._section_label(f, row, "── TESTING / NOTE ──", color); row += 2
+            ttk.Label(f, text="Maintenance Standard:").grid(row=row, column=0, sticky="e", padx=(0,6), pady=2)
+            std_ids = sorted(self.maintenance_standards.keys())
+            self.test_std_var = tk.StringVar(value=ex.get("maintenance_standard",""))
+            ttk.Combobox(f, textvariable=self.test_std_var, values=[""] + std_ids,
+                         width=40).grid(row=row, column=1, sticky="ew", pady=2)
+            row += 1
+            ttk.Label(f, text="Engineering Standard:").grid(row=row, column=0, sticky="e", padx=(0,6), pady=2)
+            eng_ids = sorted(self.engineering_standards.keys())
+            self.test_eng_var = tk.StringVar(value=ex.get("engineering_standard",""))
+            ttk.Combobox(f, textvariable=self.test_eng_var, values=[""] + eng_ids,
+                         width=40).grid(row=row, column=1, sticky="ew", pady=2)
+            row += 1
             ttk.Label(f, text="Notes:").grid(row=row, column=0, sticky="ne", padx=(0,6), pady=2)
             self.test_notes_var = tk.StringVar(value=ex.get("notes",""))
             notes_txt = tk.Text(f, width=58, height=6, wrap="word", font=("",9))
@@ -1089,6 +1104,8 @@ class JobDialog(tk.Toplevel):
             job["notes"]    = self._dev_notes_widget.get("1.0","end").strip()
         elif self.job_type == "TESTING":
             job["notes"] = self._test_notes_widget.get("1.0","end").strip()
+            job["maintenance_standard"] = self.test_std_var.get().strip()
+            job["engineering_standard"] = self.test_eng_var.get().strip()
         self.result = job
         self.destroy()
 
@@ -1782,6 +1799,128 @@ class RelaySettingDialog(tk.Toplevel):
 
 
 # ──────────────────────────────────────────────────────────────────
+# Maintenance Standards dialog
+# ──────────────────────────────────────────────────────────────────
+
+class MaintenanceStandardDialog(tk.Toplevel):
+    """Add/edit a maintenance standard record."""
+    def __init__(self, parent, existing=None, base_url_telecom="", base_url_transmission=""):
+        super().__init__(parent)
+        self.title("Edit Maintenance Standard" if existing else "Add Maintenance Standard")
+        self.result = None
+        self.base_url_telecom = base_url_telecom
+        self.base_url_transmission = base_url_transmission
+        self.resizable(False, False)
+        self._build(existing or {})
+        self.grab_set()
+        self.wait_window()
+
+    def _build(self, ex):
+        f = ttk.Frame(self, padding=12)
+        f.pack(fill="both", expand=True)
+        f.columnconfigure(1, weight=1)
+
+        self.vars = {
+            "standard_id":       tk.StringVar(value=ex.get("standard_id", "")),
+            "title":             tk.StringVar(value=ex.get("title", "")),
+            "revision":          tk.StringVar(value=ex.get("revision", "")),
+            "url_telecom":       tk.StringVar(value=ex.get("url_telecom", "") or self.base_url_telecom),
+            "url_transmission":  tk.StringVar(value=ex.get("url_transmission", "") or self.base_url_transmission),
+            "notes":             tk.StringVar(value=ex.get("notes", "")),
+        }
+
+        fields = [
+            ("standard_id",      "Standard ID:"),
+            ("title",            "Title / Description:"),
+            ("revision",         "Revision:"),
+            ("url_telecom",      "URL (Telecom):"),
+            ("url_transmission", "URL (Transmission):"),
+        ]
+        for i, (key, label) in enumerate(fields):
+            ttk.Label(f, text=label).grid(row=i, column=0, sticky="e", padx=(0, 6), pady=4)
+            ttk.Entry(f, textvariable=self.vars[key], width=52).grid(
+                row=i, column=1, sticky="ew", pady=4)
+
+        row_n = len(fields)
+        ttk.Label(f, text="Notes:").grid(row=row_n, column=0, sticky="ne", padx=(0, 6), pady=4)
+        self._notes_widget = tk.Text(f, width=52, height=4, wrap="word", font=("", 9))
+        self._notes_widget.grid(row=row_n, column=1, sticky="ew", pady=4)
+        self._notes_widget.insert("1.0", ex.get("notes", ""))
+
+        bf = ttk.Frame(f); bf.grid(row=row_n + 1, column=0, columnspan=2, sticky="e", pady=(8, 0))
+        ttk.Button(bf, text="Cancel", command=self.destroy).pack(side="right", padx=4)
+        ttk.Button(bf, text="Save",   command=self._save).pack(side="right")
+
+    def _save(self):
+        if not self.vars["standard_id"].get().strip():
+            messagebox.showwarning("Required", "Standard ID is required.", parent=self); return
+        self.result = {k: v.get().strip() for k, v in self.vars.items()}
+        self.result["notes"] = self._notes_widget.get("1.0", "end").strip()
+        self.destroy()
+
+
+# ──────────────────────────────────────────────────────────────────
+# Engineering Standards dialog
+# ──────────────────────────────────────────────────────────────────
+
+class EngineeringStandardDialog(tk.Toplevel):
+    """Add/edit an engineering standard record."""
+    def __init__(self, parent, existing=None, base_url_telecom="", base_url_transmission=""):
+        super().__init__(parent)
+        self.title("Edit Engineering Standard" if existing else "Add Engineering Standard")
+        self.result = None
+        self.base_url_telecom = base_url_telecom
+        self.base_url_transmission = base_url_transmission
+        self.resizable(False, False)
+        self._build(existing or {})
+        self.grab_set()
+        self.wait_window()
+
+    def _build(self, ex):
+        f = ttk.Frame(self, padding=12)
+        f.pack(fill="both", expand=True)
+        f.columnconfigure(1, weight=1)
+
+        self.vars = {
+            "standard_id":       tk.StringVar(value=ex.get("standard_id", "")),
+            "title":             tk.StringVar(value=ex.get("title", "")),
+            "revision":          tk.StringVar(value=ex.get("revision", "")),
+            "url_telecom":       tk.StringVar(value=ex.get("url_telecom", "") or self.base_url_telecom),
+            "url_transmission":  tk.StringVar(value=ex.get("url_transmission", "") or self.base_url_transmission),
+            "notes":             tk.StringVar(value=ex.get("notes", "")),
+        }
+
+        fields = [
+            ("standard_id",      "Standard ID:"),
+            ("title",            "Title / Description:"),
+            ("revision",         "Revision:"),
+            ("url_telecom",      "URL (Telecom):"),
+            ("url_transmission", "URL (Transmission):"),
+        ]
+        for i, (key, label) in enumerate(fields):
+            ttk.Label(f, text=label).grid(row=i, column=0, sticky="e", padx=(0, 6), pady=4)
+            ttk.Entry(f, textvariable=self.vars[key], width=52).grid(
+                row=i, column=1, sticky="ew", pady=4)
+
+        row_n = len(fields)
+        ttk.Label(f, text="Notes:").grid(row=row_n, column=0, sticky="ne", padx=(0, 6), pady=4)
+        self._notes_widget = tk.Text(f, width=52, height=4, wrap="word", font=("", 9))
+        self._notes_widget.grid(row=row_n, column=1, sticky="ew", pady=4)
+        self._notes_widget.insert("1.0", ex.get("notes", ""))
+
+        bf = ttk.Frame(f); bf.grid(row=row_n + 1, column=0, columnspan=2, sticky="e", pady=(8, 0))
+        ttk.Button(bf, text="Cancel", command=self.destroy).pack(side="right", padx=4)
+        ttk.Button(bf, text="Save",   command=self._save).pack(side="right")
+
+    def _save(self):
+        if not self.vars["standard_id"].get().strip():
+            messagebox.showwarning("Required", "Standard ID is required.", parent=self); return
+        self.result = {k: v.get().strip() for k, v in self.vars.items()}
+        self.result["notes"] = self._notes_widget.get("1.0", "end").strip()
+        self.destroy()
+
+
+# ──────────────────────────────────────────────────────────────────
 # Startup / wizard dialogs  —  shared UI helpers
 # ──────────────────────────────────────────────────────────────────
 
@@ -1873,6 +2012,14 @@ class SoftwareSetupDialog(tk.Toplevel):
             ("Aspen",          [("aspen_url",           "Aspen URL (future)")]),
             ("CROWs",          [("base_crow_url",       "Base CROW URL")]),
             ("Relay Settings", [("base_relay_url",      "Base Relay URL")]),
+            ("Maintenance Standards", [
+                ("base_maintenance_telecom_url",      "Base URL (Telecom)"),
+                ("base_maintenance_transmission_url", "Base URL (Transmission)"),
+            ]),
+            ("Engineering Standards", [
+                ("base_engineering_telecom_url",      "Base URL (Telecom)"),
+                ("base_engineering_transmission_url", "Base URL (Transmission)"),
+            ]),
         ]
         for sec, fields in sections:
             # Section header row
@@ -2543,6 +2690,8 @@ class RedLineApp(tk.Tk):
         self.ep_history = []
         self.title_page = {"notes": "", "crows": []}
         self.relay_registry = {}          # keyed by device_id
+        self.maintenance_standards_registry = {}  # keyed by standard_id
+        self.engineering_standards_registry = {}  # keyed by standard_id
         self.app_config = self._load_app_config()   # global prefs (~/.redlinerouting.json)
         self._build_menu()
         self._build_ui()
@@ -2593,8 +2742,8 @@ class RedLineApp(tk.Tk):
         folder = os.path.join(result["save_location"], safe)
         try:
             os.makedirs(folder, exist_ok=True)
-            for sub in ("Drawings", "Relay Settings", "CROW Outage", "Other",
-                        os.path.join("Tailboards", "Completed")):
+            for sub in ("Drawings", "Relay Settings", "Maintenance Standards", "Engineering Standards",
+                        "CROW Outage", "Other", os.path.join("Tailboards", "Completed")):
                 os.makedirs(os.path.join(folder, sub), exist_ok=True)
         except Exception as exc:
             messagebox.showerror("Error", f"Could not create project folder:\n{exc}"); return
@@ -2788,6 +2937,8 @@ class RedLineApp(tk.Tk):
         wt = ttk.Frame(nb); nb.add(wt, text="  Work Order  ");       self._build_work_tab(wt)
         dt = ttk.Frame(nb); nb.add(dt, text="  Project Drawings  "); self._build_drawings_tab(dt)
         rt = ttk.Frame(nb); nb.add(rt, text="  Relay Settings  ");   self._build_relay_settings_tab(rt)
+        mt = ttk.Frame(nb); nb.add(mt, text="  Maintenance Standards  "); self._build_maintenance_tab(mt)
+        et = ttk.Frame(nb); nb.add(et, text="  Engineering Standards  "); self._build_engineering_tab(et)
         ct = ttk.Frame(nb); nb.add(ct, text="  CROW  ");             self._build_title_tab(ct)
 
         # ── Implementation mode frame (hidden initially) ────────────
@@ -3336,6 +3487,14 @@ class RedLineApp(tk.Tk):
             ("Relay Settings", [
                 ("base_relay_url",    "Base Relay URL:",    "Used to pre-fill URLs when adding relay settings"),
             ]),
+            ("Maintenance Standards", [
+                ("base_maintenance_telecom_url",      "Base URL (Telecom):",      "Pre-fills Telecom URL when adding maintenance standards"),
+                ("base_maintenance_transmission_url", "Base URL (Transmission):", "Pre-fills Transmission URL when adding maintenance standards"),
+            ]),
+            ("Engineering Standards", [
+                ("base_engineering_telecom_url",      "Base URL (Telecom):",      "Pre-fills Telecom URL when adding engineering standards"),
+                ("base_engineering_transmission_url", "Base URL (Transmission):", "Pre-fills Transmission URL when adding engineering standards"),
+            ]),
             ("Tailboard", [
                 ("tailboard_url",  "Tailboard URL:",  "Reference URL only — place tailboard-template.pdf in the project root folder"),
                 ("crew_email",     "Crew Email(s):",  "Default recipients when emailing a completed tailboard (comma-separated)"),
@@ -3500,6 +3659,222 @@ class RedLineApp(tk.Tk):
         vsb.pack(side="right", fill="y")
         self.relay_tree.bind("<Double-1>",          lambda _: self._edit_relay())
         self.relay_tree.bind("<Control-Button-1>",  self._on_relay_ctrl_click)
+
+    # ── Maintenance Standards tab ─────────────────────────────────
+
+    def _build_maintenance_tab(self, parent):
+        tb = ttk.Frame(parent, padding=(4, 4)); tb.pack(fill="x")
+        ttk.Button(tb, text="+ Add",           command=self._add_maintenance).pack(side="left", padx=2)
+        ttk.Button(tb, text="Edit",            command=self._edit_maintenance).pack(side="left", padx=2)
+        ttk.Button(tb, text="Delete",          command=self._delete_maintenance).pack(side="left", padx=2)
+        ttk.Button(tb, text="⬇ Download All",  command=self._download_maintenance).pack(side="left", padx=(10, 2))
+        ttk.Label(tb,
+                  text="Maintenance standards records.  Ctrl+click a row to open its URL.",
+                  foreground="grey").pack(side="left", padx=8)
+
+        frame = ttk.Frame(parent); frame.pack(fill="both", expand=True, padx=4, pady=(0, 4))
+        cols = ("Standard ID", "Title", "Rev", "URL (Telecom)", "URL (Transmission)", "Notes")
+        self.maint_tree = ttk.Treeview(frame, columns=cols, show="headings")
+        self.maint_tree.heading("Standard ID",        text="Standard ID")
+        self.maint_tree.heading("Title",              text="Title")
+        self.maint_tree.heading("Rev",                text="Rev")
+        self.maint_tree.heading("URL (Telecom)",      text="URL (Telecom)")
+        self.maint_tree.heading("URL (Transmission)", text="URL (Transmission)")
+        self.maint_tree.heading("Notes",              text="Notes")
+        self.maint_tree.column("Standard ID",        width=120, stretch=False)
+        self.maint_tree.column("Title",              width=180, stretch=False)
+        self.maint_tree.column("Rev",                width=55,  stretch=False)
+        self.maint_tree.column("URL (Telecom)",      width=220)
+        self.maint_tree.column("URL (Transmission)", width=220)
+        self.maint_tree.column("Notes",              width=180)
+        vsb = ttk.Scrollbar(frame, orient="vertical", command=self.maint_tree.yview)
+        self.maint_tree.configure(yscrollcommand=vsb.set)
+        self.maint_tree.pack(side="left", fill="both", expand=True)
+        vsb.pack(side="right", fill="y")
+        self.maint_tree.bind("<Double-1>",         lambda _: self._edit_maintenance())
+        self.maint_tree.bind("<Control-Button-1>", self._on_maint_ctrl_click)
+
+    def _refresh_maintenance_list(self):
+        for iid in self.maint_tree.get_children(): self.maint_tree.delete(iid)
+        for sid, info in sorted(self.maintenance_standards_registry.items()):
+            self.maint_tree.insert("", "end", iid=sid, values=(
+                sid,
+                info.get("title",            ""),
+                info.get("revision",         ""),
+                info.get("url_telecom",      ""),
+                info.get("url_transmission", ""),
+                info.get("notes",            ""),
+            ))
+
+    def _add_maintenance(self):
+        dlg = MaintenanceStandardDialog(
+            self,
+            base_url_telecom=self.app_config.get("base_maintenance_telecom_url", ""),
+            base_url_transmission=self.app_config.get("base_maintenance_transmission_url", ""),
+        )
+        if dlg.result:
+            sid = dlg.result["standard_id"]
+            self.maintenance_standards_registry[sid] = {
+                k: v for k, v in dlg.result.items() if k != "standard_id"}
+            self._refresh_maintenance_list()
+
+    def _edit_maintenance(self):
+        sel = self.maint_tree.selection()
+        if not sel: messagebox.showinfo("Select", "Please select a standard to edit."); return
+        sid = sel[0]; info = self.maintenance_standards_registry.get(sid, {})
+        dlg = MaintenanceStandardDialog(
+            self,
+            existing={"standard_id": sid, **info},
+            base_url_telecom=self.app_config.get("base_maintenance_telecom_url", ""),
+            base_url_transmission=self.app_config.get("base_maintenance_transmission_url", ""),
+        )
+        if dlg.result:
+            old_id = sid; new_id = dlg.result["standard_id"]
+            if old_id != new_id and old_id in self.maintenance_standards_registry:
+                del self.maintenance_standards_registry[old_id]
+            self.maintenance_standards_registry[new_id] = {
+                k: v for k, v in dlg.result.items() if k != "standard_id"}
+            self._refresh_maintenance_list()
+
+    def _delete_maintenance(self):
+        sel = self.maint_tree.selection()
+        if not sel: messagebox.showinfo("Select", "Please select a standard to delete."); return
+        sid = sel[0]
+        if messagebox.askyesno("Delete", f"Remove maintenance standard '{sid}'?"):
+            self.maintenance_standards_registry.pop(sid, None); self._refresh_maintenance_list()
+
+    def _on_maint_ctrl_click(self, event):
+        row = self.maint_tree.identify_row(event.y)
+        if not row: return
+        info = self.maintenance_standards_registry.get(row, {})
+        url = info.get("url_telecom", "").strip() or info.get("url_transmission", "").strip()
+        if url: webbrowser.open(url)
+
+    def _download_maintenance(self):
+        if not self.project_folder:
+            messagebox.showinfo("Save First",
+                "Please save the project first so the Maintenance Standards folder location is known."); return
+        targets = []
+        for sid, info in self.maintenance_standards_registry.items():
+            for url_key, suffix in (("url_telecom", "_telecom"), ("url_transmission", "_transmission")):
+                url = info.get(url_key, "").strip()
+                if url:
+                    targets.append((f"{sid}{suffix}", url))
+        if not targets:
+            messagebox.showinfo("No URLs", "No maintenance standard URLs are set."); return
+        self._download_with_progress(
+            "Downloading Maintenance Standards",
+            targets,
+            os.path.join(self.project_folder, "Maintenance Standards"),
+        )
+
+    # ── Engineering Standards tab ─────────────────────────────────
+
+    def _build_engineering_tab(self, parent):
+        tb = ttk.Frame(parent, padding=(4, 4)); tb.pack(fill="x")
+        ttk.Button(tb, text="+ Add",           command=self._add_engineering).pack(side="left", padx=2)
+        ttk.Button(tb, text="Edit",            command=self._edit_engineering).pack(side="left", padx=2)
+        ttk.Button(tb, text="Delete",          command=self._delete_engineering).pack(side="left", padx=2)
+        ttk.Button(tb, text="⬇ Download All",  command=self._download_engineering).pack(side="left", padx=(10, 2))
+        ttk.Label(tb,
+                  text="Engineering standards records.  Ctrl+click a row to open its URL.",
+                  foreground="grey").pack(side="left", padx=8)
+
+        frame = ttk.Frame(parent); frame.pack(fill="both", expand=True, padx=4, pady=(0, 4))
+        cols = ("Standard ID", "Title", "Rev", "URL (Telecom)", "URL (Transmission)", "Notes")
+        self.eng_tree = ttk.Treeview(frame, columns=cols, show="headings")
+        self.eng_tree.heading("Standard ID",        text="Standard ID")
+        self.eng_tree.heading("Title",              text="Title")
+        self.eng_tree.heading("Rev",                text="Rev")
+        self.eng_tree.heading("URL (Telecom)",      text="URL (Telecom)")
+        self.eng_tree.heading("URL (Transmission)", text="URL (Transmission)")
+        self.eng_tree.heading("Notes",              text="Notes")
+        self.eng_tree.column("Standard ID",        width=120, stretch=False)
+        self.eng_tree.column("Title",              width=180, stretch=False)
+        self.eng_tree.column("Rev",                width=55,  stretch=False)
+        self.eng_tree.column("URL (Telecom)",      width=220)
+        self.eng_tree.column("URL (Transmission)", width=220)
+        self.eng_tree.column("Notes",              width=180)
+        vsb = ttk.Scrollbar(frame, orient="vertical", command=self.eng_tree.yview)
+        self.eng_tree.configure(yscrollcommand=vsb.set)
+        self.eng_tree.pack(side="left", fill="both", expand=True)
+        vsb.pack(side="right", fill="y")
+        self.eng_tree.bind("<Double-1>",         lambda _: self._edit_engineering())
+        self.eng_tree.bind("<Control-Button-1>", self._on_eng_ctrl_click)
+
+    def _refresh_engineering_list(self):
+        for iid in self.eng_tree.get_children(): self.eng_tree.delete(iid)
+        for sid, info in sorted(self.engineering_standards_registry.items()):
+            self.eng_tree.insert("", "end", iid=sid, values=(
+                sid,
+                info.get("title",            ""),
+                info.get("revision",         ""),
+                info.get("url_telecom",      ""),
+                info.get("url_transmission", ""),
+                info.get("notes",            ""),
+            ))
+
+    def _add_engineering(self):
+        dlg = EngineeringStandardDialog(
+            self,
+            base_url_telecom=self.app_config.get("base_engineering_telecom_url", ""),
+            base_url_transmission=self.app_config.get("base_engineering_transmission_url", ""),
+        )
+        if dlg.result:
+            sid = dlg.result["standard_id"]
+            self.engineering_standards_registry[sid] = {
+                k: v for k, v in dlg.result.items() if k != "standard_id"}
+            self._refresh_engineering_list()
+
+    def _edit_engineering(self):
+        sel = self.eng_tree.selection()
+        if not sel: messagebox.showinfo("Select", "Please select a standard to edit."); return
+        sid = sel[0]; info = self.engineering_standards_registry.get(sid, {})
+        dlg = EngineeringStandardDialog(
+            self,
+            existing={"standard_id": sid, **info},
+            base_url_telecom=self.app_config.get("base_engineering_telecom_url", ""),
+            base_url_transmission=self.app_config.get("base_engineering_transmission_url", ""),
+        )
+        if dlg.result:
+            old_id = sid; new_id = dlg.result["standard_id"]
+            if old_id != new_id and old_id in self.engineering_standards_registry:
+                del self.engineering_standards_registry[old_id]
+            self.engineering_standards_registry[new_id] = {
+                k: v for k, v in dlg.result.items() if k != "standard_id"}
+            self._refresh_engineering_list()
+
+    def _delete_engineering(self):
+        sel = self.eng_tree.selection()
+        if not sel: messagebox.showinfo("Select", "Please select a standard to delete."); return
+        sid = sel[0]
+        if messagebox.askyesno("Delete", f"Remove engineering standard '{sid}'?"):
+            self.engineering_standards_registry.pop(sid, None); self._refresh_engineering_list()
+
+    def _on_eng_ctrl_click(self, event):
+        row = self.eng_tree.identify_row(event.y)
+        if not row: return
+        info = self.engineering_standards_registry.get(row, {})
+        url = info.get("url_telecom", "").strip() or info.get("url_transmission", "").strip()
+        if url: webbrowser.open(url)
+
+    def _download_engineering(self):
+        if not self.project_folder:
+            messagebox.showinfo("Save First",
+                "Please save the project first so the Engineering Standards folder location is known."); return
+        targets = []
+        for sid, info in self.engineering_standards_registry.items():
+            for url_key, suffix in (("url_telecom", "_telecom"), ("url_transmission", "_transmission")):
+                url = info.get(url_key, "").strip()
+                if url:
+                    targets.append((f"{sid}{suffix}", url))
+        if not targets:
+            messagebox.showinfo("No URLs", "No engineering standard URLs are set."); return
+        self._download_with_progress(
+            "Downloading Engineering Standards",
+            targets,
+            os.path.join(self.project_folder, "Engineering Standards"),
+        )
 
     # ── Mode switching ────────────────────────────────────────────
 
@@ -4784,7 +5159,9 @@ class RedLineApp(tk.Tk):
     def _add_job(self, job_type):
         dlg = JobDialog(self, job_type, registry=self.drawing_registry,
                         history=self.history, ep_history=self.ep_history, jobs=self.jobs,
-                        settings=self._get_settings())
+                        settings=self._get_settings(),
+                        maintenance_standards=self.maintenance_standards_registry,
+                        engineering_standards=self.engineering_standards_registry)
         if dlg.result:
             self._collect_history(dlg.result)
             self.jobs.append(dlg.result); self._refresh_list(); self._refresh_drawings_list()
@@ -4795,7 +5172,9 @@ class RedLineApp(tk.Tk):
         if idx is None: messagebox.showinfo("Select a Job","Please select a job from the list."); return
         dlg = JobDialog(self, self.jobs[idx]["type"], existing=deepcopy(self.jobs[idx]),
                         registry=self.drawing_registry, history=self.history,
-                        ep_history=self.ep_history, jobs=self.jobs, settings=self._get_settings())
+                        ep_history=self.ep_history, jobs=self.jobs, settings=self._get_settings(),
+                        maintenance_standards=self.maintenance_standards_registry,
+                        engineering_standards=self.engineering_standards_registry)
         if dlg.result:
             self._collect_history(dlg.result)
             self.jobs[idx]=dlg.result; self._refresh_list(); self._refresh_drawings_list()
@@ -4993,6 +5372,8 @@ class RedLineApp(tk.Tk):
             self.jobs = data.get("jobs",[]); self.project_var.set(data.get("project",""))
             self.drawing_registry = data.get("drawing_registry",{})
             self.relay_registry   = data.get("relay_settings",{})
+            self.maintenance_standards_registry = data.get("maintenance_standards", {})
+            self.engineering_standards_registry = data.get("engineering_standards", {})
             self.history = data.get("history", {"device":[],"location":[],"pin":[],"panel":[],"wire":[]})
             self.title_page = data.get("title_page", {"notes": "", "crows": []})
             self.current_file = path
@@ -5003,7 +5384,8 @@ class RedLineApp(tk.Tk):
             self.title_notes.delete("1.0", "end")
             self.title_notes.insert("1.0", self.title_page.get("notes", ""))
             self._refresh_list(); self._refresh_drawings_list()
-            self._refresh_relay_list(); self._refresh_crows()
+            self._refresh_relay_list(); self._refresh_maintenance_list()
+            self._refresh_engineering_list(); self._refresh_crows()
             if self.mode_var.get() == "impl": self._refresh_file_tabs()
             proj = data.get("project","") or os.path.splitext(os.path.basename(path))[0]
             self.title(f"Red-Line-Routing — {proj}")
@@ -5021,8 +5403,8 @@ class RedLineApp(tk.Tk):
         folder = os.path.join(parent, safe)
         try:
             os.makedirs(folder, exist_ok=True)
-            for sub in ("Drawings", "Relay Settings", "CROW Outage", "Other",
-                        os.path.join("Tailboards", "Completed")):
+            for sub in ("Drawings", "Relay Settings", "Maintenance Standards", "Engineering Standards",
+                        "CROW Outage", "Other", os.path.join("Tailboards", "Completed")):
                 os.makedirs(os.path.join(folder, sub), exist_ok=True)
         except Exception as exc:
             messagebox.showerror("Save Error", f"Could not create project folder:\n{exc}"); return
@@ -5044,6 +5426,8 @@ class RedLineApp(tk.Tk):
                            "title_page":tp,
                            "drawing_registry":self.drawing_registry,
                            "relay_settings":self.relay_registry,
+                           "maintenance_standards":self.maintenance_standards_registry,
+                           "engineering_standards":self.engineering_standards_registry,
                            "history":self.history,
                            "jobs":self.jobs},fh,indent=2)
             proj = self.project_var.get().strip() or os.path.splitext(os.path.basename(path))[0]
