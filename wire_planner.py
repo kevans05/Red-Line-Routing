@@ -1042,14 +1042,47 @@ class JobDialog(tk.Toplevel):
         # Standards — shown for every job type
         ttk.Separator(f, orient="horizontal").grid(row=row, column=0, columnspan=2, sticky="ew", pady=(8,4)); row+=1
         self._section_label(f, row, "── STANDARDS ──", "#5d6d7e"); row+=2
-        ttk.Label(f, text="Maintenance Standard:").grid(row=row, column=0, sticky="e", padx=(0,6), pady=2)
+
+        def _std_list_widget(parent, grid_row, label, all_ids, existing_vals):
+            """Inline list+combobox widget for multi-select standards. Returns the Listbox."""
+            ttk.Label(parent, text=label).grid(row=grid_row, column=0, sticky="ne", padx=(0,6), pady=2)
+            holder = ttk.Frame(parent)
+            holder.grid(row=grid_row, column=1, sticky="ew", pady=2)
+            holder.columnconfigure(0, weight=1)
+            lb = tk.Listbox(holder, height=3, selectmode="single", font=("",9),
+                            relief="flat", bd=1, highlightthickness=1,
+                            highlightbackground="#d5d8dc", highlightcolor="#2980b9",
+                            bg="white", exportselection=False)
+            lb.grid(row=0, column=0, sticky="ew")
+            for v in existing_vals:
+                lb.insert("end", v)
+            btn_f = ttk.Frame(holder); btn_f.grid(row=0, column=1, sticky="ns", padx=(4,0))
+            pick_var = tk.StringVar()
+            cb = ttk.Combobox(holder, textvariable=pick_var, values=all_ids, width=28, state="readonly")
+            cb.grid(row=1, column=0, sticky="ew", pady=(2,0))
+            def _add():
+                val = pick_var.get().strip()
+                if val and val not in lb.get(0, "end"):
+                    lb.insert("end", val)
+            def _remove():
+                sel = lb.curselection()
+                if sel: lb.delete(sel[0])
+            ttk.Button(btn_f, text="Add",    command=_add,    width=7).pack(pady=(0,2))
+            ttk.Button(btn_f, text="Remove", command=_remove, width=7).pack()
+            return lb
+
+        def _load_std_list(job, key):
+            val = job.get(key, [])
+            if isinstance(val, str):
+                return [val] if val else []
+            return list(val)
+
         maint_ids = sorted(self.maintenance_standards.keys())
-        self.test_std_var = tk.StringVar(value=ex.get("maintenance_standard",""))
-        ttk.Combobox(f, textvariable=self.test_std_var, values=[""] + maint_ids, width=40).grid(row=row, column=1, sticky="ew", pady=2); row+=1
-        ttk.Label(f, text="Engineering Standard:").grid(row=row, column=0, sticky="e", padx=(0,6), pady=2)
+        self._maint_lb = _std_list_widget(f, row, "Maintenance Standards:", maint_ids,
+                                          _load_std_list(ex, "maintenance_standards")); row+=1
         eng_ids = sorted(self.engineering_standards.keys())
-        self.test_eng_var = tk.StringVar(value=ex.get("engineering_standard",""))
-        ttk.Combobox(f, textvariable=self.test_eng_var, values=[""] + eng_ids, width=40).grid(row=row, column=1, sticky="ew", pady=2); row+=1
+        self._eng_lb   = _std_list_widget(f, row, "Engineering Standards:", eng_ids,
+                                          _load_std_list(ex, "engineering_standards")); row+=1
 
         f.columnconfigure(0, weight=1)
         f.columnconfigure(1, weight=1)
@@ -1109,8 +1142,8 @@ class JobDialog(tk.Toplevel):
             job["notes"]    = self._dev_notes_widget.get("1.0","end").strip()
         elif self.job_type == "TESTING":
             job["notes"] = self._test_notes_widget.get("1.0","end").strip()
-        job["maintenance_standard"] = self.test_std_var.get().strip()
-        job["engineering_standard"] = self.test_eng_var.get().strip()
+        job["maintenance_standards"] = list(self._maint_lb.get(0, "end"))
+        job["engineering_standards"] = list(self._eng_lb.get(0, "end"))
         self.result = job
         self.destroy()
 
@@ -1215,6 +1248,13 @@ def _prot_block(prot, label):
         lines.append(f"  *** MIRRORED BIT — also required: MB INPUT block/unblock{remote}{notes} ***")
     return "\n".join(lines)
 
+def _std_list(job, key):
+    """Return a list of standard IDs for a job key, handling legacy single-string values."""
+    val = job.get(key, [])
+    if isinstance(val, str):
+        return [val] if val.strip() else []
+    return [v for v in val if v]
+
 def format_job(index, job):
     jtype = job["type"]
     labels = {"REMOVE":"REMOVE WIRE","ADD":"ADD WIRE","MOVE":"MOVE WIRE",
@@ -1246,12 +1286,12 @@ def format_job(index, job):
     elif jtype == "TESTING":
         if job.get("notes"):
             lines += ["","  NOTES", *[f"    {ln}" for ln in job["notes"].splitlines()]]
-    ms = job.get("maintenance_standard","").strip()
-    es = job.get("engineering_standard","").strip()
+    ms = _std_list(job, "maintenance_standards")
+    es = _std_list(job, "engineering_standards")
     if ms or es:
         lines += ["", "  STANDARDS"]
-        if ms: lines.append(f"    Maintenance: {ms}")
-        if es: lines.append(f"    Engineering: {es}")
+        if ms: lines.append("    Maintenance: " + ", ".join(ms))
+        if es: lines.append("    Engineering: " + ", ".join(es))
     lines.append("")
     return "\n".join(lines)
 
@@ -1579,11 +1619,11 @@ def generate_html_table(jobs, project="", drawing_registry=None, title_page=None
             return r
 
         # Append standards to desc if present
-        ms = job.get("maintenance_standard","").strip()
-        es = job.get("engineering_standard","").strip()
+        ms_list = _std_list(job, "maintenance_standards")
+        es_list = _std_list(job, "engineering_standards")
         stds = []
-        if ms: stds.append(f"<span style='color:#1a5276'>Maint std: {_esc(ms)}</span>")
-        if es: stds.append(f"<span style='color:#1a5276'>Eng std: {_esc(es)}</span>")
+        if ms_list: stds.append("<span style='color:#1a5276'>Maint: " + ", ".join(_esc(s) for s in ms_list) + "</span>")
+        if es_list: stds.append("<span style='color:#1a5276'>Eng: "   + ", ".join(_esc(s) for s in es_list) + "</span>")
         if stds:
             desc = desc + ("<br>" if desc else "") + " &nbsp; ".join(stds)
 
@@ -5251,13 +5291,11 @@ class RedLineApp(tk.Tk):
         # Collect all standards referenced in jobs
         maint_jobs = {}  # standard_id -> [job desc, ...]
         eng_jobs   = {}
-        for job in self.jobs:
-            ms = job.get("maintenance_standard","").strip()
-            es = job.get("engineering_standard","").strip()
-            desc = job.get("description","") or f"Job #{self.jobs.index(job)+1}"
-            if ms:
+        for i, job in enumerate(self.jobs):
+            desc = job.get("description","") or f"Job #{i+1}"
+            for ms in _std_list(job, "maintenance_standards"):
                 maint_jobs.setdefault(ms, []).append(desc)
-            if es:
+            for es in _std_list(job, "engineering_standards"):
                 eng_jobs.setdefault(es, []).append(desc)
 
         if maint_jobs or self.maintenance_standards_registry:
