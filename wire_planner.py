@@ -1027,24 +1027,25 @@ class JobDialog(tk.Toplevel):
 
         elif self.job_type == "TESTING":
             self._section_label(f, row, "── TESTING / NOTE ──", color); row += 2
-            ttk.Label(f, text="Maintenance Standard:").grid(row=row, column=0, sticky="e", padx=(0,6), pady=2)
-            std_ids = sorted(self.maintenance_standards.keys())
-            self.test_std_var = tk.StringVar(value=ex.get("maintenance_standard",""))
-            ttk.Combobox(f, textvariable=self.test_std_var, values=[""] + std_ids,
-                         width=40).grid(row=row, column=1, sticky="ew", pady=2)
-            row += 1
-            ttk.Label(f, text="Engineering Standard:").grid(row=row, column=0, sticky="e", padx=(0,6), pady=2)
-            eng_ids = sorted(self.engineering_standards.keys())
-            self.test_eng_var = tk.StringVar(value=ex.get("engineering_standard",""))
-            ttk.Combobox(f, textvariable=self.test_eng_var, values=[""] + eng_ids,
-                         width=40).grid(row=row, column=1, sticky="ew", pady=2)
-            row += 1
             ttk.Label(f, text="Notes:").grid(row=row, column=0, sticky="ne", padx=(0,6), pady=2)
             self.test_notes_var = tk.StringVar(value=ex.get("notes",""))
             notes_txt = tk.Text(f, width=58, height=6, wrap="word", font=("",9))
             notes_txt.grid(row=row, column=0, columnspan=2, sticky="ew", pady=2)
             notes_txt.insert("1.0", ex.get("notes",""))
             self._test_notes_widget = notes_txt
+            row += 1
+
+        # Standards — shown for every job type
+        ttk.Separator(f, orient="horizontal").grid(row=row, column=0, columnspan=2, sticky="ew", pady=(8,4)); row+=1
+        self._section_label(f, row, "── STANDARDS ──", "#5d6d7e"); row+=2
+        ttk.Label(f, text="Maintenance Standard:").grid(row=row, column=0, sticky="e", padx=(0,6), pady=2)
+        maint_ids = sorted(self.maintenance_standards.keys())
+        self.test_std_var = tk.StringVar(value=ex.get("maintenance_standard",""))
+        ttk.Combobox(f, textvariable=self.test_std_var, values=[""] + maint_ids, width=40).grid(row=row, column=1, sticky="ew", pady=2); row+=1
+        ttk.Label(f, text="Engineering Standard:").grid(row=row, column=0, sticky="e", padx=(0,6), pady=2)
+        eng_ids = sorted(self.engineering_standards.keys())
+        self.test_eng_var = tk.StringVar(value=ex.get("engineering_standard",""))
+        ttk.Combobox(f, textvariable=self.test_eng_var, values=[""] + eng_ids, width=40).grid(row=row, column=1, sticky="ew", pady=2); row+=1
 
         f.columnconfigure(0, weight=1)
         f.columnconfigure(1, weight=1)
@@ -1104,8 +1105,8 @@ class JobDialog(tk.Toplevel):
             job["notes"]    = self._dev_notes_widget.get("1.0","end").strip()
         elif self.job_type == "TESTING":
             job["notes"] = self._test_notes_widget.get("1.0","end").strip()
-            job["maintenance_standard"] = self.test_std_var.get().strip()
-            job["engineering_standard"] = self.test_eng_var.get().strip()
+        job["maintenance_standard"] = self.test_std_var.get().strip()
+        job["engineering_standard"] = self.test_eng_var.get().strip()
         self.result = job
         self.destroy()
 
@@ -1241,6 +1242,12 @@ def format_job(index, job):
     elif jtype == "TESTING":
         if job.get("notes"):
             lines += ["","  NOTES", *[f"    {ln}" for ln in job["notes"].splitlines()]]
+    ms = job.get("maintenance_standard","").strip()
+    es = job.get("engineering_standard","").strip()
+    if ms or es:
+        lines += ["", "  STANDARDS"]
+        if ms: lines.append(f"    Maintenance: {ms}")
+        if es: lines.append(f"    Engineering: {es}")
     lines.append("")
     return "\n".join(lines)
 
@@ -1566,6 +1573,15 @@ def generate_html_table(jobs, project="", drawing_registry=None, title_page=None
                  f'<td>{e_html}</td></tr>')
             seq += 1
             return r
+
+        # Append standards to desc if present
+        ms = job.get("maintenance_standard","").strip()
+        es = job.get("engineering_standard","").strip()
+        stds = []
+        if ms: stds.append(f"<span style='color:#1a5276'>Maint std: {_esc(ms)}</span>")
+        if es: stds.append(f"<span style='color:#1a5276'>Eng std: {_esc(es)}</span>")
+        if stds:
+            desc = desc + ("<br>" if desc else "") + " &nbsp; ".join(stds)
 
         if jtype in ("REMOVE","ADD"):
             job_rows += tr(jtype, type_labels[jtype],
@@ -2059,6 +2075,19 @@ class SoftwareSetupDialog(tk.Toplevel):
                          highlightcolor="#2980b9", font=("", 9)).pack(
                     side="left", fill="x", expand=True, padx=(6, 0), ipady=4)
 
+        # Engineering Standards auth headers
+        eng_hdr_row = tk.Frame(body, bg="white"); eng_hdr_row.pack(fill="x", pady=(6, 4))
+        tk.Frame(eng_hdr_row, bg="#2980b9", width=3).pack(side="left", fill="y")
+        tk.Label(eng_hdr_row, text="Engineering Standards — Request Headers", bg="white", fg="#1c2833",
+                 font=("", 9, "bold"), padx=8, pady=2).pack(side="left", anchor="w")
+        tk.Label(body, text="Optional: headers/cookies for engineering standards downloads (leave blank to use global).",
+                 bg="white", fg="#5d6d7e", font=("", 8)).pack(anchor="w", pady=(0, 2))
+        self._eng_headers_txt = tk.Text(body, height=3, font=("Courier", 8), wrap="none",
+                                        bg="#f4f6f7", relief="flat", bd=1,
+                                        highlightthickness=1, highlightbackground="#d5d8dc")
+        self._eng_headers_txt.pack(fill="x", pady=(0, 4))
+        self._eng_headers_txt.insert("1.0", cfg.get("engineering_request_headers", ""))
+
         sep = tk.Frame(self, bg="#d5d8dc", height=1); sep.pack(fill="x", side="bottom")
         bf = tk.Frame(self, bg="#eaecee"); bf.pack(fill="x", side="bottom")
         tk.Label(bf, text="You can skip this and fill in URLs later.",
@@ -2071,6 +2100,7 @@ class SoftwareSetupDialog(tk.Toplevel):
 
     def _save(self):
         self.result = {k: v.get().strip() for k, v in self._cfg_vars.items()}
+        self.result["engineering_request_headers"] = self._eng_headers_txt.get("1.0", "end").strip()
         self.destroy()
 
 
@@ -3050,6 +3080,8 @@ class RedLineApp(tk.Tk):
         ttk.Button(tb, text="Scan Jobs →",   command=self._scan_and_refresh).pack(side="left", padx=(10,2))
         ttk.Button(tb, text="Drawing Index",   command=self._show_drawing_index).pack(side="left", padx=2)
         ttk.Button(tb, text="⬇ Download All",  command=self._download_drawings).pack(side="left", padx=(10,2))
+        ttk.Button(tb, text="🖨 Print Selected", command=self._print_selected_drawings).pack(side="left", padx=2)
+        ttk.Button(tb, text="🖨 Print All",      command=self._print_all_drawings).pack(side="left", padx=2)
         ttk.Label(tb, text="Drawing names entered in any job are added here automatically.  Ctrl+click a row to open its URL.",
                   foreground="grey").pack(side="left", padx=8)
         frame = ttk.Frame(parent); frame.pack(fill="both", expand=True, padx=4, pady=(0,4))
@@ -3550,12 +3582,23 @@ class RedLineApp(tk.Tk):
         headers_txt.pack(fill="x")
         headers_txt.insert("1.0", self.app_config.get("request_headers", ""))
 
+        eng_auth_lf = ttk.LabelFrame(f, text="Engineering Standards — Authentication / Request Headers", padding=8)
+        eng_auth_lf.pack(fill="x", pady=(0, 8))
+        ttk.Label(eng_auth_lf,
+                  text="Headers/cookies specifically for engineering standards downloads. One per line as  Header-Name: value\n"
+                       "Leave blank to use the global headers above.",
+                  foreground="grey", font=("", 8), wraplength=480, justify="left").pack(anchor="w", pady=(0, 4))
+        eng_headers_txt = scrolledtext.ScrolledText(eng_auth_lf, height=4, font=("Courier", 9), wrap="none")
+        eng_headers_txt.pack(fill="x")
+        eng_headers_txt.insert("1.0", self.app_config.get("engineering_request_headers", ""))
+
         bf = ttk.Frame(f); bf.pack(fill="x", pady=(10,0))
         ttk.Button(bf, text="Cancel", command=dlg.destroy).pack(side="right", padx=4)
 
         def _save():
             self.app_config.update({k: v.get().strip() for k, v in cfg_vars.items()})
             self.app_config["request_headers"] = headers_txt.get("1.0", "end").strip()
+            self.app_config["engineering_request_headers"] = eng_headers_txt.get("1.0", "end").strip()
             self._save_app_config()
             dlg.destroy()
 
@@ -3655,6 +3698,8 @@ class RedLineApp(tk.Tk):
         ttk.Button(tb, text="Edit",         command=self._edit_relay).pack(side="left", padx=2)
         ttk.Button(tb, text="Delete",       command=self._delete_relay).pack(side="left", padx=2)
         ttk.Button(tb, text="⬇ Download All", command=self._download_relay_settings).pack(side="left", padx=(10,2))
+        ttk.Button(tb, text="🖨 Print Selected", command=self._print_selected_relay).pack(side="left", padx=2)
+        ttk.Button(tb, text="🖨 Print All",      command=self._print_all_relay).pack(side="left", padx=2)
         ttk.Label(tb, text="Relay protection settings records.  Ctrl+click a row to open its URL.",
                   foreground="grey").pack(side="left", padx=8)
 
@@ -3690,6 +3735,8 @@ class RedLineApp(tk.Tk):
         ttk.Button(tb, text="Edit",            command=self._edit_maintenance).pack(side="left", padx=2)
         ttk.Button(tb, text="Delete",          command=self._delete_maintenance).pack(side="left", padx=2)
         ttk.Button(tb, text="⬇ Download All",  command=self._download_maintenance).pack(side="left", padx=(10, 2))
+        ttk.Button(tb, text="🖨 Print Selected", command=self._print_selected_maintenance).pack(side="left", padx=2)
+        ttk.Button(tb, text="🖨 Print All",      command=self._print_all_maintenance).pack(side="left", padx=2)
         ttk.Label(tb,
                   text="Maintenance standards records.  Ctrl+click a row to open its URL.",
                   foreground="grey").pack(side="left", padx=8)
@@ -3798,6 +3845,8 @@ class RedLineApp(tk.Tk):
         ttk.Button(tb, text="Edit",            command=self._edit_engineering).pack(side="left", padx=2)
         ttk.Button(tb, text="Delete",          command=self._delete_engineering).pack(side="left", padx=2)
         ttk.Button(tb, text="⬇ Download All",  command=self._download_engineering).pack(side="left", padx=(10, 2))
+        ttk.Button(tb, text="🖨 Print Selected", command=self._print_selected_engineering).pack(side="left", padx=2)
+        ttk.Button(tb, text="🖨 Print All",      command=self._print_all_engineering).pack(side="left", padx=2)
         ttk.Label(tb,
                   text="Engineering standards records.  Ctrl+click a row to open its URL.",
                   foreground="grey").pack(side="left", padx=8)
@@ -3924,6 +3973,79 @@ class RedLineApp(tk.Tk):
             os.path.join(self.project_folder, "Engineering Standards"),
             extra_headers=self._parse_engineering_headers(),
         )
+
+    # ── Print helpers ─────────────────────────────────────────────
+
+    def _open_file_for_print(self, path):
+        try:
+            if sys.platform == "win32":
+                os.startfile(path)
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", path])
+            else:
+                subprocess.Popen(["xdg-open", path])
+        except Exception as exc:
+            messagebox.showerror("Open Error", str(exc))
+
+    def _print_files_in_folder(self, folder):
+        if not folder or not os.path.isdir(folder):
+            messagebox.showinfo("No Files", f"Folder not found: {folder}"); return
+        files = [os.path.join(folder, f) for f in os.listdir(folder)
+                 if os.path.isfile(os.path.join(folder, f))]
+        if not files:
+            messagebox.showinfo("No Files", "No files found in folder."); return
+        for path in files:
+            self._open_file_for_print(path)
+
+    def _print_files_for_key(self, folder, key):
+        if not folder or not os.path.isdir(folder):
+            messagebox.showinfo("No Files", f"Folder not found: {folder}"); return
+        files = [os.path.join(folder, f) for f in os.listdir(folder)
+                 if os.path.isfile(os.path.join(folder, f)) and f.startswith(key)]
+        if not files:
+            messagebox.showinfo("No Files", f"No downloaded files found for '{key}'."); return
+        for path in files:
+            self._open_file_for_print(path)
+
+    def _print_selected_drawings(self):
+        sel = self.drawings_tree.selection()
+        if not sel: messagebox.showinfo("Select", "Please select a drawing."); return
+        folder = os.path.join(self.project_folder, "Drawings") if self.project_folder else None
+        self._print_files_for_key(folder, sel[0])
+
+    def _print_all_drawings(self):
+        folder = os.path.join(self.project_folder, "Drawings") if self.project_folder else None
+        self._print_files_in_folder(folder)
+
+    def _print_selected_relay(self):
+        sel = self.relay_tree.selection()
+        if not sel: messagebox.showinfo("Select", "Please select a relay record."); return
+        folder = os.path.join(self.project_folder, "Relay Settings") if self.project_folder else None
+        self._print_files_for_key(folder, sel[0])
+
+    def _print_all_relay(self):
+        folder = os.path.join(self.project_folder, "Relay Settings") if self.project_folder else None
+        self._print_files_in_folder(folder)
+
+    def _print_selected_maintenance(self):
+        sel = self.maint_tree.selection()
+        if not sel: messagebox.showinfo("Select", "Please select a maintenance standard."); return
+        folder = os.path.join(self.project_folder, "Maintenance Standards") if self.project_folder else None
+        self._print_files_for_key(folder, sel[0])
+
+    def _print_all_maintenance(self):
+        folder = os.path.join(self.project_folder, "Maintenance Standards") if self.project_folder else None
+        self._print_files_in_folder(folder)
+
+    def _print_selected_engineering(self):
+        sel = self.eng_tree.selection()
+        if not sel: messagebox.showinfo("Select", "Please select an engineering standard."); return
+        folder = os.path.join(self.project_folder, "Engineering Standards") if self.project_folder else None
+        self._print_files_for_key(folder, sel[0])
+
+    def _print_all_engineering(self):
+        folder = os.path.join(self.project_folder, "Engineering Standards") if self.project_folder else None
+        self._print_files_in_folder(folder)
 
     # ── Mode switching ────────────────────────────────────────────
 
@@ -5120,6 +5242,40 @@ class RedLineApp(tk.Tk):
                 rev  = f"  Rev {info['revision']}"     if info.get("revision") else ""
                 url  = f"\n    {info['url']}"          if info.get("url") else ""
                 lines.append(f"  {dev_id}{rev}{eng}{url}")
+            lines.append("")
+
+        # Collect all standards referenced in jobs
+        maint_jobs = {}  # standard_id -> [job desc, ...]
+        eng_jobs   = {}
+        for job in self.jobs:
+            ms = job.get("maintenance_standard","").strip()
+            es = job.get("engineering_standard","").strip()
+            desc = job.get("description","") or f"Job #{self.jobs.index(job)+1}"
+            if ms:
+                maint_jobs.setdefault(ms, []).append(desc)
+            if es:
+                eng_jobs.setdefault(es, []).append(desc)
+
+        if maint_jobs or self.maintenance_standards_registry:
+            lines += ["MAINTENANCE STANDARDS", "-"*40]
+            for sid, info in sorted(self.maintenance_standards_registry.items()):
+                rev  = f"  Rev {info['revision']}" if info.get("revision") else ""
+                url_t = f"\n    Telecom: {info['url_telecom']}" if info.get("url_telecom") else ""
+                url_r = f"\n    Transmission: {info['url_transmission']}" if info.get("url_transmission") else ""
+                jobs_ref = maint_jobs.get(sid, [])
+                ref_str = f"\n    Jobs: {', '.join(jobs_ref)}" if jobs_ref else ""
+                lines.append(f"  {sid}{rev}{url_t}{url_r}{ref_str}")
+            lines.append("")
+
+        if eng_jobs or self.engineering_standards_registry:
+            lines += ["ENGINEERING STANDARDS", "-"*40]
+            for sid, info in sorted(self.engineering_standards_registry.items()):
+                rev  = f"  Rev {info.get('revision','')}" if info.get("revision") else ""
+                url  = f"\n    URL: {info['url']}" if info.get("url") else ""
+                stype = f"  ({info.get('standard_type','')})" if info.get("standard_type") else ""
+                jobs_ref = eng_jobs.get(sid, [])
+                ref_str = f"\n    Jobs: {', '.join(jobs_ref)}" if jobs_ref else ""
+                lines.append(f"  {sid}{stype}{rev}{url}{ref_str}")
             lines.append("")
 
         lines += [f"{'─'*60}", f"  Total work order steps: {len(self.jobs)}", f"{'─'*60}"]
