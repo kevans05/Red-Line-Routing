@@ -4153,6 +4153,8 @@ class RedLineApp(tk.Tk):
                 dest = os.path.join(dest_dir, name + ext)
 
                 cmd = ["curl", "--silent", "--show-error", "--location",
+                       "--fail",           # treat HTTP 4xx/5xx as errors (exit code 22)
+                       "--write-out", "%{http_code}",   # print HTTP code to stdout
                        "--output", dest, "--max-time", "60"]
                 if auth_mode == "sso" or (auth_mode == "negotiate" and not user):
                     cmd += ["--negotiate", "--user", ":"]
@@ -4172,15 +4174,25 @@ class RedLineApp(tk.Tk):
 
                 try:
                     result = subprocess.run(cmd, capture_output=True, timeout=90)
+                    http_code = result.stdout.decode(errors="replace").strip()
                     if result.returncode == 0 and os.path.isfile(dest) and os.path.getsize(dest) > 0:
                         kb = os.path.getsize(dest) // 1024
-                        q.put(("log", f"✓  {name}  ({kb} KB)", "ok"))
+                        q.put(("log", f"✓  {name}  ({kb} KB)  [HTTP {http_code}]", "ok"))
                         ok += 1
                     else:
-                        err = result.stderr.decode(errors="replace").strip() or f"exit code {result.returncode}"
-                        q.put(("log", f"✗  {name}: {err}", "err"))
-                        if os.path.isfile(dest) and os.path.getsize(dest) == 0:
+                        # clean up any partial/error file so it isn't mistaken for real content
+                        if os.path.isfile(dest):
                             os.remove(dest)
+                        stderr = result.stderr.decode(errors="replace").strip()
+                        if http_code == "401":
+                            hint = ("\n  → 401 Unauthorized — check username/password and auth mode in"
+                                    " File → Software Settings → Engineering Standards")
+                        elif http_code == "403":
+                            hint = "\n  → 403 Forbidden — your account may lack permission to this resource"
+                        else:
+                            hint = ""
+                        err = stderr or f"HTTP {http_code}" if http_code else f"exit code {result.returncode}"
+                        q.put(("log", f"✗  {name}: {err}{hint}", "err"))
                 except subprocess.TimeoutExpired:
                     q.put(("log", f"✗  {name}: timed out", "err"))
                 except Exception as exc:
