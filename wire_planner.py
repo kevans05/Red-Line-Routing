@@ -3646,38 +3646,143 @@ class RedLineApp(tk.Tk):
         eng_auth_lf.pack(fill="x", pady=(0, 8))
         eng_auth_lf.columnconfigure(1, weight=1)
 
-        ttk.Label(eng_auth_lf, text="Auth Method:").grid(row=0, column=0, sticky="e", padx=(0,6), pady=3)
+        # ── Diagnose row ──────────────────────────────────────────────
+        diag_f = tk.Frame(eng_auth_lf, bg="#1c3a5a"); diag_f.grid(
+            row=0, column=0, columnspan=2, sticky="ew", pady=(0, 8))
+        tk.Label(diag_f, text="Step 1 — Diagnose the server auth type", bg="#1c3a5a", fg="#85c1e9",
+                 font=("", 8, "bold"), padx=8, pady=5).pack(side="left")
+        diag_url_var = tk.StringVar(value=self.app_config.get("base_engineering_telecom_url","")
+                                         or self.app_config.get("base_engineering_transmission_url",""))
+
+        diag_inner = ttk.Frame(eng_auth_lf)
+        diag_inner.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(0, 6))
+        diag_inner.columnconfigure(1, weight=1)
+        ttk.Label(diag_inner, text="Test URL:").grid(row=0, column=0, sticky="e", padx=(0,6))
+        ttk.Entry(diag_inner, textvariable=diag_url_var, width=44).grid(row=0, column=1, sticky="ew")
+
+        diag_out = scrolledtext.ScrolledText(diag_inner, height=6, font=("Courier", 8),
+                                             state="disabled", wrap="word",
+                                             bg="#1c2833", fg="#ecf0f1")
+        diag_out.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(4, 0))
+        diag_out.tag_configure("good",  foreground="#58d68d")
+        diag_out.tag_configure("warn",  foreground="#f0b429")
+        diag_out.tag_configure("err",   foreground="#ec7063")
+        diag_out.tag_configure("head",  foreground="#85c1e9")
+
+        def _run_diagnose():
+            url = diag_url_var.get().strip()
+            if not url:
+                messagebox.showwarning("URL needed",
+                    "Enter a test URL (e.g. the base URL for a standard).", parent=dlg)
+                return
+            diag_out.configure(state="normal")
+            diag_out.delete("1.0", "end")
+            diag_out.insert("end", f"Probing: {url}\n\n", "head")
+            diag_out.configure(state="disabled")
+            dlg.update_idletasks()
+
+            def _probe():
+                results = []
+                # 1. Plain unauthenticated HEAD request — see what challenge we get
+                try:
+                    cmd = ["curl", "--silent", "--head", "--max-time", "10",
+                           "--write-out", "\n---HTTP %{http_code}---",
+                           "--dump-header", "-", url]
+                    r = subprocess.run(cmd, capture_output=True, timeout=15)
+                    raw = r.stdout.decode(errors="replace")
+                    results.append(("head", "── Response headers (no auth) ──\n"))
+                    for line in raw.splitlines():
+                        ll = line.lower()
+                        if ll.startswith("www-authenticate"):
+                            results.append(("good", line + "\n"))
+                        elif "401" in line or "403" in line:
+                            results.append(("warn", line + "\n"))
+                        elif line.strip():
+                            results.append(("", line + "\n"))
+                    results.append(("", "\n"))
+                except Exception as exc:
+                    results.append(("err", f"curl not available or failed: {exc}\n"))
+                    dlg.after(0, lambda r=results: _show(r))
+                    return
+
+                # 2. Parse WWW-Authenticate and give recommendation
+                auth_types = []
+                for tag, text in results:
+                    if tag == "good" and "www-authenticate" in text.lower():
+                        val = text.split(":", 1)[-1].strip().lower()
+                        if "ntlm" in val:       auth_types.append("ntlm")
+                        if "negotiate" in val:  auth_types.append("negotiate")
+                        if "kerberos" in val:   auth_types.append("negotiate")
+                        if "basic" in val:      auth_types.append("basic")
+
+                results.append(("head", "── Recommendation ──\n"))
+                if not auth_types:
+                    results.append(("warn",
+                        "No WWW-Authenticate header found.\n"
+                        "The server may not require auth, or blocked the probe.\n"))
+                elif "negotiate" in auth_types:
+                    results.append(("good",
+                        "Server supports Negotiate (Kerberos/NTLM).\n"
+                        "→ Try auth mode: sso  (uses your Windows login, no password)\n"
+                        "  If sso fails, try: negotiate  with DOMAIN\\\\username\n"))
+                elif "ntlm" in auth_types:
+                    results.append(("good",
+                        "Server uses NTLM only.\n"
+                        "→ Use auth mode: ntlm  with DOMAIN\\\\username and password\n"))
+                elif "basic" in auth_types:
+                    results.append(("warn",
+                        "Server uses Basic auth (password sent as base64).\n"
+                        "→ Use auth mode: basic  with username and password\n"))
+
+                dlg.after(0, lambda r=results: _show(r))
+
+            def _show(results):
+                diag_out.configure(state="normal")
+                for tag, text in results:
+                    diag_out.insert("end", text, tag or None)
+                diag_out.configure(state="disabled")
+
+            threading.Thread(target=_probe, daemon=True).start()
+
+        ttk.Button(diag_inner, text="🔍 Diagnose",
+                   command=_run_diagnose).grid(row=0, column=2, padx=(6,0))
+
+        # ── Auth method ───────────────────────────────────────────────
+        sep = ttk.Separator(eng_auth_lf, orient="horizontal")
+        sep.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(4, 8))
+        tk.Label(eng_auth_lf, text="Step 2 — Set auth method and credentials",
+                 font=("", 8, "bold")).grid(row=3, column=0, columnspan=2, sticky="w", pady=(0,6))
+
+        ttk.Label(eng_auth_lf, text="Auth Method:").grid(row=4, column=0, sticky="e", padx=(0,6), pady=3)
         eng_auth_mode_var = tk.StringVar(value=self.app_config.get("engineering_auth_mode", "ntlm"))
         auth_mode_cb = ttk.Combobox(eng_auth_lf, textvariable=eng_auth_mode_var,
-                                     values=["ntlm", "negotiate", "sso", "basic"],
+                                     values=["sso", "ntlm", "negotiate", "basic"],
                                      state="readonly", width=14)
-        auth_mode_cb.grid(row=0, column=1, sticky="w", pady=3)
+        auth_mode_cb.grid(row=4, column=1, sticky="w", pady=3)
         ttk.Label(eng_auth_lf,
-                  text="ntlm = Windows NTLM (username+password)  ·  negotiate = Kerberos/NTLM  ·  "
-                       "sso = use your current Windows login (no password needed)  ·  basic = plain Basic auth",
+                  text="sso = Windows SSO, no password (try first)  ·  ntlm = NTLM challenge-response  ·\n"
+                       "negotiate = Kerberos/NTLM auto  ·  basic = plain username:password",
                   foreground="grey", font=("", 8), wraplength=480, justify="left").grid(
-            row=1, column=0, columnspan=2, sticky="w", pady=(0, 6))
+            row=5, column=0, columnspan=2, sticky="w", pady=(0, 6))
 
-        ttk.Label(eng_auth_lf, text="Username:").grid(row=2, column=0, sticky="e", padx=(0,6), pady=3)
+        ttk.Label(eng_auth_lf, text="Username:").grid(row=6, column=0, sticky="e", padx=(0,6), pady=3)
         eng_user_var = tk.StringVar(value=self.app_config.get("engineering_username", ""))
-        ttk.Entry(eng_auth_lf, textvariable=eng_user_var, width=36).grid(row=2, column=1, sticky="ew", pady=3)
+        ttk.Entry(eng_auth_lf, textvariable=eng_user_var, width=36).grid(row=6, column=1, sticky="ew", pady=3)
+        ttk.Label(eng_auth_lf, text="Use DOMAIN\\username format if on a Windows domain. Blank for sso.",
+                  foreground="grey", font=("", 8)).grid(row=7, column=1, sticky="w")
 
-        ttk.Label(eng_auth_lf, text="Password:").grid(row=3, column=0, sticky="e", padx=(0,6), pady=3)
+        ttk.Label(eng_auth_lf, text="Password:").grid(row=8, column=0, sticky="e", padx=(0,6), pady=3)
         eng_pass_var = tk.StringVar(value=self.app_config.get("engineering_password", ""))
-        ttk.Entry(eng_auth_lf, textvariable=eng_pass_var, show="*", width=36).grid(row=3, column=1, sticky="ew", pady=3)
-        ttk.Label(eng_auth_lf,
-                  text="Leave username/password blank when using sso mode.",
-                  foreground="grey", font=("", 8), wraplength=480, justify="left").grid(
-            row=4, column=0, columnspan=2, sticky="w", pady=(0, 6))
+        ttk.Entry(eng_auth_lf, textvariable=eng_pass_var, show="*", width=36).grid(row=8, column=1, sticky="ew", pady=3)
 
-        ttk.Label(eng_auth_lf, text="Extra Headers:").grid(row=5, column=0, sticky="ne", padx=(0,6), pady=3)
+        ttk.Label(eng_auth_lf, text="Extra Headers:").grid(row=9, column=0, sticky="ne", padx=(0,6), pady=3)
         eng_headers_txt = scrolledtext.ScrolledText(eng_auth_lf, height=3, font=("Courier", 9), wrap="none")
-        eng_headers_txt.grid(row=5, column=1, sticky="ew", pady=3)
+        eng_headers_txt.grid(row=9, column=1, sticky="ew", pady=3)
         eng_headers_txt.insert("1.0", self.app_config.get("engineering_request_headers", ""))
         ttk.Label(eng_auth_lf,
-                  text="Optional extra headers (one per line as  Header-Name: value). Usually not needed with NTLM/SSO.",
+                  text="Optional extra headers (Header-Name: value, one per line). Usually not needed with NTLM/SSO.",
                   foreground="grey", font=("", 8), wraplength=480, justify="left").grid(
-            row=6, column=0, columnspan=2, sticky="w", pady=(0, 2))
+            row=10, column=0, columnspan=2, sticky="w", pady=(0, 2))
 
         bf = ttk.Frame(f); bf.pack(fill="x", pady=(10,0))
         ttk.Button(bf, text="Cancel", command=dlg.destroy).pack(side="right", padx=4)
