@@ -2119,13 +2119,25 @@ class SoftwareSetupDialog(tk.Toplevel):
                          highlightcolor="#2980b9", font=("", 9)).pack(
                     side="left", fill="x", expand=True, padx=(6, 0), ipady=4)
 
-        # Engineering Standards auth headers
+        # Engineering Standards authentication
         eng_hdr_row = tk.Frame(body, bg="white"); eng_hdr_row.pack(fill="x", pady=(6, 4))
         tk.Frame(eng_hdr_row, bg="#2980b9", width=3).pack(side="left", fill="y")
-        tk.Label(eng_hdr_row, text="Engineering Standards — Request Headers", bg="white", fg="#1c2833",
+        tk.Label(eng_hdr_row, text="Engineering Standards — Authentication", bg="white", fg="#1c2833",
                  font=("", 9, "bold"), padx=8, pady=2).pack(side="left", anchor="w")
-        tk.Label(body, text="Optional: headers/cookies for engineering standards downloads (leave blank to use global).",
-                 bg="white", fg="#5d6d7e", font=("", 8)).pack(anchor="w", pady=(0, 2))
+
+        for key, label, show in [("engineering_username", "Username", ""), ("engineering_password", "Password", "*")]:
+            r = tk.Frame(body, bg="white"); r.pack(fill="x", pady=2)
+            tk.Label(r, text=label + ":", bg="white", fg="#5d6d7e",
+                     font=("", 9), width=26, anchor="e").pack(side="left")
+            var = tk.StringVar(value=cfg.get(key, ""))
+            self._cfg_vars[key] = var
+            tk.Entry(r, textvariable=var, show=show, bg="#f4f6f7", relief="flat",
+                     bd=1, highlightthickness=1, highlightbackground="#d5d8dc",
+                     highlightcolor="#2980b9", font=("", 9)).pack(
+                side="left", fill="x", expand=True, padx=(6, 0), ipady=4)
+
+        tk.Label(body, text="Optional extra headers (e.g. Cookie) for engineering standards downloads.",
+                 bg="white", fg="#5d6d7e", font=("", 8)).pack(anchor="w", pady=(4, 2))
         self._eng_headers_txt = tk.Text(body, height=3, font=("Courier", 8), wrap="none",
                                         bg="#f4f6f7", relief="flat", bd=1,
                                         highlightthickness=1, highlightbackground="#d5d8dc")
@@ -2144,6 +2156,9 @@ class SoftwareSetupDialog(tk.Toplevel):
 
     def _save(self):
         self.result = {k: v.get().strip() for k, v in self._cfg_vars.items()}
+        # password kept as-is (don't strip — spaces are valid)
+        if "engineering_password" in self._cfg_vars:
+            self.result["engineering_password"] = self._cfg_vars["engineering_password"].get()
         self.result["engineering_request_headers"] = self._eng_headers_txt.get("1.0", "end").strip()
         self.destroy()
 
@@ -3626,15 +3641,32 @@ class RedLineApp(tk.Tk):
         headers_txt.pack(fill="x")
         headers_txt.insert("1.0", self.app_config.get("request_headers", ""))
 
-        eng_auth_lf = ttk.LabelFrame(f, text="Engineering Standards — Authentication / Request Headers", padding=8)
+        eng_auth_lf = ttk.LabelFrame(f, text="Engineering Standards — Authentication", padding=8)
         eng_auth_lf.pack(fill="x", pady=(0, 8))
+        eng_auth_lf.columnconfigure(1, weight=1)
+
+        ttk.Label(eng_auth_lf, text="Username:").grid(row=0, column=0, sticky="e", padx=(0,6), pady=3)
+        eng_user_var = tk.StringVar(value=self.app_config.get("engineering_username", ""))
+        ttk.Entry(eng_auth_lf, textvariable=eng_user_var, width=36).grid(row=0, column=1, sticky="ew", pady=3)
+
+        ttk.Label(eng_auth_lf, text="Password:").grid(row=1, column=0, sticky="e", padx=(0,6), pady=3)
+        eng_pass_var = tk.StringVar(value=self.app_config.get("engineering_password", ""))
+        ttk.Entry(eng_auth_lf, textvariable=eng_pass_var, show="*", width=36).grid(row=1, column=1, sticky="ew", pady=3)
+
         ttk.Label(eng_auth_lf,
-                  text="Headers/cookies specifically for engineering standards downloads. One per line as  Header-Name: value\n"
-                       "Leave blank to use the global headers above.",
-                  foreground="grey", font=("", 8), wraplength=480, justify="left").pack(anchor="w", pady=(0, 4))
-        eng_headers_txt = scrolledtext.ScrolledText(eng_auth_lf, height=4, font=("Courier", 9), wrap="none")
-        eng_headers_txt.pack(fill="x")
+                  text="Used for HTTP Basic / Windows authentication when downloading engineering standards.\n"
+                       "Leave blank if not required. For cookie-based auth use the headers field below.",
+                  foreground="grey", font=("", 8), wraplength=480, justify="left").grid(
+            row=2, column=0, columnspan=2, sticky="w", pady=(2, 6))
+
+        ttk.Label(eng_auth_lf, text="Extra Headers:").grid(row=3, column=0, sticky="ne", padx=(0,6), pady=3)
+        eng_headers_txt = scrolledtext.ScrolledText(eng_auth_lf, height=3, font=("Courier", 9), wrap="none")
+        eng_headers_txt.grid(row=3, column=1, sticky="ew", pady=3)
         eng_headers_txt.insert("1.0", self.app_config.get("engineering_request_headers", ""))
+        ttk.Label(eng_auth_lf,
+                  text="Optional extra headers (one per line as  Header-Name: value). Leave blank if username/password is enough.",
+                  foreground="grey", font=("", 8), wraplength=480, justify="left").grid(
+            row=4, column=0, columnspan=2, sticky="w", pady=(0, 2))
 
         bf = ttk.Frame(f); bf.pack(fill="x", pady=(10,0))
         ttk.Button(bf, text="Cancel", command=dlg.destroy).pack(side="right", padx=4)
@@ -3642,6 +3674,8 @@ class RedLineApp(tk.Tk):
         def _save():
             self.app_config.update({k: v.get().strip() for k, v in cfg_vars.items()})
             self.app_config["request_headers"] = headers_txt.get("1.0", "end").strip()
+            self.app_config["engineering_username"] = eng_user_var.get().strip()
+            self.app_config["engineering_password"] = eng_pass_var.get()
             self.app_config["engineering_request_headers"] = eng_headers_txt.get("1.0", "end").strip()
             self._save_app_config()
             dlg.destroy()
@@ -3984,18 +4018,25 @@ class RedLineApp(tk.Tk):
         if url: webbrowser.open(url)
 
     def _parse_engineering_headers(self):
-        """Parse engineering_request_headers from app_config into a dict."""
-        raw = self.app_config.get("engineering_request_headers", "")
+        """Build auth headers for engineering standards downloads.
+
+        Combines HTTP Basic Auth (from username/password) with any extra
+        headers typed in the Engineering Standards settings section.
+        """
+        import base64
         headers = {}
+        user = self.app_config.get("engineering_username", "").strip()
+        pwd  = self.app_config.get("engineering_password", "")
+        if user:
+            token = base64.b64encode(f"{user}:{pwd}".encode()).decode()
+            headers["Authorization"] = f"Basic {token}"
+        raw = self.app_config.get("engineering_request_headers", "")
         for line in raw.splitlines():
-            if ":" not in line:
-                continue
             line = line.strip()
-            if not line:
+            if not line or ":" not in line:
                 continue
             key, _, value = line.partition(":")
-            key = key.strip()
-            value = value.strip()
+            key = key.strip(); value = value.strip()
             if key:
                 headers[key] = value
         return headers
