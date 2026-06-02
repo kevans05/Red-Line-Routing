@@ -1945,10 +1945,22 @@ class EngineeringStandardDialog(tk.Toplevel):
         stored_url = ex.get("url", "")
         base = self.base_url_telecom if stype == "Telecom" else self.base_url_transmission
 
-        # Derive document_code from stored URL if it starts with a known base URL
+        # Extract document code from stored URL:
+        # 1. strip from known base URL prefix, or
+        # 2. parse documentId= query param directly
         doc_code_default = ""
-        if stored_url and base and stored_url.startswith(base):
-            doc_code_default = stored_url[len(base):]
+        if stored_url:
+            if base and stored_url.startswith(base):
+                doc_code_default = stored_url[len(base):]
+            else:
+                import urllib.parse as _up
+                qs = _up.parse_qs(_up.urlparse(stored_url).query)
+                if "documentId" in qs:
+                    doc_code_default = qs["documentId"][0]
+                    # also derive base as everything up to and including "documentId="
+                    idx = stored_url.lower().find("documentid=")
+                    if idx != -1 and not base:
+                        base = stored_url[:idx + len("documentId=")]
         url_default = stored_url if stored_url else base
 
         self.vars = {
