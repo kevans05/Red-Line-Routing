@@ -1942,13 +1942,21 @@ class EngineeringStandardDialog(tk.Toplevel):
         f.columnconfigure(1, weight=1)
 
         stype = ex.get("standard_type", "Telecom")
-        url_default = ex.get("url", "") or (self.base_url_telecom if stype == "Telecom" else self.base_url_transmission)
+        stored_url = ex.get("url", "")
+        base = self.base_url_telecom if stype == "Telecom" else self.base_url_transmission
+
+        # Derive document_code from stored URL if it starts with a known base URL
+        doc_code_default = ""
+        if stored_url and base and stored_url.startswith(base):
+            doc_code_default = stored_url[len(base):]
+        url_default = stored_url if stored_url else base
 
         self.vars = {
             "standard_id":    tk.StringVar(value=ex.get("standard_id", "")),
             "title":          tk.StringVar(value=ex.get("title", "")),
             "revision":       tk.StringVar(value=ex.get("revision", "")),
             "standard_type":  tk.StringVar(value=stype),
+            "document_code":  tk.StringVar(value=doc_code_default),
             "url":            tk.StringVar(value=url_default),
             "notes":          tk.StringVar(value=ex.get("notes", "")),
         }
@@ -1970,17 +1978,46 @@ class EngineeringStandardDialog(tk.Toplevel):
                                values=["Telecom", "Transmission"], state="readonly", width=20)
         type_cb.grid(row=row_type, column=1, sticky="w", pady=4)
 
-        def _on_type_change(*_):
-            if not self.vars["url"].get().strip():
-                t = self.vars["standard_type"].get()
-                self.vars["url"].set(self.base_url_telecom if t == "Telecom" else self.base_url_transmission)
-        type_cb.bind("<<ComboboxSelected>>", _on_type_change)
+        # Document Code field — auto-builds URL from base URL + code
+        row_code = row_type + 1
+        ttk.Label(f, text="Document Code:").grid(row=row_code, column=0, sticky="e", padx=(0, 6), pady=4)
+        code_frame = ttk.Frame(f)
+        code_frame.grid(row=row_code, column=1, sticky="ew", pady=4)
+        code_frame.columnconfigure(0, weight=1)
+        ttk.Entry(code_frame, textvariable=self.vars["document_code"], width=40).grid(
+            row=0, column=0, sticky="ew")
+        ttk.Label(code_frame, text="e.g. {503E2F9C-0000-CA1C-9031-F0C466ADD444}",
+                  foreground="grey", font=("", 8)).grid(row=1, column=0, sticky="w")
 
-        # URL field
-        row_url = row_type + 1
-        ttk.Label(f, text="URL:").grid(row=row_url, column=0, sticky="e", padx=(0, 6), pady=4)
-        ttk.Entry(f, textvariable=self.vars["url"], width=52).grid(
-            row=row_url, column=1, sticky="ew", pady=4)
+        # URL field — auto-populated from Document Code, or entered manually
+        row_url = row_code + 1
+        ttk.Label(f, text="Full URL:").grid(row=row_url, column=0, sticky="e", padx=(0, 6), pady=4)
+        url_entry = ttk.Entry(f, textvariable=self.vars["url"], width=52)
+        url_entry.grid(row=row_url, column=1, sticky="ew", pady=4)
+
+        def _get_base():
+            t = self.vars["standard_type"].get()
+            return self.base_url_telecom if t == "Telecom" else self.base_url_transmission
+
+        def _rebuild_url(*_):
+            code = self.vars["document_code"].get().strip()
+            b = _get_base()
+            if code and b:
+                self.vars["url"].set(b + code)
+            elif code:
+                # no base URL configured — just show the code so the user knows it's partial
+                self.vars["url"].set(code)
+
+        def _on_type_change(*_):
+            b = _get_base()
+            code = self.vars["document_code"].get().strip()
+            if code and b:
+                self.vars["url"].set(b + code)
+            elif not self.vars["url"].get().strip():
+                self.vars["url"].set(b)
+
+        self.vars["document_code"].trace_add("write", _rebuild_url)
+        type_cb.bind("<<ComboboxSelected>>", _on_type_change)
 
         row_n = row_url + 1
         ttk.Label(f, text="Notes:").grid(row=row_n, column=0, sticky="ne", padx=(0, 6), pady=4)
@@ -1995,7 +2032,7 @@ class EngineeringStandardDialog(tk.Toplevel):
     def _save(self):
         if not self.vars["standard_id"].get().strip():
             messagebox.showwarning("Required", "Standard ID is required.", parent=self); return
-        self.result = {k: v.get().strip() for k, v in self.vars.items()}
+        self.result = {k: v.get().strip() for k, v in self.vars.items() if k != "document_code"}
         self.result["notes"] = self._notes_widget.get("1.0", "end").strip()
         self.destroy()
 
