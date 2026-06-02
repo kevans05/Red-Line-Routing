@@ -1945,10 +1945,22 @@ class EngineeringStandardDialog(tk.Toplevel):
         stored_url = ex.get("url", "")
         base = self.base_url_telecom if stype == "Telecom" else self.base_url_transmission
 
-        # Derive document_code from stored URL if it starts with a known base URL
+        # Extract document code from stored URL:
+        # 1. strip from known base URL prefix, or
+        # 2. parse documentId= query param directly
         doc_code_default = ""
-        if stored_url and base and stored_url.startswith(base):
-            doc_code_default = stored_url[len(base):]
+        if stored_url:
+            if base and stored_url.startswith(base):
+                doc_code_default = stored_url[len(base):]
+            else:
+                import urllib.parse as _up
+                qs = _up.parse_qs(_up.urlparse(stored_url).query)
+                if "documentId" in qs:
+                    doc_code_default = qs["documentId"][0]
+                    # also derive base as everything up to and including "documentId="
+                    idx = stored_url.lower().find("documentid=")
+                    if idx != -1 and not base:
+                        base = stored_url[:idx + len("documentId=")]
         url_default = stored_url if stored_url else base
 
         self.vars = {
@@ -4197,16 +4209,20 @@ class RedLineApp(tk.Tk):
         user      = self.app_config.get("engineering_username", "").strip()
         pwd       = self.app_config.get("engineering_password", "")
 
+        hdrs = self._build_engineering_headers()
         if self._curl_available() and auth_mode in ("ntlm", "negotiate", "sso"):
-            self._download_engineering_curl(targets, dest_dir, auth_mode, user, pwd)
-        else:
-            # Fall back to urllib with Basic auth header
-            self._download_with_progress(
-                "Downloading Engineering Standards",
-                targets,
-                dest_dir,
-                extra_headers=self._build_engineering_headers(),
-            )
+            # Authenticate once via curl to get session cookies, then download
+            # all files with urllib (same path as drawings).
+            cookie_hdr = self._get_engineering_session_cookies(
+                targets[0][1], auth_mode, user, pwd)
+            if cookie_hdr:
+                hdrs["Cookie"] = cookie_hdr
+        self._download_with_progress(
+            "Downloading Engineering Standards",
+            targets,
+            dest_dir,
+            extra_headers=hdrs,
+        )
 
     def _build_engineering_headers(self):
         """Build extra HTTP headers for urllib-based engineering download."""
@@ -4227,6 +4243,40 @@ class RedLineApp(tk.Tk):
             if key:
                 headers[key] = value
         return headers
+
+    def _get_engineering_session_cookies(self, sample_url, auth_mode, user, pwd):
+        """Authenticate once via curl and return session cookies as a Cookie header string.
+
+        Writes cookies to a temp file using curl's Netscape cookie-jar format,
+        loads them with http.cookiejar, then deletes the temp file.
+        Returns an empty string if auth fails or curl is unavailable.
+        """
+        import tempfile, http.cookiejar
+        fd, cookie_file = tempfile.mkstemp(suffix=".txt")
+        os.close(fd)
+        try:
+            cmd = ["curl", "--globoff", "--silent", "--show-error",
+                   "--location", "--max-time", "30",
+                   "--cookie-jar", cookie_file,
+                   "--output", os.devnull]
+            if auth_mode == "sso" or (auth_mode == "negotiate" and not user):
+                cmd += ["--negotiate", "--user", ":"]
+            elif auth_mode == "ntlm" and user:
+                cmd += ["--ntlm", "--user", f"{user}:{pwd}"]
+            elif auth_mode == "negotiate" and user:
+                cmd += ["--negotiate", "--user", f"{user}:{pwd}"]
+            cmd.append(sample_url)
+            subprocess.run(cmd, capture_output=True, timeout=45)
+            jar = http.cookiejar.MozillaCookieJar(cookie_file)
+            jar.load(ignore_discard=True, ignore_expires=True)
+            return "; ".join(f"{c.name}={c.value}" for c in jar)
+        except Exception:
+            return ""
+        finally:
+            try:
+                os.unlink(cookie_file)
+            except OSError:
+                pass
 
     def _download_engineering_curl(self, targets, dest_dir, auth_mode, user, pwd):
         """Download engineering standards via curl with NTLM/Negotiate/SSO auth."""
