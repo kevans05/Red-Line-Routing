@@ -13,13 +13,14 @@ for r in results:
     print(r.drawing_number, r.title, r.document_url)
 """
 
+import threading
 import urllib.request
 import urllib.parse
 import urllib.error
-from typing import Optional
+from typing import Callable, Optional
 
-from .models import DrawingResult
-from .parser import parse_results
+from .models import DrawingResult, PagedResults
+from .parser import parse_results, parse_paged
 
 _SEARCH_PATH = "/search/searchGT.html"
 _DEFAULT_TIMEOUT = 60  # seconds
@@ -38,18 +39,81 @@ class DrawingSearchClient:
             "AppleWebKit/537.36 (KHTML, like Gecko) "
             "Chrome/148.0.0.0 Safari/537.36 Edg/148.0.0.0"
         ),
+        cache=None,
     ):
         self.base_url   = base_url.rstrip("/")
         self.cookies    = cookies or {}
         self.timeout    = timeout
         self.user_agent = user_agent
+        self.cache      = cache  # DrawingSearchCache | None
 
     # ── public API ────────────────────────────────────────────────
 
     def search(self, params: "SearchParams") -> list[DrawingResult]:
-        """Execute a drawing search and return parsed results."""
+        """Execute a drawing search and return parsed results (backward compat)."""
         html = self._post(params._to_form_data())
         return parse_results(html, self.base_url)
+
+    def search_paged(self, params: "SearchParams") -> PagedResults:
+        """Execute a drawing search and return a PagedResults.
+
+        Checks the cache first if one was supplied to __init__.
+        """
+        if self.cache is not None:
+            cached = self.cache.get(params)
+            if cached is not None:
+                return PagedResults(
+                    results=cached,
+                    page=params.page,
+                    page_size=params.page_size,
+                    total_count=len(cached),
+                    has_next=False,
+                )
+
+        html   = self._post(params._to_form_data())
+        paged  = parse_paged(html, self.base_url, page=params.page,
+                             page_size=params.page_size)
+
+        if self.cache is not None:
+            self.cache.put(params, paged.results)
+
+        return paged
+
+    def search_all_pages(self, params: "SearchParams", max_pages: int = 20) -> list[DrawingResult]:
+        """Iterate pages until has_next is False or max_pages is reached."""
+        import copy
+        all_results: list[DrawingResult] = []
+        p = copy.copy(params)
+        for _ in range(max_pages):
+            paged = self.search_paged(p)
+            all_results.extend(paged.results)
+            if not paged.has_next:
+                break
+            p.page += 1
+        return all_results
+
+    def search_async(
+        self,
+        params: "SearchParams",
+        on_done: Callable[[PagedResults], None],
+        on_error: Optional[Callable[[Exception], None]] = None,
+    ) -> threading.Thread:
+        """Run search_paged in a background thread.
+
+        Calls on_done(PagedResults) or on_error(exc) on completion.
+        Does NOT call tkinter after() — leave that to the caller.
+        """
+        def _run():
+            try:
+                result = self.search_paged(params)
+                on_done(result)
+            except Exception as exc:
+                if on_error is not None:
+                    on_error(exc)
+
+        t = threading.Thread(target=_run, daemon=True)
+        t.start()
+        return t
 
     # ── internals ─────────────────────────────────────────────────
 
@@ -117,6 +181,8 @@ class SearchParams:
         remarks_contain: str = "",
         legacy_document_num: str = "",
         show_issue_reason: str = "notShow",
+        page: int = 0,
+        page_size: int = 50,
     ):
         self.state               = state
         self.facility            = facility
@@ -136,6 +202,8 @@ class SearchParams:
         self.remarks_contain     = remarks_contain
         self.legacy_document_num = legacy_document_num
         self.show_issue_reason   = show_issue_reason
+        self.page                = page
+        self.page_size           = page_size
 
     def _to_form_data(self) -> dict[str, str]:
         """Reproduce the exact POST body the browser sends."""
@@ -162,4 +230,6 @@ class SearchParams:
             "showIssueReasonOptions":  self.show_issue_reason,
             "search":                  "Search",
         }
+        if self.page > 0:
+            d["page"] = str(self.page)
         return d

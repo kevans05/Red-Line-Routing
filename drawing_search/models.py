@@ -1,4 +1,4 @@
-"""Data model for a single drawing search result row."""
+"""Data models for drawing search results."""
 from dataclasses import dataclass, field
 
 
@@ -20,3 +20,13 @@ class DrawingResult:
 
     # URL built from the search host + fetchDocument path
     document_url: str = ""
+
+
+@dataclass
+class PagedResults:
+    """A single page of drawing search results with pagination metadata."""
+    results: list          # list[DrawingResult]
+    page: int = 0
+    page_size: int = 50
+    total_count: int = 0   # 0 = unknown
+    has_next: bool = False
