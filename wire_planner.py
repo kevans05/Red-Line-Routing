@@ -197,6 +197,48 @@ def _bind_url_open(entry_widget, url_var):
 # Drawing-aware endpoint frame (with conditional Drawing Cell)
 # ──────────────────────────────────────────────────────────────────
 
+class _FilterCombobox(ttk.Combobox):
+    """Combobox that filters its option list as the user types.
+
+    Supply ``all_values`` at construction time.  As the user types, the
+    dropdown is narrowed to entries that contain the typed text anywhere
+    (case-insensitive).  Clearing the field restores the full list.
+    Selecting an entry from the dropdown or pressing Escape/Tab/Return
+    also restores the full list so the next open shows everything.
+    """
+
+    def __init__(self, parent, all_values=(), **kw):
+        kw.setdefault("state", "normal")
+        super().__init__(parent, **kw)
+        self._all_values = list(all_values)
+        self["values"] = self._all_values
+        self.bind("<KeyRelease>", self._on_key)
+        self.bind("<<ComboboxSelected>>", self._restore)
+        self.bind("<FocusOut>", self._restore)
+
+    def set_all_values(self, values):
+        self._all_values = list(values)
+        self["values"] = self._all_values
+
+    def _on_key(self, event):
+        if event.keysym in ("Return", "Tab", "Escape", "Up", "Down"):
+            if event.keysym == "Escape":
+                self.set("")
+            self._restore()
+            return
+        typed = self.get().lower()
+        filtered = [v for v in self._all_values if typed in v.lower()] if typed else self._all_values
+        self["values"] = filtered
+        if filtered:
+            try:
+                self.tk.call("ttk::combobox::Post", self)
+            except Exception:
+                pass
+
+    def _restore(self, _event=None):
+        self["values"] = self._all_values
+
+
 class DrawingAwareFrame(ttk.LabelFrame):
     """LabelFrame with autofill from registry, context-aware suggestions, and live search.
 
@@ -2205,21 +2247,23 @@ class DrawingSearchDialog(tk.Toplevel):
 
         ttk.Label(row1, text="Facility:").pack(side="left")
         self._v_facility = tk.StringVar()
-        fac_choices = [""] + [f"{k} — {v}" for k, v in _fac.items()]
-        self._cb_facility = ttk.Combobox(row1, textvariable=self._v_facility,
-                                         values=fac_choices, width=18)
+        fac_choices = [""] + [f"{k} — {v}" for k, v in sorted(_fac.items(), key=lambda x: x[1])]
+        self._cb_facility = _FilterCombobox(row1, all_values=fac_choices,
+                                            textvariable=self._v_facility, width=22)
         self._cb_facility.pack(side="left", padx=(2, 10))
 
         ttk.Label(row1, text="Type:").pack(side="left")
         self._v_type = tk.StringVar()
         type_choices = [""] + [f"{k} — {v}" for k, v in _typ.items()] if _DRAWING_SEARCH_AVAILABLE else [""]
-        self._cb_type = ttk.Combobox(row1, textvariable=self._v_type, values=type_choices, width=22, state="readonly")
+        self._cb_type = _FilterCombobox(row1, all_values=type_choices,
+                                        textvariable=self._v_type, width=22)
         self._cb_type.pack(side="left", padx=(2, 10))
 
         ttk.Label(row1, text="Subject:").pack(side="left")
         self._v_subject = tk.StringVar()
         subj_choices = [""] + [f"{k} — {v}" for k, v in _subj.items()] if _DRAWING_SEARCH_AVAILABLE else [""]
-        self._cb_subject = ttk.Combobox(row1, textvariable=self._v_subject, values=subj_choices, width=22, state="readonly")
+        self._cb_subject = _FilterCombobox(row1, all_values=subj_choices,
+                                           textvariable=self._v_subject, width=22)
         self._cb_subject.pack(side="left", padx=(2, 10))
 
         ttk.Label(row1, text="State:").pack(side="left")
@@ -2298,7 +2342,7 @@ class DrawingSearchDialog(tk.Toplevel):
             title=self._v_title.get().strip(),
             serial_from=self._v_serial_from.get().strip(),
             serial_to=self._v_serial_to.get().strip(),
-            facility=self._v_facility.get().strip(),
+            facility=_code(self._v_facility.get()),
             drawing_type=_code(self._v_type.get()),
             drawing_subject=_code(self._v_subject.get()),
             state=self._v_state.get().strip(),
