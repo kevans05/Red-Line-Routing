@@ -1213,13 +1213,15 @@ class JobDialog(tk.Toplevel):
 # ──────────────────────────────────────────────────────────────────
 
 class DrawingEditDialog(tk.Toplevel):
-    def __init__(self, parent, existing=None, base_url="", app_config=None):
+    def __init__(self, parent, existing=None, base_url="", app_config=None,
+                 project_folder=""):
         super().__init__(parent)
         self.title("Edit Drawing" if existing else "Add Drawing")
         self.result = None
         self._old_name = existing.get("name") if existing else None
         self._base_url = base_url
         self._app_config = app_config or {}
+        self._project_folder = project_folder
         self.resizable(False, False)
         self._build(existing or {})
         self.grab_set()
@@ -1251,7 +1253,8 @@ class DrawingEditDialog(tk.Toplevel):
         self.geometry("460x268")
 
     def _search_drawing(self):
-        dlg = DrawingSearchDialog(self, self._app_config, multi_select=False)
+        dlg = DrawingSearchDialog(self, self._app_config, multi_select=False,
+                                  project_folder=self._project_folder)
         if dlg.selected:
             r = dlg.selected[0]
             self.vars["name"].set(r.drawing_number)
@@ -2183,22 +2186,27 @@ def _styled_header(parent, title, subtitle=None, bg="#1c2833"):
     tk.Frame(hdr, bg=bg, height=14).pack()   # bottom padding
     return hdr
 
+_CACHE_STALE_SECONDS = 86_400  # 24 hours
+
+
 class DrawingSearchDialog(tk.Toplevel):
     """Reusable drawing search UI backed by DrawingSearchClient."""
 
-    def __init__(self, parent, app_config: dict, multi_select=True):
+    def __init__(self, parent, app_config: dict, multi_select=True,
+                 project_folder: str = ""):
         super().__init__(parent)
         self.title("Search Drawings")
         self.resizable(True, True)
-        self.app_config = app_config
-        self.multi_select = multi_select
+        self.app_config    = app_config
+        self.multi_select  = multi_select
+        self.project_folder = project_folder
         self.selected: list = []  # list[DrawingResult]
         self._page = 0
         self._last_paged = None   # most recent PagedResults
         self._from_cache = False
         self._client = None
         self._build()
-        self.geometry("900x580")
+        self.geometry("900x600")
         _center_window(self)
         self.grab_set()
         self.wait_window()
@@ -2280,6 +2288,16 @@ class DrawingSearchDialog(tk.Toplevel):
         ttk.Checkbutton(row2, text="Cache results", variable=self._v_use_cache).pack(side="left", padx=(14, 2))
         ttk.Button(row2, text="Clear cache", command=self._clear_cache).pack(side="left", padx=2)
 
+        # Bulk-cache button — only visible when facility+type+subject are all set
+        self._bulk_btn = ttk.Button(row2, text="📥 Bulk Cache All",
+                                    command=self._do_bulk_cache)
+        self._bulk_btn.pack(side="left", padx=(14, 2))
+        self._bulk_btn.pack_forget()   # hidden until all three filters filled
+
+        # Wire filter vars to show/hide the bulk button
+        for var in (self._v_facility, self._v_type, self._v_subject):
+            var.trace_add("write", lambda *_: self._update_bulk_btn())
+
         if not base_url:
             self._search_btn.configure(state="disabled")
 
@@ -2327,14 +2345,25 @@ class DrawingSearchDialog(tk.Toplevel):
             v.set("")
         self._v_state.set("Released")
 
-    def _build_client(self):
+    def _cache_db_path(self):
+        """Return the job-specific cache DB path, or the global fallback."""
+        if self.project_folder:
+            return os.path.join(self.project_folder, "drawing_cache.db")
+        return None  # DrawingSearchCache will use its own default
+
+    def _build_cache(self):
+        if not _DRAWING_SEARCH_AVAILABLE:
+            return None
+        if not self._v_use_cache.get():
+            return None
+        return DrawingSearchCache(self._cache_db_path())
+
+    def _build_client(self, cache=None):
         base_url = self.app_config.get("drawing_search_url", "").strip()
         if not base_url:
             return None
         headers = _parse_request_headers_raw(self.app_config.get("request_headers", ""))
         cookies = _parse_cookies_from_headers(self.app_config.get("request_headers", ""))
-        use_cache = _DRAWING_SEARCH_AVAILABLE and getattr(self, "_v_use_cache", None) and self._v_use_cache.get()
-        cache = DrawingSearchCache() if use_cache else None
         return DrawingSearchClient(base_url=base_url, cookies=cookies,
                                    extra_headers=headers, cache=cache)
 
@@ -2342,10 +2371,21 @@ class DrawingSearchDialog(tk.Toplevel):
         if not _DRAWING_SEARCH_AVAILABLE:
             return
         try:
-            DrawingSearchCache().clear()
-            self._status_var.set("Search cache cleared.")
+            DrawingSearchCache(self._cache_db_path()).clear()
+            self._status_var.set("Job search cache cleared.")
         except Exception as exc:
             messagebox.showerror("Cache Error", str(exc), parent=self)
+
+    def _update_bulk_btn(self):
+        def _code(val):
+            return val.split("—")[0].strip() if "—" in val else val.strip()
+        fac  = _code(self._v_facility.get())
+        typ  = _code(self._v_type.get())
+        subj = _code(self._v_subject.get())
+        if fac and typ and subj and _DRAWING_SEARCH_AVAILABLE:
+            self._bulk_btn.pack(side="left", padx=(14, 2))
+        else:
+            self._bulk_btn.pack_forget()
 
     def _get_params(self, page=0):
         # Parse code from "CODE — Label" or raw code
@@ -2364,14 +2404,30 @@ class DrawingSearchDialog(tk.Toplevel):
             page=page,
         )
 
-    def _do_search(self, page=0):
+    def _do_search(self, page=0, force_refresh=False):
         if not _DRAWING_SEARCH_AVAILABLE:
             messagebox.showerror("Unavailable", "drawing_search package not found.", parent=self)
             return
-        client = self._build_client()
+        cache  = self._build_cache()
+        client = self._build_client(cache=cache)
         if client is None:
             messagebox.showwarning("No URL", "Configure Drawing Search URL in Software Settings.", parent=self)
             return
+
+        # Stale-cache check: if cache has a hit older than 24 h, ask before using it
+        if cache and not force_refresh:
+            params_check = self._get_params(page=page)
+            _, age = cache.get_with_age(params_check)
+            if age > _CACHE_STALE_SECONDS:
+                import math
+                hrs = math.floor(age / 3600)
+                ans = messagebox.askyesno(
+                    "Cached Results Outdated",
+                    f"Cached results for this search are {hrs} hour(s) old.\n\n"
+                    "Re-fetch fresh results from the server?",
+                    parent=self)
+                force_refresh = ans
+
         self._client = client
         self._page = page
         params = self._get_params(page=page)
@@ -2385,7 +2441,81 @@ class DrawingSearchDialog(tk.Toplevel):
         def on_error(exc):
             self.after(0, lambda: self._on_error(exc))
 
-        client.search_async(params, on_done=on_done, on_error=on_error)
+        client.search_async(params, on_done=on_done, on_error=on_error,
+                            force_refresh=force_refresh)
+
+    def _do_bulk_cache(self):
+        """Paginate through ALL results for the current facility+type+subject and cache them."""
+        if not _DRAWING_SEARCH_AVAILABLE:
+            return
+        cache = DrawingSearchCache(self._cache_db_path())
+        client = self._build_client(cache=cache)
+        if client is None:
+            messagebox.showwarning("No URL", "Configure Drawing Search URL in Software Settings.",
+                                   parent=self)
+            return
+        params = self._get_params(page=0)
+
+        dlg = tk.Toplevel(self)
+        dlg.title("Bulk Cache")
+        dlg.resizable(False, False)
+        dlg.grab_set()
+        hdr = tk.Frame(dlg, bg="#1c3a5a"); hdr.pack(fill="x")
+        tk.Label(hdr, text="Caching all pages…", bg="#1c3a5a", fg="white",
+                 font=("", 11, "bold"), padx=14, pady=10).pack(side="left")
+        body = ttk.Frame(dlg, padding=14); body.pack(fill="both", expand=True)
+        info_var = tk.StringVar(value="Starting…")
+        ttk.Label(body, textvariable=info_var, font=("", 9)).pack(anchor="w")
+        bar = ttk.Progressbar(body, mode="indeterminate", length=360)
+        bar.pack(pady=(8, 4)); bar.start(12)
+        close_btn = ttk.Button(body, text="Close", command=dlg.destroy, state="disabled")
+        close_btn.pack(anchor="e", pady=(8, 0))
+        _center_window(dlg, 400, 160)
+
+        import copy, queue as _queue
+        q = _queue.Queue()
+
+        def _run():
+            import copy as _copy
+            all_results = []
+            p = _copy.copy(params)
+            page_num = 0
+            try:
+                while True:
+                    p.page = page_num
+                    paged = client.search_paged(p, force_refresh=True)
+                    all_results.extend(paged.results)
+                    q.put(("page", page_num + 1, len(all_results)))
+                    if not paged.has_next:
+                        break
+                    page_num += 1
+                q.put(("done", len(all_results)))
+            except Exception as exc:
+                q.put(("error", str(exc)))
+
+        def _poll():
+            try:
+                while True:
+                    msg = q.get_nowait()
+                    if msg[0] == "page":
+                        info_var.set(f"Page {msg[1]} fetched — {msg[2]} drawings so far…")
+                    elif msg[0] == "done":
+                        bar.stop()
+                        info_var.set(f"✓  {msg[1]} drawings cached for this job.")
+                        close_btn.configure(state="normal")
+                        self._status_var.set(f"Bulk cache complete — {msg[1]} drawings stored.")
+                        return
+                    elif msg[0] == "error":
+                        bar.stop()
+                        info_var.set(f"✗  Error: {msg[1]}")
+                        close_btn.configure(state="normal")
+                        return
+            except _queue.Empty:
+                pass
+            dlg.after(150, _poll)
+
+        threading.Thread(target=_run, daemon=True).start()
+        _poll()
 
     def _on_results(self, paged):
         self._last_paged = paged
@@ -3096,7 +3226,7 @@ class ProjectWizard(tk.Toplevel):
 
     def _wiz_add_drawing(self):
         dlg = DrawingEditDialog(self, base_url=self.app_config.get("base_drawing_url",""),
-                                app_config=self.app_config)
+                                app_config=self.app_config, project_folder="")
         if dlg.result:
             n = dlg.result["name"]
             self.wiz_drawings[n] = {k: dlg.result[k] for k in ("title","rev","url","notes")}
@@ -3116,7 +3246,8 @@ class ProjectWizard(tk.Toplevel):
             self._wiz_refresh_drawings()
 
     def _wiz_search_drawings(self):
-        dlg = DrawingSearchDialog(self, self.app_config, multi_select=True)
+        dlg = DrawingSearchDialog(self, self.app_config, multi_select=True,
+                                  project_folder="")
         for r in dlg.selected:
             self.wiz_drawings[r.drawing_number] = {
                 "title": r.title, "rev": r.revision,
@@ -3861,7 +3992,8 @@ class RedLineApp(tk.Tk):
     # ── Drawing registry CRUD ─────────────────────────────────────
 
     def _search_drawings(self):
-        dlg = DrawingSearchDialog(self, self.app_config, multi_select=True)
+        dlg = DrawingSearchDialog(self, self.app_config, multi_select=True,
+                                  project_folder=self.project_folder or "")
         for r in dlg.selected:
             if r.drawing_number not in self.drawing_registry:
                 self.drawing_registry[r.drawing_number] = {
@@ -3882,7 +4014,8 @@ class RedLineApp(tk.Tk):
 
     def _add_drawing(self):
         dlg = DrawingEditDialog(self, base_url=self.app_config.get("base_drawing_url",""),
-                                app_config=self.app_config)
+                                app_config=self.app_config,
+                                project_folder=self.project_folder or "")
         if dlg.result:
             name = dlg.result["name"]
             self.drawing_registry[name] = {"title":dlg.result["title"],"rev":dlg.result["rev"],"url":dlg.result["url"],"notes":dlg.result["notes"]}
@@ -3894,7 +4027,8 @@ class RedLineApp(tk.Tk):
         name = sel[0]; info = self.drawing_registry.get(name,{})
         dlg = DrawingEditDialog(self, existing={"name":name,**info},
                                 base_url=self.app_config.get("base_drawing_url",""),
-                                app_config=self.app_config)
+                                app_config=self.app_config,
+                                project_folder=self.project_folder or "")
         if dlg.result:
             old = dlg.result.get("old_name"); new_name = dlg.result["name"]
             if old and old != new_name and old in self.drawing_registry: del self.drawing_registry[old]

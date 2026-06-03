@@ -60,12 +60,14 @@ class DrawingSearchClient:
         html = self._post(params._to_form_data())
         return parse_results(html, self.base_url)
 
-    def search_paged(self, params: "SearchParams") -> PagedResults:
+    def search_paged(self, params: "SearchParams", force_refresh: bool = False) -> PagedResults:
         """Execute a drawing search and return a PagedResults.
 
-        Checks the cache first if one was supplied to __init__.
+        Checks the cache first if one was supplied to __init__, unless
+        *force_refresh* is True in which case the cache is bypassed and
+        the fresh result is stored.
         """
-        if self.cache is not None:
+        if self.cache is not None and not force_refresh:
             cached = self.cache.get(params)
             if cached is not None:
                 return PagedResults(
@@ -103,6 +105,7 @@ class DrawingSearchClient:
         params: "SearchParams",
         on_done: Callable[[PagedResults], None],
         on_error: Optional[Callable[[Exception], None]] = None,
+        force_refresh: bool = False,
     ) -> threading.Thread:
         """Run search_paged in a background thread.
 
@@ -111,7 +114,7 @@ class DrawingSearchClient:
         """
         def _run():
             try:
-                result = self.search_paged(params)
+                result = self.search_paged(params, force_refresh=force_refresh)
                 on_done(result)
             except Exception as exc:
                 if on_error is not None:

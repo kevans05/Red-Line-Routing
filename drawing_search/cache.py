@@ -1,7 +1,8 @@
 """SQLite-backed result cache for drawing search queries.
 
 Cache key: SHA-256 of the sorted params form-data serialised to JSON.
-Default TTL: 24 hours (86 400 seconds).
+The cache never auto-expires; callers check age and decide whether to
+prompt the user for a refresh.
 """
 
 import hashlib
@@ -10,7 +11,7 @@ import os
 import sqlite3
 import time
 from dataclasses import asdict
-from typing import Optional
+from typing import Optional, Tuple
 
 from .models import DrawingResult
 
@@ -43,20 +44,27 @@ class DrawingSearchCache:
     # ── public API ────────────────────────────────────────────────
 
     def get(self, params) -> "Optional[list[DrawingResult]]":
-        """Return cached results for *params*, or None on a cache miss."""
+        """Return cached results for *params*, or None on a cache miss (ignores age)."""
+        results, _ = self.get_with_age(params)
+        return results
+
+    def get_with_age(self, params) -> "Tuple[Optional[list[DrawingResult]], float]":
+        """Return (results, age_in_seconds) or (None, 0.0) on a cache miss."""
         key = _params_hash(params)
         with self._connect() as conn:
             row = conn.execute(
-                "SELECT results_json FROM search_cache WHERE params_hash = ?",
+                "SELECT results_json, cached_at FROM search_cache WHERE params_hash = ?",
                 (key,),
             ).fetchone()
         if row is None:
-            return None
+            return None, 0.0
         try:
             raw = json.loads(row[0])
-            return [DrawingResult(**d) for d in raw]
+            results = [DrawingResult(**d) for d in raw]
+            age = time.time() - row[1]
+            return results, age
         except Exception:
-            return None
+            return None, 0.0
 
     def put(self, params, results: "list[DrawingResult]") -> None:
         """Store *results* in the cache under the key derived from *params*."""
@@ -82,14 +90,10 @@ class DrawingSearchCache:
         with self._connect() as conn:
             conn.execute("DELETE FROM search_cache")
 
-    def clear_expired(self, ttl_seconds: float = 86400) -> int:
-        """Delete entries older than *ttl_seconds*. Returns number of rows removed."""
-        cutoff = time.time() - ttl_seconds
+    def count(self) -> int:
+        """Return the number of cached query entries."""
         with self._connect() as conn:
-            cur = conn.execute(
-                "DELETE FROM search_cache WHERE cached_at < ?", (cutoff,)
-            )
-            return cur.rowcount
+            return conn.execute("SELECT COUNT(*) FROM search_cache").fetchone()[0]
 
     # ── internals ─────────────────────────────────────────────────
 
