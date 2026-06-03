@@ -2454,7 +2454,7 @@ def _show_fetch_options_dialog(parent, url: str, headers: dict) -> None:
         log.configure(state="disabled")
 
     def _run():
-        dlg.after(0, lambda: _log(f"Connecting to {url} …\n", "head"))
+        dlg.after(0, lambda: _log(f"Connecting to {url.rstrip('/').split('/search/')[0]}/search/searchGT.html …\n", "head"))
         try:
             opts = fetch_form_options(url, extra_headers=headers)
 

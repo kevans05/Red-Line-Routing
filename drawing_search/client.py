@@ -41,7 +41,11 @@ class DrawingSearchClient:
         ),
         cache=None,
     ):
-        self.base_url   = base_url.rstrip("/")
+        # Strip the search path if user pasted the full URL into settings
+        _b = base_url.rstrip("/")
+        if _b.endswith(_SEARCH_PATH.rstrip("/")):
+            _b = _b[: -len(_SEARCH_PATH.rstrip("/"))].rstrip("/")
+        self.base_url = _b
         self.cookies    = cookies or {}
         self.timeout    = timeout
         self.user_agent = user_agent

@@ -93,7 +93,11 @@ def fetch_form_options(
 
     Raises ``urllib.error.URLError`` / ``urllib.error.HTTPError`` on failure.
     """
-    url = base_url.rstrip("/") + _FORM_PATH
+    # Strip the search path if the user pasted the full URL into settings
+    _base = base_url.rstrip("/")
+    if _base.endswith(_FORM_PATH.rstrip("/")):
+        _base = _base[: -len(_FORM_PATH.rstrip("/"))].rstrip("/")
+    url = _base + _FORM_PATH
     cookie_h = "; ".join(f"{k}={v}" for k, v in (cookies or {}).items())
 
     headers = {
