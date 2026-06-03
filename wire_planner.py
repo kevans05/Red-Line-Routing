@@ -15,6 +15,7 @@ import json
 import os
 import subprocess
 import sys
+import re
 import webbrowser
 from copy import deepcopy
 from datetime import datetime
@@ -2373,6 +2374,18 @@ class DrawingSearchDialog(tk.Toplevel):
 # Drawing-options fetch helpers  (used by both settings dialogs)
 # ──────────────────────────────────────────────────────────────────
 
+def _parse_request_headers_raw(raw_headers: str) -> dict:
+    """Parse a raw 'Header-Name: value' block into a dict (module-level helper)."""
+    headers = {}
+    for line in raw_headers.splitlines():
+        line = line.strip()
+        if not line or ":" not in line:
+            continue
+        k, _, v = line.partition(":")
+        headers[k.strip()] = v.strip()
+    return headers
+
+
 def _parse_cookies_from_headers(raw_headers: str) -> dict:
     """Extract Cookie key=value pairs from a raw headers text block.
 
@@ -2394,7 +2407,7 @@ def _parse_cookies_from_headers(raw_headers: str) -> dict:
     return cookies
 
 
-def _show_fetch_options_dialog(parent, url: str, cookies: dict) -> None:
+def _show_fetch_options_dialog(parent, url: str, headers: dict) -> None:
     """Open a pop-out dialog that fetches and displays drawing form options."""
     if not _DRAWING_SEARCH_AVAILABLE:
         messagebox.showerror("Unavailable",
@@ -2443,7 +2456,7 @@ def _show_fetch_options_dialog(parent, url: str, cookies: dict) -> None:
     def _run():
         dlg.after(0, lambda: _log(f"Connecting to {url} …\n", "head"))
         try:
-            opts = fetch_form_options(url, cookies=cookies)
+            opts = fetch_form_options(url, extra_headers=headers)
 
             fac   = opts.get("facilities",       {})
             typs  = opts.get("drawing_types",    {})
@@ -2591,11 +2604,9 @@ class SoftwareSetupDialog(tk.Toplevel):
 
     def _fetch_drawing_options(self):
         url = self._cfg_vars.get("drawing_search_url", tk.StringVar()).get().strip()
-        # No separate cookie field in this dialog — use whatever is already in
-        # app_config (populated from a previous settings save or first-run).
-        cookies = _parse_cookies_from_headers(
+        headers = _parse_request_headers_raw(
             self.result.get("request_headers", "") if self.result else "")
-        _show_fetch_options_dialog(self, url, cookies)
+        _show_fetch_options_dialog(self, url, headers)
 
     def _skip(self):
         self.result = {}; self.destroy()
@@ -4310,8 +4321,8 @@ class RedLineApp(tk.Tk):
 
         def _do_fetch_options():
             url  = cfg_vars.get("drawing_search_url", tk.StringVar()).get().strip()
-            cookies = _parse_cookies_from_headers(headers_txt.get("1.0", "end"))
-            _show_fetch_options_dialog(dlg, url, cookies)
+            headers = _parse_request_headers_raw(headers_txt.get("1.0", "end"))
+            _show_fetch_options_dialog(dlg, url, headers)
 
         ttk.Button(drw_search_lf, text="🔄 Fetch Drawing Options",
                    command=_do_fetch_options).pack(anchor="w")
