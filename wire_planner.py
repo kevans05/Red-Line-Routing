@@ -30,7 +30,9 @@ import tempfile
 try:
     from drawing_search import (DrawingSearchClient, SearchParams,
                                 DrawingResult, PagedResults, DrawingSearchCache,
-                                DRAWING_TYPES, DRAWING_SUBJECTS)
+                                DRAWING_TYPES, DRAWING_SUBJECTS, FACILITIES,
+                                load_cached_options, save_cached_options,
+                                fetch_form_options)
     _DRAWING_SEARCH_AVAILABLE = True
 except ImportError:
     _DRAWING_SEARCH_AVAILABLE = False
@@ -2184,19 +2186,31 @@ class DrawingSearchDialog(tk.Toplevel):
         self._v_serial_from  = _lbl_ent(row0, "Serial From:", 10)
         self._v_serial_to    = _lbl_ent(row0, "Serial To:", 10)
 
+        # Load options — prefer live cached data over static fallbacks
+        if _DRAWING_SEARCH_AVAILABLE:
+            _live = load_cached_options() or {}
+            _fac  = _live.get("facilities",       FACILITIES)
+            _typ  = _live.get("drawing_types",    DRAWING_TYPES)
+            _subj = _live.get("drawing_subjects",  DRAWING_SUBJECTS)
+        else:
+            _fac = _typ = _subj = {}
+
         ttk.Label(row1, text="Facility:").pack(side="left")
         self._v_facility = tk.StringVar()
-        ttk.Entry(row1, textvariable=self._v_facility, width=12).pack(side="left", padx=(2, 10))
+        fac_choices = [""] + [f"{k} — {v}" for k, v in _fac.items()]
+        self._cb_facility = ttk.Combobox(row1, textvariable=self._v_facility,
+                                         values=fac_choices, width=18)
+        self._cb_facility.pack(side="left", padx=(2, 10))
 
         ttk.Label(row1, text="Type:").pack(side="left")
         self._v_type = tk.StringVar()
-        type_choices = [""] + [f"{k} — {v}" for k, v in DRAWING_TYPES.items()] if _DRAWING_SEARCH_AVAILABLE else [""]
+        type_choices = [""] + [f"{k} — {v}" for k, v in _typ.items()] if _DRAWING_SEARCH_AVAILABLE else [""]
         self._cb_type = ttk.Combobox(row1, textvariable=self._v_type, values=type_choices, width=22, state="readonly")
         self._cb_type.pack(side="left", padx=(2, 10))
 
         ttk.Label(row1, text="Subject:").pack(side="left")
         self._v_subject = tk.StringVar()
-        subj_choices = [""] + [f"{k} — {v}" for k, v in DRAWING_SUBJECTS.items()] if _DRAWING_SEARCH_AVAILABLE else [""]
+        subj_choices = [""] + [f"{k} — {v}" for k, v in _subj.items()] if _DRAWING_SEARCH_AVAILABLE else [""]
         self._cb_subject = ttk.Combobox(row1, textvariable=self._v_subject, values=subj_choices, width=22, state="readonly")
         self._cb_subject.pack(side="left", padx=(2, 10))
 
@@ -2252,10 +2266,9 @@ class DrawingSearchDialog(tk.Toplevel):
 
     def _clear_form(self):
         for v in (self._v_drawing_num, self._v_title, self._v_serial_from,
-                  self._v_serial_to, self._v_facility):
+                  self._v_serial_to, self._v_facility, self._v_type,
+                  self._v_subject):
             v.set("")
-        self._v_type.set("")
-        self._v_subject.set("")
         self._v_state.set("Released")
 
     def _build_client(self):
@@ -2424,6 +2437,18 @@ class SoftwareSetupDialog(tk.Toplevel):
         self._drw_cookies_txt.pack(fill="x", pady=(0, 4))
         self._drw_cookies_txt.insert("1.0", cfg.get("drawing_search_cookies", ""))
 
+        self._fetch_status_var = tk.StringVar()
+        fetch_row = tk.Frame(body, bg="white"); fetch_row.pack(fill="x", pady=(0, 6))
+        self._fetch_btn = tk.Button(
+            fetch_row, text="🔄 Fetch Drawing Options",
+            command=self._fetch_drawing_options,
+            bg="#2980b9", fg="white", relief="flat", font=("", 8),
+            cursor="hand2", activebackground="#3498db", activeforeground="white",
+            padx=8, pady=3)
+        self._fetch_btn.pack(side="left")
+        tk.Label(fetch_row, textvariable=self._fetch_status_var,
+                 bg="white", fg="#5d6d7e", font=("", 8)).pack(side="left", padx=8)
+
         # Engineering Standards authentication
         eng_hdr_row = tk.Frame(body, bg="white"); eng_hdr_row.pack(fill="x", pady=(6, 4))
         tk.Frame(eng_hdr_row, bg="#2980b9", width=3).pack(side="left", fill="y")
@@ -2456,6 +2481,70 @@ class SoftwareSetupDialog(tk.Toplevel):
                  bg="#eaecee", fg="#aab7b8", font=("", 8)).pack(side="left", padx=12, pady=8)
         ttk.Button(bf, text="Skip for Now",    command=self._skip).pack(side="right", padx=(6, 12), pady=8)
         ttk.Button(bf, text="Save & Continue", command=self._save).pack(side="right", pady=8)
+
+        # Make body scrollable — wrap it in a Canvas with a vertical scrollbar.
+        # The canvas and scrollbar must be packed AFTER the footer (side="bottom" was
+        # already packed above) so that the footer stays fixed.
+        vsb = tk.Scrollbar(self, orient="vertical")
+        vsb.pack(side="right", fill="y")
+        canvas = tk.Canvas(self, bg="white", highlightthickness=0,
+                           yscrollcommand=vsb.set)
+        canvas.pack(side="left", fill="both", expand=True)
+        vsb.configure(command=canvas.yview)
+
+        # Re-parent body onto the canvas
+        body_id = canvas.create_window((0, 0), window=body, anchor="nw")
+
+        def _on_body_configure(event):
+            canvas.configure(scrollregion=canvas.bbox("all"))
+
+        def _on_canvas_configure(event):
+            canvas.itemconfigure(body_id, width=event.width)
+
+        body.bind("<Configure>", _on_body_configure)
+        canvas.bind("<Configure>", _on_canvas_configure)
+        canvas.bind_all("<MouseWheel>",
+                        lambda e: canvas.yview_scroll(int(-1 * (e.delta / 120)), "units"))
+
+    def _fetch_drawing_options(self):
+        if not _DRAWING_SEARCH_AVAILABLE:
+            self._fetch_status_var.set("drawing_search package not available.")
+            return
+        url = self._cfg_vars.get("drawing_search_url", tk.StringVar()).get().strip()
+        if not url:
+            self._fetch_status_var.set("Set Drawing Search URL first.")
+            return
+        raw = self._drw_cookies_txt.get("1.0", "end").strip()
+        cookies = {}
+        for part in re.split(r";\s*", raw):
+            if "=" in part:
+                k, _, v = part.partition("=")
+                cookies[k.strip()] = v.strip()
+        self._fetch_status_var.set("Fetching…")
+        self._fetch_btn.configure(state="disabled")
+
+        def _run():
+            try:
+                opts = fetch_form_options(url, cookies=cookies)
+                save_cached_options(opts)
+                from drawing_search.lookup_tables import (
+                    DRAWING_TYPES, DRAWING_SUBJECTS, FACILITIES)
+                if opts.get("drawing_types"):
+                    DRAWING_TYPES.clear(); DRAWING_TYPES.update(opts["drawing_types"])
+                if opts.get("drawing_subjects"):
+                    DRAWING_SUBJECTS.clear(); DRAWING_SUBJECTS.update(opts["drawing_subjects"])
+                if opts.get("facilities"):
+                    FACILITIES.clear(); FACILITIES.update(opts["facilities"])
+                n_fac  = len(opts.get("facilities", {}))
+                n_typ  = len(opts.get("drawing_types", {}))
+                n_subj = len(opts.get("drawing_subjects", {}))
+                msg = f"Saved — {n_fac} facilities, {n_typ} types, {n_subj} subjects."
+            except Exception as exc:
+                msg = f"Error: {exc}"
+            self.after(0, lambda: (self._fetch_status_var.set(msg),
+                                   self._fetch_btn.configure(state="normal")))
+
+        threading.Thread(target=_run, daemon=True).start()
 
     def _skip(self):
         self.result = {}; self.destroy()
@@ -4088,8 +4177,28 @@ class RedLineApp(tk.Tk):
         dlg.resizable(True, True)
         dlg.grab_set()
 
-        f = ttk.Frame(dlg, padding=14)
-        f.pack(fill="both", expand=True)
+        # Scrollable content area
+        _vsb = ttk.Scrollbar(dlg, orient="vertical")
+        _vsb.pack(side="right", fill="y")
+        _canvas = tk.Canvas(dlg, highlightthickness=0, yscrollcommand=_vsb.set)
+        _canvas.pack(side="left", fill="both", expand=True)
+        _vsb.configure(command=_canvas.yview)
+
+        f = ttk.Frame(_canvas, padding=14)
+        _cwin = _canvas.create_window((0, 0), window=f, anchor="nw")
+
+        def _on_f_cfg(event):
+            _canvas.configure(scrollregion=_canvas.bbox("all"))
+
+        def _on_canvas_cfg(event):
+            _canvas.itemconfigure(_cwin, width=event.width)
+
+        f.bind("<Configure>", _on_f_cfg)
+        _canvas.bind("<Configure>", _on_canvas_cfg)
+        _canvas.bind_all(
+            "<MouseWheel>",
+            lambda e: _canvas.yview_scroll(int(-1 * (e.delta / 120)), "units"),
+        )
 
         sections = [
             ("Drawings", [
@@ -4154,6 +4263,57 @@ class RedLineApp(tk.Tk):
         drw_cookies_txt = scrolledtext.ScrolledText(drw_search_lf, height=3, font=("Courier", 9), wrap="none")
         drw_cookies_txt.pack(fill="x")
         drw_cookies_txt.insert("1.0", self.app_config.get("drawing_search_cookies", ""))
+
+        fetch_status_var = tk.StringVar()
+        fetch_row = ttk.Frame(drw_search_lf); fetch_row.pack(fill="x", pady=(6, 0))
+
+        def _do_fetch_options():
+            if not _DRAWING_SEARCH_AVAILABLE:
+                fetch_status_var.set("drawing_search package not available.")
+                return
+            url = cfg_vars.get("drawing_search_url", tk.StringVar()).get().strip()
+            if not url:
+                fetch_status_var.set("Set Drawing Search URL above first.")
+                return
+            raw = drw_cookies_txt.get("1.0", "end").strip()
+            cookies = {}
+            for part in re.split(r";\s*", raw):
+                if "=" in part:
+                    k, _, v = part.partition("=")
+                    cookies[k.strip()] = v.strip()
+            fetch_status_var.set("Fetching…")
+            fetch_btn.configure(state="disabled")
+
+            def _run():
+                try:
+                    opts = fetch_form_options(url, cookies=cookies)
+                    save_cached_options(opts)
+                    # Reload live tables in memory
+                    from drawing_search.lookup_tables import (
+                        DRAWING_TYPES, DRAWING_SUBJECTS, FACILITIES)
+                    if opts.get("drawing_types"):
+                        DRAWING_TYPES.clear(); DRAWING_TYPES.update(opts["drawing_types"])
+                    if opts.get("drawing_subjects"):
+                        DRAWING_SUBJECTS.clear(); DRAWING_SUBJECTS.update(opts["drawing_subjects"])
+                    if opts.get("facilities"):
+                        FACILITIES.clear(); FACILITIES.update(opts["facilities"])
+                    n_fac  = len(opts.get("facilities", {}))
+                    n_typ  = len(opts.get("drawing_types", {}))
+                    n_subj = len(opts.get("drawing_subjects", {}))
+                    msg = (f"Saved — {n_fac} facilities, {n_typ} types, "
+                           f"{n_subj} subjects.")
+                except Exception as exc:
+                    msg = f"Error: {exc}"
+                self.after(0, lambda: (fetch_status_var.set(msg),
+                                       fetch_btn.configure(state="normal")))
+
+            threading.Thread(target=_run, daemon=True).start()
+
+        fetch_btn = ttk.Button(fetch_row, text="🔄 Fetch Drawing Options",
+                               command=_do_fetch_options)
+        fetch_btn.pack(side="left")
+        ttk.Label(fetch_row, textvariable=fetch_status_var,
+                  foreground="grey", font=("", 8)).pack(side="left", padx=8)
 
         eng_auth_lf = ttk.LabelFrame(f, text="Engineering Standards — Authentication", padding=8)
         eng_auth_lf.pack(fill="x", pady=(0, 8))

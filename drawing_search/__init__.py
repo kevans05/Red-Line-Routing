@@ -17,7 +17,9 @@ from .models import DrawingResult, PagedResults
 from .client import DrawingSearchClient, SearchParams
 from .parser import parse_results, parse_paged
 from .cache import DrawingSearchCache
-from .lookup_tables import DRAWING_TYPES, DRAWING_SUBJECTS, FACILITIES
+from .lookup_tables import (DRAWING_TYPES, DRAWING_SUBJECTS, FACILITIES,
+                             load_cached_options, save_cached_options)
+from .form_fetcher import fetch_form_options
 
 __all__ = [
     "DrawingSearchClient",
@@ -30,4 +32,7 @@ __all__ = [
     "DRAWING_TYPES",
     "DRAWING_SUBJECTS",
     "FACILITIES",
+    "load_cached_options",
+    "save_cached_options",
+    "fetch_form_options",
 ]
