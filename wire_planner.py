@@ -15,6 +15,7 @@ import json
 import os
 import subprocess
 import sys
+import re
 import webbrowser
 from copy import deepcopy
 from datetime import datetime
