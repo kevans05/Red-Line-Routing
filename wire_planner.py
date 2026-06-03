@@ -2282,20 +2282,8 @@ class DrawingSearchDialog(tk.Toplevel):
         base_url = self.app_config.get("drawing_search_url", "").strip()
         if not base_url:
             return None
-        # Prefer the dedicated drawing_search_cookies field.  If empty, fall
-        # back to the Cookie: header extracted from the general request_headers
-        # (same cookie string used by engineering-standards downloads).
-        raw_cookies = self.app_config.get("drawing_search_cookies", "").strip()
-        if not raw_cookies:
-            for line in self.app_config.get("request_headers", "").splitlines():
-                if line.lower().startswith("cookie:"):
-                    raw_cookies = line.split(":", 1)[1].strip()
-                    break
-        cookies = {}
-        for part in re.split(r";\s*", raw_cookies):
-            if "=" in part:
-                k, _, v = part.partition("=")
-                cookies[k.strip()] = v.strip()
+        cookies = _parse_cookies_from_headers(
+            self.app_config.get("request_headers", ""))
         cache = DrawingSearchCache() if _DRAWING_SEARCH_AVAILABLE else None
         return DrawingSearchClient(base_url=base_url, cookies=cookies, cache=cache)
 
@@ -2381,6 +2369,120 @@ class DrawingSearchDialog(tk.Toplevel):
         self.destroy()
 
 
+# ──────────────────────────────────────────────────────────────────
+# Drawing-options fetch helpers  (used by both settings dialogs)
+# ──────────────────────────────────────────────────────────────────
+
+def _parse_cookies_from_headers(raw_headers: str) -> dict:
+    """Extract Cookie key=value pairs from a raw headers text block.
+
+    Looks for a ``Cookie:`` line; if absent, treats the whole string as a
+    raw cookie string (``name=val; name2=val2``).
+    """
+    raw = ""
+    for line in raw_headers.splitlines():
+        if line.lower().startswith("cookie:"):
+            raw = line.split(":", 1)[1].strip()
+            break
+    if not raw:
+        raw = raw_headers.strip()
+    cookies = {}
+    for part in re.split(r";\s*", raw):
+        if "=" in part:
+            k, _, v = part.partition("=")
+            cookies[k.strip()] = v.strip()
+    return cookies
+
+
+def _show_fetch_options_dialog(parent, url: str, cookies: dict) -> None:
+    """Open a pop-out dialog that fetches and displays drawing form options."""
+    if not _DRAWING_SEARCH_AVAILABLE:
+        messagebox.showerror("Unavailable",
+            "The drawing_search package is not installed or could not be imported.",
+            parent=parent)
+        return
+    if not url:
+        messagebox.showwarning("No URL",
+            "Set the Drawing Search URL in Software Settings first.", parent=parent)
+        return
+
+    dlg = tk.Toplevel(parent)
+    dlg.title("Fetch Drawing Options")
+    dlg.resizable(True, True)
+    dlg.grab_set()
+
+    # Header
+    hdr = tk.Frame(dlg, bg="#1c3a5a"); hdr.pack(fill="x")
+    tk.Label(hdr, text="Fetch Drawing Options", bg="#1c3a5a", fg="white",
+             font=("", 11, "bold"), padx=14, pady=10).pack(side="left")
+
+    body = ttk.Frame(dlg, padding=14); body.pack(fill="both", expand=True)
+
+    ttk.Label(body, text=f"URL:  {url}", foreground="grey",
+              font=("", 8), wraplength=460).pack(anchor="w", pady=(0, 6))
+
+    log = scrolledtext.ScrolledText(body, height=14, font=("Courier", 9),
+                                    state="disabled", wrap="word",
+                                    bg="#1c2833", fg="#ecf0f1")
+    log.tag_configure("ok",   foreground="#58d68d")
+    log.tag_configure("err",  foreground="#ec7063")
+    log.tag_configure("head", foreground="#85c1e9")
+    log.tag_configure("info", foreground="#85929e")
+    log.pack(fill="both", expand=True)
+
+    bf = ttk.Frame(dlg, padding=(14, 4, 14, 10)); bf.pack(fill="x")
+    close_btn = ttk.Button(bf, text="Close", command=dlg.destroy, state="disabled")
+    close_btn.pack(side="right")
+
+    def _log(text, tag=None):
+        log.configure(state="normal")
+        log.insert("end", text, tag or "")
+        log.see("end")
+        log.configure(state="disabled")
+
+    def _run():
+        dlg.after(0, lambda: _log(f"Connecting to {url} …\n", "head"))
+        try:
+            opts = fetch_form_options(url, cookies=cookies)
+
+            fac   = opts.get("facilities",       {})
+            typs  = opts.get("drawing_types",    {})
+            subjs = opts.get("drawing_subjects", {})
+
+            dlg.after(0, lambda: _log(
+                f"\n── Facilities ({len(fac)}) ──\n", "head"))
+            for code, label in sorted(fac.items()):
+                dlg.after(0, lambda c=code, l=label: _log(f"  {c:12}  {l}\n", "ok"))
+
+            dlg.after(0, lambda: _log(
+                f"\n── Drawing Types ({len(typs)}) ──\n", "head"))
+            for code, label in sorted(typs.items()):
+                dlg.after(0, lambda c=code, l=label: _log(f"  {c:6}  {l}\n", "ok"))
+
+            dlg.after(0, lambda: _log(
+                f"\n── Drawing Subjects ({len(subjs)}) ──\n", "head"))
+            for code, label in sorted(subjs.items()):
+                dlg.after(0, lambda c=code, l=label: _log(f"  {c:6}  {l}\n", "ok"))
+
+            # Persist and update in-memory tables
+            save_cached_options(opts)
+            from drawing_search.lookup_tables import DRAWING_TYPES, DRAWING_SUBJECTS, FACILITIES
+            if fac:   FACILITIES.clear();     FACILITIES.update(fac)
+            if typs:  DRAWING_TYPES.clear();  DRAWING_TYPES.update(typs)
+            if subjs: DRAWING_SUBJECTS.clear(); DRAWING_SUBJECTS.update(subjs)
+
+            dlg.after(0, lambda: _log(
+                f"\n✓  Saved — {len(fac)} facilities, {len(typs)} types, "
+                f"{len(subjs)} subjects.\n", "ok"))
+        except Exception as exc:
+            dlg.after(0, lambda: _log(f"\n✗  Error: {exc}\n", "err"))
+        finally:
+            dlg.after(0, lambda: close_btn.configure(state="normal"))
+
+    threading.Thread(target=_run, daemon=True).start()
+    _center_window(dlg, 520, 480)
+
+
 class SoftwareSetupDialog(tk.Toplevel):
     """First-time global setup: collect base URLs."""
     def __init__(self, parent, app_config):
@@ -2438,22 +2540,13 @@ class SoftwareSetupDialog(tk.Toplevel):
                          highlightcolor="#2980b9", font=("", 9)).pack(
                     side="left", fill="x", expand=True, padx=(6, 0), ipady=4)
 
-        # Drawing Search Authentication section
+        # Drawing Search — Fetch Options button (uses master auth from above)
         ds_hdr_row = tk.Frame(body, bg="white"); ds_hdr_row.pack(fill="x", pady=(6, 4))
         tk.Frame(ds_hdr_row, bg="#2980b9", width=3).pack(side="left", fill="y")
-        tk.Label(ds_hdr_row, text="Drawing Search — Authentication", bg="white", fg="#1c2833",
+        tk.Label(ds_hdr_row, text="Drawing Search", bg="white", fg="#1c2833",
                  font=("", 9, "bold"), padx=8, pady=2).pack(side="left", anchor="w")
 
-        tk.Label(body, text="Session Cookies (paste from browser):", bg="white", fg="#5d6d7e",
-                 font=("", 9), anchor="w").pack(fill="x", pady=(2, 0))
-        self._drw_cookies_txt = tk.Text(body, height=3, font=("Courier", 8), wrap="none",
-                                        bg="#f4f6f7", relief="flat", bd=1,
-                                        highlightthickness=1, highlightbackground="#d5d8dc")
-        self._drw_cookies_txt.pack(fill="x", pady=(0, 4))
-        self._drw_cookies_txt.insert("1.0", cfg.get("drawing_search_cookies", ""))
-
-        self._fetch_status_var = tk.StringVar()
-        fetch_row = tk.Frame(body, bg="white"); fetch_row.pack(fill="x", pady=(0, 6))
+        fetch_row = tk.Frame(body, bg="white"); fetch_row.pack(fill="x", pady=(2, 6))
         self._fetch_btn = tk.Button(
             fetch_row, text="🔄 Fetch Drawing Options",
             command=self._fetch_drawing_options,
@@ -2461,34 +2554,9 @@ class SoftwareSetupDialog(tk.Toplevel):
             cursor="hand2", activebackground="#3498db", activeforeground="white",
             padx=8, pady=3)
         self._fetch_btn.pack(side="left")
-        tk.Label(fetch_row, textvariable=self._fetch_status_var,
-                 bg="white", fg="#5d6d7e", font=("", 8)).pack(side="left", padx=8)
-
-        # Engineering Standards authentication
-        eng_hdr_row = tk.Frame(body, bg="white"); eng_hdr_row.pack(fill="x", pady=(6, 4))
-        tk.Frame(eng_hdr_row, bg="#2980b9", width=3).pack(side="left", fill="y")
-        tk.Label(eng_hdr_row, text="Engineering Standards — Authentication", bg="white", fg="#1c2833",
-                 font=("", 9, "bold"), padx=8, pady=2).pack(side="left", anchor="w")
-
-        for key, label, show in [("engineering_auth_mode", "Auth Mode (ntlm/sso/negotiate/basic)", ""),
-                                  ("engineering_username", "Username", ""), ("engineering_password", "Password", "*")]:
-            r = tk.Frame(body, bg="white"); r.pack(fill="x", pady=2)
-            tk.Label(r, text=label + ":", bg="white", fg="#5d6d7e",
-                     font=("", 9), width=26, anchor="e").pack(side="left")
-            var = tk.StringVar(value=cfg.get(key, ""))
-            self._cfg_vars[key] = var
-            tk.Entry(r, textvariable=var, show=show, bg="#f4f6f7", relief="flat",
-                     bd=1, highlightthickness=1, highlightbackground="#d5d8dc",
-                     highlightcolor="#2980b9", font=("", 9)).pack(
-                side="left", fill="x", expand=True, padx=(6, 0), ipady=4)
-
-        tk.Label(body, text="Optional extra headers (e.g. Cookie) for engineering standards downloads.",
-                 bg="white", fg="#5d6d7e", font=("", 8)).pack(anchor="w", pady=(4, 2))
-        self._eng_headers_txt = tk.Text(body, height=3, font=("Courier", 8), wrap="none",
-                                        bg="#f4f6f7", relief="flat", bd=1,
-                                        highlightthickness=1, highlightbackground="#d5d8dc")
-        self._eng_headers_txt.pack(fill="x", pady=(0, 4))
-        self._eng_headers_txt.insert("1.0", cfg.get("engineering_request_headers", ""))
+        tk.Label(fetch_row,
+                 text="Pulls live facility / type / subject lists from the search server.",
+                 bg="white", fg="#7f8c8d", font=("", 8)).pack(side="left", padx=8)
 
         sep = tk.Frame(self, bg="#d5d8dc", height=1); sep.pack(fill="x", side="bottom")
         bf = tk.Frame(self, bg="#eaecee"); bf.pack(fill="x", side="bottom")
@@ -2522,61 +2590,18 @@ class SoftwareSetupDialog(tk.Toplevel):
                         lambda e: canvas.yview_scroll(int(-1 * (e.delta / 120)), "units"))
 
     def _fetch_drawing_options(self):
-        if not _DRAWING_SEARCH_AVAILABLE:
-            self._fetch_status_var.set("drawing_search package not available.")
-            return
         url = self._cfg_vars.get("drawing_search_url", tk.StringVar()).get().strip()
-        if not url:
-            self._fetch_status_var.set("Set Drawing Search URL first.")
-            return
-        raw = self._drw_cookies_txt.get("1.0", "end").strip()
-        if not raw and hasattr(self, "_eng_headers_txt"):
-            # Fall back to Cookie: line from the engineering headers field
-            for line in self._eng_headers_txt.get("1.0", "end").splitlines():
-                if line.lower().startswith("cookie:"):
-                    raw = line.split(":", 1)[1].strip()
-                    break
-        cookies = {}
-        for part in re.split(r";\s*", raw):
-            if "=" in part:
-                k, _, v = part.partition("=")
-                cookies[k.strip()] = v.strip()
-        self._fetch_status_var.set("Fetching…")
-        self._fetch_btn.configure(state="disabled")
-
-        def _run():
-            try:
-                opts = fetch_form_options(url, cookies=cookies)
-                save_cached_options(opts)
-                from drawing_search.lookup_tables import (
-                    DRAWING_TYPES, DRAWING_SUBJECTS, FACILITIES)
-                if opts.get("drawing_types"):
-                    DRAWING_TYPES.clear(); DRAWING_TYPES.update(opts["drawing_types"])
-                if opts.get("drawing_subjects"):
-                    DRAWING_SUBJECTS.clear(); DRAWING_SUBJECTS.update(opts["drawing_subjects"])
-                if opts.get("facilities"):
-                    FACILITIES.clear(); FACILITIES.update(opts["facilities"])
-                n_fac  = len(opts.get("facilities", {}))
-                n_typ  = len(opts.get("drawing_types", {}))
-                n_subj = len(opts.get("drawing_subjects", {}))
-                msg = f"Saved — {n_fac} facilities, {n_typ} types, {n_subj} subjects."
-            except Exception as exc:
-                msg = f"Error: {exc}"
-            self.after(0, lambda: (self._fetch_status_var.set(msg),
-                                   self._fetch_btn.configure(state="normal")))
-
-        threading.Thread(target=_run, daemon=True).start()
+        # No separate cookie field in this dialog — use whatever is already in
+        # app_config (populated from a previous settings save or first-run).
+        cookies = _parse_cookies_from_headers(
+            self.result.get("request_headers", "") if self.result else "")
+        _show_fetch_options_dialog(self, url, cookies)
 
     def _skip(self):
         self.result = {}; self.destroy()
 
     def _save(self):
         self.result = {k: v.get().strip() for k, v in self._cfg_vars.items()}
-        # password kept as-is (don't strip — spaces are valid)
-        if "engineering_password" in self._cfg_vars:
-            self.result["engineering_password"] = self._cfg_vars["engineering_password"].get()
-        self.result["engineering_request_headers"] = self._eng_headers_txt.get("1.0", "end").strip()
-        self.result["drawing_search_cookies"] = self._drw_cookies_txt.get("1.0", "end").strip()
         self.destroy()
 
 
@@ -4276,225 +4301,27 @@ class RedLineApp(tk.Tk):
         headers_txt.pack(fill="x")
         headers_txt.insert("1.0", self.app_config.get("request_headers", ""))
 
-        drw_search_lf = ttk.LabelFrame(f, text="Drawing Search — Authentication", padding=8)
+        drw_search_lf = ttk.LabelFrame(f, text="Drawing Search", padding=8)
         drw_search_lf.pack(fill="x", pady=(0, 8))
         ttk.Label(drw_search_lf,
-                  text="Session Cookies (paste from browser DevTools → Application → Cookies):",
-                  foreground="grey", font=("", 8)).pack(anchor="w", pady=(0, 2))
-        drw_cookies_txt = scrolledtext.ScrolledText(drw_search_lf, height=3, font=("Courier", 9), wrap="none")
-        drw_cookies_txt.pack(fill="x")
-        drw_cookies_txt.insert("1.0", self.app_config.get("drawing_search_cookies", ""))
-
-        fetch_status_var = tk.StringVar()
-        fetch_row = ttk.Frame(drw_search_lf); fetch_row.pack(fill="x", pady=(6, 0))
+                  text="Fetches the live facility / drawing-type / drawing-subject lists from the "
+                       "search server.\nAuthentication uses the master Cookie header set above.",
+                  foreground="grey", font=("", 8), justify="left").pack(anchor="w", pady=(0, 4))
 
         def _do_fetch_options():
-            if not _DRAWING_SEARCH_AVAILABLE:
-                fetch_status_var.set("drawing_search package not available.")
-                return
-            url = cfg_vars.get("drawing_search_url", tk.StringVar()).get().strip()
-            if not url:
-                fetch_status_var.set("Set Drawing Search URL above first.")
-                return
-            raw = drw_cookies_txt.get("1.0", "end").strip()
-            if not raw:
-                # Fall back to Cookie: line in the general request_headers field
-                for line in headers_txt.get("1.0", "end").splitlines():
-                    if line.lower().startswith("cookie:"):
-                        raw = line.split(":", 1)[1].strip()
-                        break
-            cookies = {}
-            for part in re.split(r";\s*", raw):
-                if "=" in part:
-                    k, _, v = part.partition("=")
-                    cookies[k.strip()] = v.strip()
-            fetch_status_var.set("Fetching…")
-            fetch_btn.configure(state="disabled")
+            url  = cfg_vars.get("drawing_search_url", tk.StringVar()).get().strip()
+            cookies = _parse_cookies_from_headers(headers_txt.get("1.0", "end"))
+            _show_fetch_options_dialog(dlg, url, cookies)
 
-            def _run():
-                try:
-                    opts = fetch_form_options(url, cookies=cookies)
-                    save_cached_options(opts)
-                    # Reload live tables in memory
-                    from drawing_search.lookup_tables import (
-                        DRAWING_TYPES, DRAWING_SUBJECTS, FACILITIES)
-                    if opts.get("drawing_types"):
-                        DRAWING_TYPES.clear(); DRAWING_TYPES.update(opts["drawing_types"])
-                    if opts.get("drawing_subjects"):
-                        DRAWING_SUBJECTS.clear(); DRAWING_SUBJECTS.update(opts["drawing_subjects"])
-                    if opts.get("facilities"):
-                        FACILITIES.clear(); FACILITIES.update(opts["facilities"])
-                    n_fac  = len(opts.get("facilities", {}))
-                    n_typ  = len(opts.get("drawing_types", {}))
-                    n_subj = len(opts.get("drawing_subjects", {}))
-                    msg = (f"Saved — {n_fac} facilities, {n_typ} types, "
-                           f"{n_subj} subjects.")
-                except Exception as exc:
-                    msg = f"Error: {exc}"
-                self.after(0, lambda: (fetch_status_var.set(msg),
-                                       fetch_btn.configure(state="normal")))
+        ttk.Button(drw_search_lf, text="🔄 Fetch Drawing Options",
+                   command=_do_fetch_options).pack(anchor="w")
 
-            threading.Thread(target=_run, daemon=True).start()
-
-        fetch_btn = ttk.Button(fetch_row, text="🔄 Fetch Drawing Options",
-                               command=_do_fetch_options)
-        fetch_btn.pack(side="left")
-        ttk.Label(fetch_row, textvariable=fetch_status_var,
-                  foreground="grey", font=("", 8)).pack(side="left", padx=8)
-
-        eng_auth_lf = ttk.LabelFrame(f, text="Engineering Standards — Authentication", padding=8)
-        eng_auth_lf.pack(fill="x", pady=(0, 8))
-        eng_auth_lf.columnconfigure(1, weight=1)
-
-        # ── Diagnose row ──────────────────────────────────────────────
-        diag_f = tk.Frame(eng_auth_lf, bg="#1c3a5a"); diag_f.grid(
-            row=0, column=0, columnspan=2, sticky="ew", pady=(0, 8))
-        tk.Label(diag_f, text="Step 1 — Diagnose the server auth type", bg="#1c3a5a", fg="#85c1e9",
-                 font=("", 8, "bold"), padx=8, pady=5).pack(side="left")
-        diag_url_var = tk.StringVar(value=self.app_config.get("base_engineering_telecom_url","")
-                                         or self.app_config.get("base_engineering_transmission_url",""))
-
-        diag_inner = ttk.Frame(eng_auth_lf)
-        diag_inner.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(0, 6))
-        diag_inner.columnconfigure(1, weight=1)
-        ttk.Label(diag_inner, text="Test URL:").grid(row=0, column=0, sticky="e", padx=(0,6))
-        ttk.Entry(diag_inner, textvariable=diag_url_var, width=44).grid(row=0, column=1, sticky="ew")
-
-        diag_out = scrolledtext.ScrolledText(diag_inner, height=6, font=("Courier", 8),
-                                             state="disabled", wrap="word",
-                                             bg="#1c2833", fg="#ecf0f1")
-        diag_out.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(4, 0))
-        diag_out.tag_configure("good",  foreground="#58d68d")
-        diag_out.tag_configure("warn",  foreground="#f0b429")
-        diag_out.tag_configure("err",   foreground="#ec7063")
-        diag_out.tag_configure("head",  foreground="#85c1e9")
-
-        def _run_diagnose():
-            url = diag_url_var.get().strip()
-            if not url:
-                messagebox.showwarning("URL needed",
-                    "Enter a test URL (e.g. the base URL for a standard).", parent=dlg)
-                return
-            diag_out.configure(state="normal")
-            diag_out.delete("1.0", "end")
-            diag_out.insert("end", f"Probing: {url}\n\n", "head")
-            diag_out.configure(state="disabled")
-            dlg.update_idletasks()
-
-            def _probe():
-                results = []
-                # 1. Plain unauthenticated HEAD request — see what challenge we get
-                try:
-                    cmd = ["curl", "--silent", "--head", "--max-time", "10",
-                           "--write-out", "\n---HTTP %{http_code}---",
-                           "--dump-header", "-", url]
-                    r = subprocess.run(cmd, capture_output=True, timeout=15)
-                    raw = r.stdout.decode(errors="replace")
-                    results.append(("head", "── Response headers (no auth) ──\n"))
-                    for line in raw.splitlines():
-                        ll = line.lower()
-                        if ll.startswith("www-authenticate"):
-                            results.append(("good", line + "\n"))
-                        elif "401" in line or "403" in line:
-                            results.append(("warn", line + "\n"))
-                        elif line.strip():
-                            results.append(("", line + "\n"))
-                    results.append(("", "\n"))
-                except Exception as exc:
-                    results.append(("err", f"curl not available or failed: {exc}\n"))
-                    dlg.after(0, lambda r=results: _show(r))
-                    return
-
-                # 2. Parse WWW-Authenticate and give recommendation
-                auth_types = []
-                for tag, text in results:
-                    if tag == "good" and "www-authenticate" in text.lower():
-                        val = text.split(":", 1)[-1].strip().lower()
-                        if "ntlm" in val:       auth_types.append("ntlm")
-                        if "negotiate" in val:  auth_types.append("negotiate")
-                        if "kerberos" in val:   auth_types.append("negotiate")
-                        if "basic" in val:      auth_types.append("basic")
-
-                results.append(("head", "── Recommendation ──\n"))
-                if not auth_types:
-                    results.append(("warn",
-                        "No WWW-Authenticate header found.\n"
-                        "The server may not require auth, or blocked the probe.\n"))
-                elif "negotiate" in auth_types:
-                    results.append(("good",
-                        "Server supports Negotiate (Kerberos/NTLM).\n"
-                        "→ Try auth mode: sso  (uses your Windows login, no password)\n"
-                        "  If sso fails, try: negotiate  with DOMAIN\\\\username\n"))
-                elif "ntlm" in auth_types:
-                    results.append(("good",
-                        "Server uses NTLM only.\n"
-                        "→ Use auth mode: ntlm  with DOMAIN\\\\username and password\n"))
-                elif "basic" in auth_types:
-                    results.append(("warn",
-                        "Server uses Basic auth (password sent as base64).\n"
-                        "→ Use auth mode: basic  with username and password\n"))
-
-                dlg.after(0, lambda r=results: _show(r))
-
-            def _show(results):
-                diag_out.configure(state="normal")
-                for tag, text in results:
-                    diag_out.insert("end", text, tag or None)
-                diag_out.configure(state="disabled")
-
-            threading.Thread(target=_probe, daemon=True).start()
-
-        ttk.Button(diag_inner, text="🔍 Diagnose",
-                   command=_run_diagnose).grid(row=0, column=2, padx=(6,0))
-
-        # ── Auth method ───────────────────────────────────────────────
-        sep = ttk.Separator(eng_auth_lf, orient="horizontal")
-        sep.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(4, 8))
-        tk.Label(eng_auth_lf, text="Step 2 — Set auth method and credentials",
-                 font=("", 8, "bold")).grid(row=3, column=0, columnspan=2, sticky="w", pady=(0,6))
-
-        ttk.Label(eng_auth_lf, text="Auth Method:").grid(row=4, column=0, sticky="e", padx=(0,6), pady=3)
-        eng_auth_mode_var = tk.StringVar(value=self.app_config.get("engineering_auth_mode", "ntlm"))
-        auth_mode_cb = ttk.Combobox(eng_auth_lf, textvariable=eng_auth_mode_var,
-                                     values=["sso", "ntlm", "negotiate", "basic"],
-                                     state="readonly", width=14)
-        auth_mode_cb.grid(row=4, column=1, sticky="w", pady=3)
-        ttk.Label(eng_auth_lf,
-                  text="sso = Windows SSO, no password (try first)  ·  ntlm = NTLM challenge-response  ·\n"
-                       "negotiate = Kerberos/NTLM auto  ·  basic = plain username:password",
-                  foreground="grey", font=("", 8), wraplength=480, justify="left").grid(
-            row=5, column=0, columnspan=2, sticky="w", pady=(0, 6))
-
-        ttk.Label(eng_auth_lf, text="Username:").grid(row=6, column=0, sticky="e", padx=(0,6), pady=3)
-        eng_user_var = tk.StringVar(value=self.app_config.get("engineering_username", ""))
-        ttk.Entry(eng_auth_lf, textvariable=eng_user_var, width=36).grid(row=6, column=1, sticky="ew", pady=3)
-        ttk.Label(eng_auth_lf, text="Use DOMAIN\\username format if on a Windows domain. Blank for sso.",
-                  foreground="grey", font=("", 8)).grid(row=7, column=1, sticky="w")
-
-        ttk.Label(eng_auth_lf, text="Password:").grid(row=8, column=0, sticky="e", padx=(0,6), pady=3)
-        eng_pass_var = tk.StringVar(value=self.app_config.get("engineering_password", ""))
-        ttk.Entry(eng_auth_lf, textvariable=eng_pass_var, show="*", width=36).grid(row=8, column=1, sticky="ew", pady=3)
-
-        ttk.Label(eng_auth_lf, text="Extra Headers:").grid(row=9, column=0, sticky="ne", padx=(0,6), pady=3)
-        eng_headers_txt = scrolledtext.ScrolledText(eng_auth_lf, height=3, font=("Courier", 9), wrap="none")
-        eng_headers_txt.grid(row=9, column=1, sticky="ew", pady=3)
-        eng_headers_txt.insert("1.0", self.app_config.get("engineering_request_headers", ""))
-        ttk.Label(eng_auth_lf,
-                  text="Optional extra headers (Header-Name: value, one per line). Usually not needed with NTLM/SSO.",
-                  foreground="grey", font=("", 8), wraplength=480, justify="left").grid(
-            row=10, column=0, columnspan=2, sticky="w", pady=(0, 2))
-
-        bf = ttk.Frame(f); bf.pack(fill="x", pady=(10,0))
+        bf = ttk.Frame(f); bf.pack(fill="x", pady=(10, 0))
         ttk.Button(bf, text="Cancel", command=dlg.destroy).pack(side="right", padx=4)
 
         def _save():
             self.app_config.update({k: v.get().strip() for k, v in cfg_vars.items()})
             self.app_config["request_headers"] = headers_txt.get("1.0", "end").strip()
-            self.app_config["drawing_search_cookies"] = drw_cookies_txt.get("1.0", "end").strip()
-            self.app_config["engineering_auth_mode"] = eng_auth_mode_var.get()
-            self.app_config["engineering_username"] = eng_user_var.get().strip()
-            self.app_config["engineering_password"] = eng_pass_var.get()
-            self.app_config["engineering_request_headers"] = eng_headers_txt.get("1.0", "end").strip()
             self._save_app_config()
             dlg.destroy()
 
@@ -4835,15 +4662,6 @@ class RedLineApp(tk.Tk):
         url = info.get("url", "").strip()
         if url: webbrowser.open(url)
 
-    def _curl_available(self):
-        """Return the path to curl if available, else None."""
-        try:
-            result = subprocess.run(
-                ["curl", "--version"], capture_output=True, timeout=5)
-            return "curl" if result.returncode == 0 else None
-        except Exception:
-            return None
-
     def _download_engineering(self):
         if not self.project_folder:
             messagebox.showinfo("Save First",
@@ -4857,214 +4675,16 @@ class RedLineApp(tk.Tk):
             messagebox.showinfo("No URLs", "No engineering standard URLs are set."); return
 
         dest_dir = os.path.join(self.project_folder, "Engineering Standards")
-        auth_mode = self.app_config.get("engineering_auth_mode", "ntlm")
-        user      = self.app_config.get("engineering_username", "").strip()
-        pwd       = self.app_config.get("engineering_password", "")
-
-        hdrs = self._build_engineering_headers()
-        if self._curl_available() and auth_mode in ("ntlm", "negotiate", "sso"):
-            # Authenticate once via curl to get session cookies, then download
-            # all files with urllib (same path as drawings).
-            cookie_hdr = self._get_engineering_session_cookies(
-                targets[0][1], auth_mode, user, pwd)
-            if cookie_hdr:
-                hdrs["Cookie"] = cookie_hdr
         self._download_with_progress(
             "Downloading Engineering Standards",
             targets,
             dest_dir,
-            extra_headers=hdrs,
+            extra_headers=self._build_engineering_headers(),
         )
 
     def _build_engineering_headers(self):
-        """Build extra HTTP headers for urllib-based engineering download."""
-        import base64
-        headers = {}
-        user = self.app_config.get("engineering_username", "").strip()
-        pwd  = self.app_config.get("engineering_password", "")
-        if user:
-            token = base64.b64encode(f"{user}:{pwd}".encode()).decode()
-            headers["Authorization"] = f"Basic {token}"
-        raw = self.app_config.get("engineering_request_headers", "")
-        for line in raw.splitlines():
-            line = line.strip()
-            if not line or ":" not in line:
-                continue
-            key, _, value = line.partition(":")
-            key = key.strip(); value = value.strip()
-            if key:
-                headers[key] = value
-        return headers
-
-    def _get_engineering_session_cookies(self, sample_url, auth_mode, user, pwd):
-        """Authenticate once via curl and return session cookies as a Cookie header string.
-
-        Writes cookies to a temp file using curl's Netscape cookie-jar format,
-        loads them with http.cookiejar, then deletes the temp file.
-        Returns an empty string if auth fails or curl is unavailable.
-        """
-        import tempfile, http.cookiejar
-        fd, cookie_file = tempfile.mkstemp(suffix=".txt")
-        os.close(fd)
-        try:
-            cmd = ["curl", "--globoff", "--silent", "--show-error",
-                   "--location", "--max-time", "30",
-                   "--cookie-jar", cookie_file,
-                   "--output", os.devnull]
-            if auth_mode == "sso" or (auth_mode == "negotiate" and not user):
-                cmd += ["--negotiate", "--user", ":"]
-            elif auth_mode == "ntlm" and user:
-                cmd += ["--ntlm", "--user", f"{user}:{pwd}"]
-            elif auth_mode == "negotiate" and user:
-                cmd += ["--negotiate", "--user", f"{user}:{pwd}"]
-            cmd.append(sample_url)
-            subprocess.run(cmd, capture_output=True, timeout=45)
-            jar = http.cookiejar.MozillaCookieJar(cookie_file)
-            jar.load(ignore_discard=True, ignore_expires=True)
-            return "; ".join(f"{c.name}={c.value}" for c in jar)
-        except Exception:
-            return ""
-        finally:
-            try:
-                os.unlink(cookie_file)
-            except OSError:
-                pass
-
-    def _download_engineering_curl(self, targets, dest_dir, auth_mode, user, pwd):
-        """Download engineering standards via curl with NTLM/Negotiate/SSO auth."""
-        os.makedirs(dest_dir, exist_ok=True)
-
-        dlg = tk.Toplevel(self)
-        dlg.title("Downloading Engineering Standards")
-        dlg.resizable(True, False)
-        dlg.grab_set()
-
-        hdr = tk.Frame(dlg, bg="#1c2833"); hdr.pack(fill="x")
-        tk.Label(hdr, text="Downloading Engineering Standards", bg="#1c2833", fg="white",
-                 font=("", 11, "bold"), padx=14, pady=10).pack(side="left")
-        tk.Label(hdr, text=f"{len(targets)} file(s)", bg="#1c2833", fg="#85929e",
-                 font=("", 9), padx=8).pack(side="right", pady=10)
-
-        body = ttk.Frame(dlg, padding=(14, 10, 14, 4)); body.pack(fill="both", expand=True)
-        cur_lbl = tk.StringVar(value="Waiting…")
-        ttk.Label(body, text="File:").grid(row=0, column=0, sticky="e", padx=(0,6), pady=2)
-        ttk.Label(body, textvariable=cur_lbl, foreground="#2980b9",
-                  font=("", 9, "bold"), wraplength=430, anchor="w").grid(row=0, column=1, sticky="w", pady=2)
-        bar = ttk.Progressbar(body, length=500, maximum=len(targets))
-        bar.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(8,2))
-        cnt_lbl = tk.StringVar(value=f"0 / {len(targets)}")
-        ttk.Label(body, textvariable=cnt_lbl, foreground="grey",
-                  font=("", 8), anchor="e").grid(row=2, column=0, columnspan=2, sticky="e")
-        body.columnconfigure(1, weight=1)
-
-        ttk.Label(body, text="Log:", font=("", 8)).grid(row=3, column=0, columnspan=2, sticky="w", pady=(10,2))
-        log = scrolledtext.ScrolledText(body, height=8, font=("Courier", 8),
-                                        state="disabled", wrap="word",
-                                        bg="#1c2833", fg="#ecf0f1")
-        log.tag_configure("ok",   foreground="#58d68d")
-        log.tag_configure("err",  foreground="#ec7063")
-        log.tag_configure("info", foreground="#85929e")
-        log.grid(row=4, column=0, columnspan=2, sticky="nsew", pady=(0,6))
-        body.rowconfigure(4, weight=1)
-
-        cancel_flag = [False]
-        bf = ttk.Frame(dlg, padding=(14, 0, 14, 10)); bf.pack(fill="x")
-        ttk.Button(bf, text="Cancel",
-                   command=lambda: cancel_flag.__setitem__(0, True)).pack(side="right", padx=6)
-        ttk.Button(bf, text="Open Folder",
-                   command=lambda: _open_file(dest_dir)).pack(side="left")
-
-        _center_window(dlg, 560, 420)
-
-        q = queue.Queue()
-
-        def _log(msg, tag="info"):
-            log.configure(state="normal")
-            log.insert("end", msg + "\n", tag)
-            log.see("end")
-            log.configure(state="disabled")
-
-        def _run():
-            ok = 0
-            for i, (name, url) in enumerate(targets):
-                if cancel_flag[0]:
-                    q.put(("log", f"Cancelled after {i} file(s).", "info")); break
-                q.put(("progress", i, name))
-
-                ext = os.path.splitext(url.split("?")[0])[-1].lower()
-                if ext not in {".pdf",".png",".jpg",".jpeg",".tif",".tiff",".svg",".dwg",".dxf"}:
-                    ext = ".pdf"
-                dest = os.path.join(dest_dir, name + ext)
-
-                cmd = ["curl", "--silent", "--show-error", "--location",
-                       "--fail",           # treat HTTP 4xx/5xx as errors (exit code 22)
-                       "--write-out", "%{http_code}",   # print HTTP code to stdout
-                       "--output", dest, "--max-time", "60"]
-                if auth_mode == "sso" or (auth_mode == "negotiate" and not user):
-                    cmd += ["--negotiate", "--user", ":"]
-                elif auth_mode == "ntlm" and user:
-                    cmd += ["--ntlm", "--user", f"{user}:{pwd}"]
-                elif auth_mode == "negotiate" and user:
-                    cmd += ["--negotiate", "--user", f"{user}:{pwd}"]
-                elif user:
-                    cmd += ["--user", f"{user}:{pwd}"]
-                # append any extra headers
-                raw = self.app_config.get("engineering_request_headers", "")
-                for line in raw.splitlines():
-                    line = line.strip()
-                    if line and ":" in line:
-                        cmd += ["--header", line]
-                cmd.append(url)
-
-                try:
-                    result = subprocess.run(cmd, capture_output=True, timeout=90)
-                    http_code = result.stdout.decode(errors="replace").strip()
-                    if result.returncode == 0 and os.path.isfile(dest) and os.path.getsize(dest) > 0:
-                        kb = os.path.getsize(dest) // 1024
-                        q.put(("log", f"✓  {name}  ({kb} KB)  [HTTP {http_code}]", "ok"))
-                        ok += 1
-                    else:
-                        # clean up any partial/error file so it isn't mistaken for real content
-                        if os.path.isfile(dest):
-                            os.remove(dest)
-                        stderr = result.stderr.decode(errors="replace").strip()
-                        if http_code == "401":
-                            hint = ("\n  → 401 Unauthorized — check username/password and auth mode in"
-                                    " File → Software Settings → Engineering Standards")
-                        elif http_code == "403":
-                            hint = "\n  → 403 Forbidden — your account may lack permission to this resource"
-                        else:
-                            hint = ""
-                        err = stderr or f"HTTP {http_code}" if http_code else f"exit code {result.returncode}"
-                        q.put(("log", f"✗  {name}: {err}{hint}", "err"))
-                except subprocess.TimeoutExpired:
-                    q.put(("log", f"✗  {name}: timed out", "err"))
-                except Exception as exc:
-                    q.put(("log", f"✗  {name}: {exc}", "err"))
-
-            q.put(("done", ok))
-
-        def _poll():
-            try:
-                while True:
-                    msg = q.get_nowait()
-                    if msg[0] == "progress":
-                        _, i, name = msg
-                        cur_lbl.set(name); bar["value"] = i
-                        cnt_lbl.set(f"{i} / {len(targets)}")
-                    elif msg[0] == "log":
-                        _log(msg[1], msg[2])
-                    elif msg[0] == "done":
-                        bar["value"] = len(targets)
-                        cnt_lbl.set(f"{msg[1]} / {len(targets)} succeeded")
-                        _log(f"Done — {msg[1]} of {len(targets)} file(s) downloaded.", "info")
-                        return
-            except queue.Empty:
-                pass
-            dlg.after(100, _poll)
-
-        threading.Thread(target=_run, daemon=True).start()
-        _poll()
+        """Return extra HTTP headers for engineering downloads (from master auth)."""
+        return self._parse_request_headers()
 
     # ── Print helpers ─────────────────────────────────────────────
 
