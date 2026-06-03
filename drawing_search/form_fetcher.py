@@ -80,26 +80,30 @@ def fetch_form_options(
     cookies: Optional[dict[str, str]] = None,
     timeout: int = 30,
     user_agent: str = _DEFAULT_UA,
+    extra_headers: Optional[dict[str, str]] = None,
 ) -> dict[str, dict[str, str]]:
     """GET the search form page and return parsed dropdown options.
 
     Returns a dict with keys ``facilities``, ``drawing_types``,
     ``drawing_subjects``; each maps option code → human-readable label.
 
+    ``extra_headers`` are merged in and take precedence over the defaults,
+    so callers can pass the full set of request headers (including Cookie)
+    without going through the cookies dict.
+
     Raises ``urllib.error.URLError`` / ``urllib.error.HTTPError`` on failure.
     """
     url = base_url.rstrip("/") + _FORM_PATH
     cookie_h = "; ".join(f"{k}={v}" for k, v in (cookies or {}).items())
 
-    req = urllib.request.Request(
-        url,
-        headers={
-            "Accept":       "text/html,application/xhtml+xml,*/*;q=0.8",
-            "User-Agent":   user_agent,
-            "Cache-Control": "no-cache",
-            **({"Cookie": cookie_h} if cookie_h else {}),
-        },
-    )
+    headers = {
+        "Accept":        "text/html,application/xhtml+xml,*/*;q=0.8",
+        "User-Agent":    user_agent,
+        "Cache-Control": "no-cache",
+        **({"Cookie": cookie_h} if cookie_h else {}),
+        **(extra_headers or {}),
+    }
+    req = urllib.request.Request(url, headers=headers)
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         charset = "utf-8"
         for part in resp.headers.get("Content-Type", "").split(";"):
