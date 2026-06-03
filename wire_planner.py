@@ -2488,7 +2488,10 @@ def _show_fetch_options_dialog(parent, url: str, headers: dict) -> None:
                 f"\n✓  Saved — {len(fac)} facilities, {len(typs)} types, "
                 f"{len(subjs)} subjects.\n", "ok"))
         except Exception as exc:
-            dlg.after(0, lambda: _log(f"\n✗  Error: {exc}\n", "err"))
+            import traceback
+            tb = traceback.format_exc()
+            dlg.after(0, lambda e=exc, t=tb: _log(
+                f"\n✗  Error: {type(e).__name__}: {e}\n{t}\n", "err"))
         finally:
             dlg.after(0, lambda: close_btn.configure(state="normal"))
 
