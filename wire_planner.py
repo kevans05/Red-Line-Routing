@@ -2383,7 +2383,8 @@ class WizardRelayDialog(tk.Toplevel):
 class ProjectWizard(tk.Toplevel):
     """Multi-step new-project wizard."""
 
-    _STEPS = ["Project Info", "Drawings", "Relays & Devices", "CROWs", "Summary"]
+    _STEPS = ["Project Info", "Drawings", "Relays & Devices", "CROWs",
+              "Maintenance Stds", "Engineering Stds", "Summary"]
 
     _SUGGESTIONS = [
         ("Project Team",     "Add team members (engineers, technicians, supervisors) with roles and contacts."),
@@ -2395,11 +2396,13 @@ class ProjectWizard(tk.Toplevel):
 
     # Step accent colours: (sidebar-active, sidebar-done, content-strip)
     _STEP_COLORS = [
-        ("#154360", "#1a5276", "#2980b9"),   # Project Info  — blue
-        ("#0b3d2e", "#1b6b46", "#27ae60"),   # Drawings      — green
-        ("#4a1f6a", "#6c3483", "#8e44ad"),   # Relays        — purple
-        ("#6e2706", "#943126", "#e74c3c"),   # CROWs         — red
-        ("#17202a", "#273746", "#566573"),   # Summary       — slate
+        ("#154360", "#1a5276", "#2980b9"),   # Project Info        — blue
+        ("#0b3d2e", "#1b6b46", "#27ae60"),   # Drawings            — green
+        ("#4a1f6a", "#6c3483", "#8e44ad"),   # Relays              — purple
+        ("#6e2706", "#943126", "#e74c3c"),   # CROWs               — red
+        ("#1a3a2a", "#1e6645", "#1abc9c"),   # Maintenance Stds    — teal
+        ("#2e1a00", "#7d4a00", "#e67e22"),   # Engineering Stds    — orange
+        ("#17202a", "#273746", "#566573"),   # Summary             — slate
     ]
 
     def __init__(self, parent, app_config=None):
@@ -2412,9 +2415,11 @@ class ProjectWizard(tk.Toplevel):
         self._step = 0
         self.wiz_vars = {}
         self.wiz_notes_widget = None
-        self.wiz_drawings = {}
-        self.wiz_relays   = {}
-        self.wiz_crows    = []
+        self.wiz_drawings   = {}
+        self.wiz_relays     = {}
+        self.wiz_crows      = []
+        self.wiz_maint_stds = {}
+        self.wiz_eng_stds   = {}
         self._build()
         # Maximize on open (platform-safe)
         try:
@@ -2490,11 +2495,13 @@ class ProjectWizard(tk.Toplevel):
             f.pack(fill="both", expand=True, padx=20, pady=14)
             return f
 
-        self._build_step_info(    _inner(self._frames[0]))
-        self._build_step_drawings(_inner(self._frames[1]))
-        self._build_step_relays(  _inner(self._frames[2]))
-        self._build_step_crows(   _inner(self._frames[3]))
-        self._build_step_summary( _inner(self._frames[4]))
+        self._build_step_info(       _inner(self._frames[0]))
+        self._build_step_drawings(   _inner(self._frames[1]))
+        self._build_step_relays(     _inner(self._frames[2]))
+        self._build_step_crows(      _inner(self._frames[3]))
+        self._build_step_maint_stds( _inner(self._frames[4]))
+        self._build_step_eng_stds(   _inner(self._frames[5]))
+        self._build_step_summary(    _inner(self._frames[6]))
 
         self._show_step(0)
 
@@ -2756,6 +2763,162 @@ class ProjectWizard(tk.Toplevel):
             self.wiz_crow_tree.insert("","end",values=(c.get("outage_number",""),c.get("url","")))
 
     # ── Step 5 ─────────────────────────────────────────────────────
+    def _build_step_maint_stds(self, parent):
+        tk.Label(parent, text="Maintenance Standards", bg="#f5f6fa", fg="#1c2833",
+                 font=("", 13, "bold")).pack(anchor="w", pady=(0, 2))
+        tk.Label(parent,
+                 text="Add applicable maintenance standards for this project (optional).\n"
+                      "You can manage these at any time in the Maintenance Standards tab.",
+                 bg="#f5f6fa", fg="#85929e", justify="left").pack(anchor="w", pady=(0, 8))
+
+        tb = ttk.Frame(parent); tb.pack(fill="x", pady=(0, 4))
+        ttk.Button(tb, text="+ Add",  command=self._wiz_add_maint).pack(side="left", padx=2)
+        ttk.Button(tb, text="Edit",   command=self._wiz_edit_maint).pack(side="left", padx=2)
+        ttk.Button(tb, text="Delete", command=self._wiz_del_maint).pack(side="left", padx=2)
+
+        fr = ttk.Frame(parent); fr.pack(fill="both", expand=True)
+        cols = ("Standard ID", "Title", "Rev", "URL (Telecom)", "URL (Transmission)", "Notes")
+        self.wiz_maint_tree = ttk.Treeview(fr, columns=cols, show="headings")
+        for col, w, stretch in [
+            ("Standard ID", 110, False), ("Title", 160, True),
+            ("Rev", 55, False), ("URL (Telecom)", 160, False),
+            ("URL (Transmission)", 160, False), ("Notes", 140, False),
+        ]:
+            self.wiz_maint_tree.heading(col, text=col)
+            self.wiz_maint_tree.column(col, width=w, stretch=stretch)
+        vsb = ttk.Scrollbar(fr, orient="vertical", command=self.wiz_maint_tree.yview)
+        self.wiz_maint_tree.configure(yscrollcommand=vsb.set)
+        self.wiz_maint_tree.pack(side="left", fill="both", expand=True)
+        vsb.pack(side="right", fill="y")
+        self.wiz_maint_tree.bind("<Double-1>", lambda _: self._wiz_edit_maint())
+
+    def _wiz_add_maint(self):
+        dlg = MaintenanceStandardDialog(
+            self,
+            base_url_telecom=self.app_config.get("base_maintenance_telecom_url", ""),
+            base_url_transmission=self.app_config.get("base_maintenance_transmission_url", ""),
+        )
+        if dlg.result:
+            sid = dlg.result["standard_id"]
+            self.wiz_maint_stds[sid] = {k: v for k, v in dlg.result.items() if k != "standard_id"}
+            self._wiz_refresh_maint()
+
+    def _wiz_edit_maint(self):
+        sel = self.wiz_maint_tree.selection()
+        if not sel: return
+        sid = sel[0]; info = self.wiz_maint_stds.get(sid, {})
+        dlg = MaintenanceStandardDialog(
+            self,
+            existing={"standard_id": sid, **info},
+            base_url_telecom=self.app_config.get("base_maintenance_telecom_url", ""),
+            base_url_transmission=self.app_config.get("base_maintenance_transmission_url", ""),
+        )
+        if dlg.result:
+            old = sid; new = dlg.result["standard_id"]
+            if old != new: self.wiz_maint_stds.pop(old, None)
+            self.wiz_maint_stds[new] = {k: v for k, v in dlg.result.items() if k != "standard_id"}
+            self._wiz_refresh_maint()
+
+    def _wiz_del_maint(self):
+        sel = self.wiz_maint_tree.selection()
+        if not sel: return
+        if messagebox.askyesno("Delete", f"Remove '{sel[0]}'?", parent=self):
+            self.wiz_maint_stds.pop(sel[0], None); self._wiz_refresh_maint()
+
+    def _wiz_refresh_maint(self):
+        for iid in self.wiz_maint_tree.get_children(): self.wiz_maint_tree.delete(iid)
+        for sid, info in sorted(self.wiz_maint_stds.items()):
+            self.wiz_maint_tree.insert("", "end", iid=sid, values=(
+                sid, info.get("title", ""), info.get("revision", ""),
+                info.get("url_telecom", ""), info.get("url_transmission", ""),
+                info.get("notes", ""),
+            ))
+
+    # ── Step 6 ─────────────────────────────────────────────────────
+    def _build_step_eng_stds(self, parent):
+        tk.Label(parent, text="Engineering Standards", bg="#f5f6fa", fg="#1c2833",
+                 font=("", 13, "bold")).pack(anchor="w", pady=(0, 2))
+        tk.Label(parent,
+                 text="Add applicable engineering standards for this project (optional).\n"
+                      "You can manage these at any time in the Engineering Standards tab.",
+                 bg="#f5f6fa", fg="#85929e", justify="left").pack(anchor="w", pady=(0, 8))
+
+        tb = ttk.Frame(parent); tb.pack(fill="x", pady=(0, 4))
+        ttk.Button(tb, text="+ Add",  command=self._wiz_add_eng).pack(side="left", padx=2)
+        ttk.Button(tb, text="Edit",   command=self._wiz_edit_eng).pack(side="left", padx=2)
+        ttk.Button(tb, text="Delete", command=self._wiz_del_eng).pack(side="left", padx=2)
+
+        fr = ttk.Frame(parent); fr.pack(fill="both", expand=True)
+        cols = ("Standard ID", "Title", "Rev", "Type", "URL", "Notes")
+        self.wiz_eng_tree = ttk.Treeview(fr, columns=cols, show="headings")
+        for col, w, stretch in [
+            ("Standard ID", 110, False), ("Title", 160, True),
+            ("Rev", 55, False), ("Type", 100, False),
+            ("URL", 200, False), ("Notes", 140, False),
+        ]:
+            self.wiz_eng_tree.heading(col, text=col)
+            self.wiz_eng_tree.column(col, width=w, stretch=stretch)
+        vsb = ttk.Scrollbar(fr, orient="vertical", command=self.wiz_eng_tree.yview)
+        self.wiz_eng_tree.configure(yscrollcommand=vsb.set)
+        self.wiz_eng_tree.pack(side="left", fill="both", expand=True)
+        vsb.pack(side="right", fill="y")
+        self.wiz_eng_tree.bind("<Double-1>", lambda _: self._wiz_edit_eng())
+
+    def _wiz_add_eng(self):
+        dlg = EngineeringStandardDialog(
+            self,
+            base_url_telecom=self.app_config.get("base_engineering_telecom_url", ""),
+            base_url_transmission=self.app_config.get("base_engineering_transmission_url", ""),
+        )
+        if dlg.result:
+            sid = dlg.result["standard_id"]
+            self.wiz_eng_stds[sid] = {
+                "title":         dlg.result.get("title", ""),
+                "revision":      dlg.result.get("revision", ""),
+                "standard_type": dlg.result.get("standard_type", ""),
+                "url":           dlg.result.get("url", ""),
+                "notes":         dlg.result.get("notes", ""),
+            }
+            self._wiz_refresh_eng()
+
+    def _wiz_edit_eng(self):
+        sel = self.wiz_eng_tree.selection()
+        if not sel: return
+        sid = sel[0]; info = self.wiz_eng_stds.get(sid, {})
+        dlg = EngineeringStandardDialog(
+            self,
+            existing={"standard_id": sid, **info},
+            base_url_telecom=self.app_config.get("base_engineering_telecom_url", ""),
+            base_url_transmission=self.app_config.get("base_engineering_transmission_url", ""),
+        )
+        if dlg.result:
+            old = sid; new = dlg.result["standard_id"]
+            if old != new: self.wiz_eng_stds.pop(old, None)
+            self.wiz_eng_stds[new] = {
+                "title":         dlg.result.get("title", ""),
+                "revision":      dlg.result.get("revision", ""),
+                "standard_type": dlg.result.get("standard_type", ""),
+                "url":           dlg.result.get("url", ""),
+                "notes":         dlg.result.get("notes", ""),
+            }
+            self._wiz_refresh_eng()
+
+    def _wiz_del_eng(self):
+        sel = self.wiz_eng_tree.selection()
+        if not sel: return
+        if messagebox.askyesno("Delete", f"Remove '{sel[0]}'?", parent=self):
+            self.wiz_eng_stds.pop(sel[0], None); self._wiz_refresh_eng()
+
+    def _wiz_refresh_eng(self):
+        for iid in self.wiz_eng_tree.get_children(): self.wiz_eng_tree.delete(iid)
+        for sid, info in sorted(self.wiz_eng_stds.items()):
+            self.wiz_eng_tree.insert("", "end", iid=sid, values=(
+                sid, info.get("title", ""), info.get("revision", ""),
+                info.get("standard_type", ""), info.get("url", ""),
+                info.get("notes", ""),
+            ))
+
+    # ── Step 7 ─────────────────────────────────────────────────────
     def _build_step_summary(self, parent):
         tk.Label(parent, text="Summary", bg="#f5f6fa", fg="#1c2833",
                  font=("", 13, "bold")).pack(anchor="w", pady=(0, 2))
@@ -2777,13 +2940,15 @@ class ProjectWizard(tk.Toplevel):
         sid  = self.wiz_vars.get("site_id",        tk.StringVar()).get().strip() or "—"
         loc  = self.wiz_vars.get("save_location",  tk.StringVar()).get().strip() or "—"
         lines = [
-            f"Project:        {proj}",
-            f"Site:           {site}  (ID: {sid})",
-            f"Save folder:    {loc}/{proj}",
+            f"Project:              {proj}",
+            f"Site:                 {site}  (ID: {sid})",
+            f"Save folder:          {loc}/{proj}",
             f"",
-            f"Drawings:       {len(self.wiz_drawings)} added",
-            f"Relay records:  {len(self.wiz_relays)} added",
-            f"CROWs:          {len(self.wiz_crows)} added",
+            f"Drawings:             {len(self.wiz_drawings)} added",
+            f"Relay records:        {len(self.wiz_relays)} added",
+            f"CROWs:                {len(self.wiz_crows)} added",
+            f"Maintenance stds:     {len(self.wiz_maint_stds)} added",
+            f"Engineering stds:     {len(self.wiz_eng_stds)} added",
             f"",
             f"Click 'Create Project' to build the folder structure and save.",
         ]
@@ -2793,7 +2958,7 @@ class ProjectWizard(tk.Toplevel):
         self._summary_text.configure(state="disabled")
 
     def _finish(self):
-        if not self._validate() and self._step != 4:
+        if not self._validate() and self._step != len(self._STEPS) - 1:
             self._show_step(0); return
         proj = self.wiz_vars.get("project_name", tk.StringVar()).get().strip()
         loc  = self.wiz_vars.get("save_location",tk.StringVar()).get().strip()
@@ -2802,14 +2967,16 @@ class ProjectWizard(tk.Toplevel):
                 "Project Name and Save Location are required.", parent=self)
             self._show_step(0); return
         self.result = {
-            "project_name":  proj,
-            "site_name":     self.wiz_vars.get("site_name",    tk.StringVar()).get().strip(),
-            "site_id":       self.wiz_vars.get("site_id",      tk.StringVar()).get().strip(),
-            "save_location": loc,
-            "notes":         self.wiz_notes_widget.get("1.0","end").strip() if self.wiz_notes_widget else "",
-            "drawings":      dict(self.wiz_drawings),
-            "relays":        dict(self.wiz_relays),
-            "crows":         list(self.wiz_crows),
+            "project_name":       proj,
+            "site_name":          self.wiz_vars.get("site_name",    tk.StringVar()).get().strip(),
+            "site_id":            self.wiz_vars.get("site_id",      tk.StringVar()).get().strip(),
+            "save_location":      loc,
+            "notes":              self.wiz_notes_widget.get("1.0","end").strip() if self.wiz_notes_widget else "",
+            "drawings":           dict(self.wiz_drawings),
+            "relays":             dict(self.wiz_relays),
+            "crows":              list(self.wiz_crows),
+            "maint_stds":         dict(self.wiz_maint_stds),
+            "eng_stds":           dict(self.wiz_eng_stds),
         }
         self.destroy()
 
@@ -2889,8 +3056,10 @@ class RedLineApp(tk.Tk):
     def _apply_wizard_result(self, result):
         """Apply wizard output: populate app state, create folder structure, save."""
         self.project_var.set(result["project_name"])
-        self.drawing_registry = result.get("drawings", {})
-        self.relay_registry   = result.get("relays",   {})
+        self.drawing_registry               = result.get("drawings",   {})
+        self.relay_registry                 = result.get("relays",     {})
+        self.maintenance_standards_registry = result.get("maint_stds", {})
+        self.engineering_standards_registry = result.get("eng_stds",   {})
         self.title_page = {
             "notes": result.get("notes", ""),
             "crows": result.get("crows", []),
@@ -2918,6 +3087,8 @@ class RedLineApp(tk.Tk):
         self._refresh_drawings_list()
         self._refresh_relay_list()
         self._refresh_crows()
+        self._refresh_maintenance_list()
+        self._refresh_engineering_list()
         self._write(path)
         messagebox.showinfo("Project Created",
             f"'{proj}' created at:\n{folder}\n\nYou're ready to start adding jobs.")
