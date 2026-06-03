@@ -27,6 +27,13 @@ import glob
 import shutil
 import tempfile
 
+# Ensure the directory containing wire_planner.py is on sys.path so that
+# sibling packages (drawing_search/) are always importable, regardless of
+# the working directory the app is launched from.
+_app_dir = os.path.dirname(os.path.abspath(__file__))
+if _app_dir not in sys.path:
+    sys.path.insert(0, _app_dir)
+
 try:
     from drawing_search import (DrawingSearchClient, SearchParams,
                                 DrawingResult, PagedResults, DrawingSearchCache,
@@ -2275,7 +2282,15 @@ class DrawingSearchDialog(tk.Toplevel):
         base_url = self.app_config.get("drawing_search_url", "").strip()
         if not base_url:
             return None
-        raw_cookies = self.app_config.get("drawing_search_cookies", "")
+        # Prefer the dedicated drawing_search_cookies field.  If empty, fall
+        # back to the Cookie: header extracted from the general request_headers
+        # (same cookie string used by engineering-standards downloads).
+        raw_cookies = self.app_config.get("drawing_search_cookies", "").strip()
+        if not raw_cookies:
+            for line in self.app_config.get("request_headers", "").splitlines():
+                if line.lower().startswith("cookie:"):
+                    raw_cookies = line.split(":", 1)[1].strip()
+                    break
         cookies = {}
         for part in re.split(r";\s*", raw_cookies):
             if "=" in part:
@@ -2515,6 +2530,12 @@ class SoftwareSetupDialog(tk.Toplevel):
             self._fetch_status_var.set("Set Drawing Search URL first.")
             return
         raw = self._drw_cookies_txt.get("1.0", "end").strip()
+        if not raw and hasattr(self, "_eng_headers_txt"):
+            # Fall back to Cookie: line from the engineering headers field
+            for line in self._eng_headers_txt.get("1.0", "end").splitlines():
+                if line.lower().startswith("cookie:"):
+                    raw = line.split(":", 1)[1].strip()
+                    break
         cookies = {}
         for part in re.split(r";\s*", raw):
             if "=" in part:
@@ -4276,6 +4297,12 @@ class RedLineApp(tk.Tk):
                 fetch_status_var.set("Set Drawing Search URL above first.")
                 return
             raw = drw_cookies_txt.get("1.0", "end").strip()
+            if not raw:
+                # Fall back to Cookie: line in the general request_headers field
+                for line in headers_txt.get("1.0", "end").splitlines():
+                    if line.lower().startswith("cookie:"):
+                        raw = line.split(":", 1)[1].strip()
+                        break
             cookies = {}
             for part in re.split(r";\s*", raw):
                 if "=" in part:
