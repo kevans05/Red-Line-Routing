@@ -2276,6 +2276,10 @@ class DrawingSearchDialog(tk.Toplevel):
         self._search_btn.pack(side="left", padx=2)
         ttk.Button(row2, text="Clear", command=self._clear_form).pack(side="left", padx=2)
 
+        self._v_use_cache = tk.BooleanVar(value=_DRAWING_SEARCH_AVAILABLE)
+        ttk.Checkbutton(row2, text="Cache results", variable=self._v_use_cache).pack(side="left", padx=(14, 2))
+        ttk.Button(row2, text="Clear cache", command=self._clear_cache).pack(side="left", padx=2)
+
         if not base_url:
             self._search_btn.configure(state="disabled")
 
@@ -2327,10 +2331,21 @@ class DrawingSearchDialog(tk.Toplevel):
         base_url = self.app_config.get("drawing_search_url", "").strip()
         if not base_url:
             return None
-        cookies = _parse_cookies_from_headers(
-            self.app_config.get("request_headers", ""))
-        cache = DrawingSearchCache() if _DRAWING_SEARCH_AVAILABLE else None
-        return DrawingSearchClient(base_url=base_url, cookies=cookies, cache=cache)
+        headers = _parse_request_headers_raw(self.app_config.get("request_headers", ""))
+        cookies = _parse_cookies_from_headers(self.app_config.get("request_headers", ""))
+        use_cache = _DRAWING_SEARCH_AVAILABLE and getattr(self, "_v_use_cache", None) and self._v_use_cache.get()
+        cache = DrawingSearchCache() if use_cache else None
+        return DrawingSearchClient(base_url=base_url, cookies=cookies,
+                                   extra_headers=headers, cache=cache)
+
+    def _clear_cache(self):
+        if not _DRAWING_SEARCH_AVAILABLE:
+            return
+        try:
+            DrawingSearchCache().clear()
+            self._status_var.set("Search cache cleared.")
+        except Exception as exc:
+            messagebox.showerror("Cache Error", str(exc), parent=self)
 
     def _get_params(self, page=0):
         # Parse code from "CODE — Label" or raw code
@@ -2374,7 +2389,7 @@ class DrawingSearchDialog(tk.Toplevel):
 
     def _on_results(self, paged):
         self._last_paged = paged
-        self._from_cache = False  # cache indicator is approximate via status
+        self._from_cache = False
         for iid in self.tree.get_children():
             self.tree.delete(iid)
         for r in paged.results:
@@ -2383,7 +2398,9 @@ class DrawingSearchDialog(tk.Toplevel):
                 r.drawing_type, r.drawing_subject, r.revision, r.state,
             ), tags=(r.document_url,))
         count = paged.total_count if paged.total_count else len(paged.results)
-        self._status_var.set(f"{count} result(s)   Page {paged.page + 1}")
+        parsed = len(paged.results)
+        hint = f"  (⚠ 0 rows parsed — server returned {count} total)" if parsed == 0 and count > 0 else ""
+        self._status_var.set(f"{parsed} result(s){hint}   Page {paged.page + 1}")
         self._page_lbl.configure(text=f"Page {paged.page + 1}")
         self._prev_btn.configure(state="normal" if paged.page > 0 else "disabled")
         self._next_btn.configure(state="normal" if paged.has_next else "disabled")

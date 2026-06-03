@@ -40,16 +40,18 @@ class DrawingSearchClient:
             "Chrome/148.0.0.0 Safari/537.36 Edg/148.0.0.0"
         ),
         cache=None,
+        extra_headers: Optional[dict[str, str]] = None,
     ):
         # Strip the search path if user pasted the full URL into settings
         _b = base_url.rstrip("/")
         if _b.endswith(_SEARCH_PATH.rstrip("/")):
             _b = _b[: -len(_SEARCH_PATH.rstrip("/"))].rstrip("/")
-        self.base_url = _b
-        self.cookies    = cookies or {}
-        self.timeout    = timeout
-        self.user_agent = user_agent
-        self.cache      = cache  # DrawingSearchCache | None
+        self.base_url      = _b
+        self.cookies       = cookies or {}
+        self.timeout       = timeout
+        self.user_agent    = user_agent
+        self.cache         = cache
+        self.extra_headers = extra_headers or {}
 
     # ── public API ────────────────────────────────────────────────
 
@@ -131,14 +133,15 @@ class DrawingSearchClient:
             data=body,
             method="POST",
             headers={
-                "Content-Type":  "application/x-www-form-urlencoded",
-                "Accept":        "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Content-Type":    "application/x-www-form-urlencoded",
+                "Accept":          "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
                 "Accept-Language": "en-US,en;q=0.9",
-                "Cache-Control": "max-age=0",
-                "Origin":        self.base_url,
-                "Referer":       self.base_url + _SEARCH_PATH,
-                "User-Agent":    self.user_agent,
+                "Cache-Control":   "max-age=0",
+                "Origin":          self.base_url,
+                "Referer":         self.base_url + _SEARCH_PATH,
+                "User-Agent":      self.user_agent,
                 **({"Cookie": cookie_h} if cookie_h else {}),
+                **self.extra_headers,
             },
         )
 

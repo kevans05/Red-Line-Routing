@@ -17,11 +17,19 @@ _COL_SIGNED_OUT    = 9
 _COL_PHYS_LOC      = 10
 _COL_LEGACY_DOC    = 11
 
+# Minimum logical columns a row needs to be treated as a result row
+_MIN_RESULT_COLS = 5
+
 _FETCH_PATH = "searchGT/fetchDocument.html"
 
 
 class _TableParser(HTMLParser):
-    """Minimal state-machine parser that walks the results <tbody>."""
+    """Minimal state-machine parser that walks the results table.
+
+    Works with or without explicit <tbody> tags — many older servers omit them
+    even though browsers render them.  Any <tr> inside a <table> is a candidate;
+    rows with fewer than _MIN_RESULT_COLS logical columns are discarded.
+    """
 
     def __init__(self, base_url: str):
         super().__init__()
@@ -29,7 +37,7 @@ class _TableParser(HTMLParser):
         self.results: list[DrawingResult] = []
 
         # parser state
-        self._in_tbody   = False
+        self._table_depth = 0  # track nested tables
         self._in_tr      = False
         self._in_td      = False
         self._col        = -1          # logical column index (skips hidden + checkbox)
@@ -44,9 +52,11 @@ class _TableParser(HTMLParser):
 
     def handle_starttag(self, tag, attrs):
         attrs = dict(attrs)
-        if tag == "tbody":
-            self._in_tbody = True
-        elif tag == "tr" and self._in_tbody:
+        if tag == "table":
+            self._table_depth += 1
+        elif tag in ("tbody", "thead", "tfoot"):
+            pass  # handled via table depth already
+        elif tag == "tr" and self._table_depth > 0:
             self._in_tr   = True
             self._raw_cols = 0
             self._col      = -1
@@ -63,10 +73,11 @@ class _TableParser(HTMLParser):
             self._href = attrs.get("href", "")
 
     def handle_endtag(self, tag):
-        if tag == "tbody":
-            self._in_tbody = False
-        elif tag == "tr" and self._in_tbody:
-            if self._current.drawing_number:
+        if tag == "table":
+            self._table_depth = max(0, self._table_depth - 1)
+        elif tag == "tr" and self._table_depth > 0:
+            # Only keep rows that have enough columns and a drawing number
+            if self._current.drawing_number and self._col >= _MIN_RESULT_COLS - 1:
                 self.results.append(self._current)
             self._in_tr = False
         elif tag == "td" and self._in_tr:
