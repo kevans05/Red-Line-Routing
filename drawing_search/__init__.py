@@ -13,13 +13,26 @@ Public API::
         print(r.drawing_number, r.title, r.document_url)
 """
 
-from .models import DrawingResult
+from .models import DrawingResult, PagedResults
 from .client import DrawingSearchClient, SearchParams
-from .parser import parse_results
+from .parser import parse_results, parse_paged
+from .cache import DrawingSearchCache
+from .lookup_tables import (DRAWING_TYPES, DRAWING_SUBJECTS, FACILITIES,
+                             load_cached_options, save_cached_options)
+from .form_fetcher import fetch_form_options
 
 __all__ = [
     "DrawingSearchClient",
     "SearchParams",
     "DrawingResult",
+    "PagedResults",
+    "DrawingSearchCache",
     "parse_results",
+    "parse_paged",
+    "DRAWING_TYPES",
+    "DRAWING_SUBJECTS",
+    "FACILITIES",
+    "load_cached_options",
+    "save_cached_options",
+    "fetch_form_options",
 ]

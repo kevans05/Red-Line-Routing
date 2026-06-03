@@ -1,7 +1,7 @@
 """Parse the HTML search-results table returned by the corporate drawing search."""
 import re
 from html.parser import HTMLParser
-from .models import DrawingResult
+from .models import DrawingResult, PagedResults
 
 # Column indices in the result table (0-based, after the hidden ID and checkbox columns)
 _COL_DRAWING_NUM   = 0
@@ -116,3 +116,44 @@ def parse_results(html: str, base_url: str) -> list[DrawingResult]:
     p = _TableParser(base_url)
     p.feed(html)
     return p.results
+
+
+def parse_paged(html: str, base_url: str, page: int = 0, page_size: int = 50) -> PagedResults:
+    """Parse a search-result HTML page and return a PagedResults with pagination metadata.
+
+    Pagination heuristics (Spring PagedListHolder):
+    - total_count: extracted from text matching "N record(s)/result(s)/drawing(s)".
+    - has_next: detected from rendered href attributes containing page= or p= params.
+    """
+    results = parse_results(html, base_url)
+
+    # Try to extract a total-count hint from visible text
+    total_count = 0
+    m = re.search(r"(\d[\d,]*)\s+(?:record|result|drawing)", html, re.IGNORECASE)
+    if m:
+        try:
+            total_count = int(m.group(1).replace(",", ""))
+        except ValueError:
+            total_count = len(results)
+
+    if total_count == 0:
+        total_count = len(results)
+
+    # Detect has_next by looking for a link to a page higher than current
+    has_next = False
+    for href_match in re.finditer(r'href=["\'][^"\']*[?&](?:page|p)=(\d+)', html, re.IGNORECASE):
+        try:
+            linked_page = int(href_match.group(1))
+            if linked_page > page:
+                has_next = True
+                break
+        except ValueError:
+            continue
+
+    return PagedResults(
+        results=results,
+        page=page,
+        page_size=page_size,
+        total_count=total_count,
+        has_next=has_next,
+    )
