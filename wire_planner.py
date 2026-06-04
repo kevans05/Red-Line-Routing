@@ -2457,6 +2457,7 @@ class SoftwareSetupDialog(tk.Toplevel):
         self.resizable(False, False)
         self.result = None
         self._cfg_vars = {}
+        self._headers_txt = None   # ScrolledText for request headers, set in _build
         self._build(dict(app_config))
         self.resizable(True, True)
         _center_window(self)          # auto-size to content
@@ -2505,6 +2506,20 @@ class SoftwareSetupDialog(tk.Toplevel):
                          bd=1, highlightthickness=1, highlightbackground="#d5d8dc",
                          highlightcolor="#2980b9", font=("", 9)).pack(
                     side="left", fill="x", expand=True, padx=(6, 0), ipady=4)
+
+        # Authentication / Request Headers
+        auth_hdr_row = tk.Frame(body, bg="white"); auth_hdr_row.pack(fill="x", pady=(6, 4))
+        tk.Frame(auth_hdr_row, bg="#2980b9", width=3).pack(side="left", fill="y")
+        tk.Label(auth_hdr_row, text="Authentication / Request Headers", bg="white", fg="#1c2833",
+                 font=("", 9, "bold"), padx=8, pady=2).pack(side="left", anchor="w")
+        auth_body = tk.Frame(body, bg="white"); auth_body.pack(fill="x", pady=(0, 4))
+        tk.Label(auth_body,
+                 text="Headers sent with every download request. One per line as  Header-Name: value\n"
+                      "Open browser DevTools (F12) → Network tab → copy the Cookie: and Referer: lines.",
+                 bg="white", fg="#7f8c8d", font=("", 8), justify="left").pack(anchor="w", padx=4)
+        self._headers_txt = scrolledtext.ScrolledText(auth_body, height=3, font=("Courier", 9), wrap="none")
+        self._headers_txt.pack(fill="x", padx=4, pady=(2, 0))
+        self._headers_txt.insert("1.0", cfg.get("request_headers", ""))
 
         # Drawing Search — Fetch Options button (uses master auth from above)
         ds_hdr_row = tk.Frame(body, bg="white"); ds_hdr_row.pack(fill="x", pady=(6, 4))
@@ -2557,8 +2572,8 @@ class SoftwareSetupDialog(tk.Toplevel):
 
     def _fetch_drawing_options(self):
         url = self._cfg_vars.get("drawing_search_url", tk.StringVar()).get().strip()
-        headers = _parse_request_headers_raw(
-            self.result.get("request_headers", "") if self.result else "")
+        raw = self._headers_txt.get("1.0", "end") if self._headers_txt else ""
+        headers = _parse_request_headers_raw(raw)
         _show_fetch_options_dialog(self, url, headers)
 
     def _skip(self):
@@ -2566,6 +2581,8 @@ class SoftwareSetupDialog(tk.Toplevel):
 
     def _save(self):
         self.result = {k: v.get().strip() for k, v in self._cfg_vars.items()}
+        if self._headers_txt:
+            self.result["request_headers"] = self._headers_txt.get("1.0", "end").strip()
         self.destroy()
 
 
