@@ -2409,10 +2409,23 @@ def _show_fetch_options_dialog(parent, url: str, headers: dict, skip_ssl: bool =
     def _run():
         import ssl as _ssl
         ssl_ctx = _ssl._create_unverified_context() if skip_ssl else None
+
+        # Install a custom opener so SSL bypass works even with older copies
+        # of form_fetcher.py that don't accept ssl_context as a parameter.
+        _prev_opener = urllib.request._opener
+        if ssl_ctx is not None:
+            urllib.request.install_opener(
+                urllib.request.build_opener(
+                    urllib.request.HTTPSHandler(context=ssl_ctx)))
+
         dlg.after(0, lambda: _log(
             f"Connecting to {url} …{'  [SSL verify OFF]' if skip_ssl else ''}\n", "head"))
         try:
-            opts = fetch_form_options(url, extra_headers=headers, ssl_context=ssl_ctx)
+            try:
+                opts = fetch_form_options(url, extra_headers=headers, ssl_context=ssl_ctx)
+            except TypeError:
+                # Older form_fetcher.py — ssl_context handled via opener above
+                opts = fetch_form_options(url, extra_headers=headers)
 
             fac   = opts.get("facilities",       {})
             typs  = opts.get("drawing_types",    {})
@@ -2446,6 +2459,7 @@ def _show_fetch_options_dialog(parent, url: str, headers: dict, skip_ssl: bool =
         except Exception as exc:
             dlg.after(0, lambda e=exc: _log(f"\n✗  Error: {e}\n", "err"))
         finally:
+            urllib.request.install_opener(_prev_opener)
             dlg.after(0, lambda: close_btn.configure(state="normal"))
 
     threading.Thread(target=_run, daemon=True).start()
@@ -4116,14 +4130,30 @@ class RedLineApp(tk.Tk):
             import ssl as _ssl
             ssl_ctx = _ssl._create_unverified_context() if self.app_config.get("skip_ssl") else None
 
-            # Show auth diagnostics once before the first download
-            all_hdrs = {"User-Agent": "RedLineRouting/1.0", **self._parse_request_headers()}
-            cookie = all_hdrs.get("Cookie", "")
+            # Build base headers once; reused (copied) for every request.
+            _BROWSER_UA = (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/148.0.0.0 Safari/537.36 Edg/148.0.0.0"
+            )
+            base_hdrs = {"User-Agent": _BROWSER_UA, **self._parse_request_headers()}
+
+            # Auto-inject Referer from the configured base URL if the user
+            # hasn't set one — many corporate document servers require it.
+            if not any(k.lower() == "referer" for k in base_hdrs):
+                ref = self.app_config.get("drawing_search_url", "").strip()
+                if ref:
+                    base_hdrs["Referer"] = ref.rstrip("/").rsplit("/", 1)[0] + "/"
+
+            # Auth diagnostics (shown once at the top of the log)
+            cookie = base_hdrs.get("Cookie", "")
             if cookie:
                 preview = cookie[:70] + ("…" if len(cookie) > 70 else "")
                 q.put(("log", f"Cookie ({len(cookie)} chars): {preview}", "info"))
             else:
                 q.put(("log", "No Cookie header — check File → Software Settings", "info"))
+            if "Referer" in base_hdrs:
+                q.put(("log", f"Referer: {base_hdrs['Referer']}", "info"))
             if ssl_ctx:
                 q.put(("log", "SSL verification disabled", "info"))
 
@@ -4142,7 +4172,7 @@ class RedLineApp(tk.Tk):
                 q.put(("progress", i, name, dest))
 
                 try:
-                    hdrs = {"User-Agent": "RedLineRouting/1.0", **self._parse_request_headers()}
+                    hdrs = dict(base_hdrs)
                     if extra_headers:
                         hdrs.update(extra_headers)
                     req = urllib.request.Request(url, headers=hdrs)
