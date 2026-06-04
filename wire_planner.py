@@ -2236,10 +2236,10 @@ class DrawingSearchDialog(tk.Toplevel):
         base_url = self.app_config.get("drawing_search_url", "").strip()
         if not base_url:
             return None
-        cookies = _parse_cookies_from_headers(
-            self.app_config.get("request_headers", ""))
+        raw_headers = self.app_config.get("request_headers", "")
+        extra_headers = _parse_request_headers_raw(raw_headers)
         cache = DrawingSearchCache() if _DRAWING_SEARCH_AVAILABLE else None
-        return DrawingSearchClient(base_url=base_url, cookies=cookies, cache=cache)
+        return DrawingSearchClient(base_url=base_url, extra_headers=extra_headers, cache=cache)
 
     def _get_params(self, page=0):
         # Parse code from "CODE — Label" or raw code
