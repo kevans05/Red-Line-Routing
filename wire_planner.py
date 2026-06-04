@@ -1773,6 +1773,127 @@ document.querySelectorAll('input[type=checkbox]').forEach(function(cb){{
 
 
 # ──────────────────────────────────────────────────────────────────
+# Print-for-Binder HTML generators
+# ──────────────────────────────────────────────────────────────────
+
+_BINDER_CSS = """
+  body { font-family: Arial, sans-serif; margin: 0; padding: 0; color: #1c2833; }
+  @media print { .no-print { display: none !important; } }
+  .cover { display:flex; flex-direction:column; justify-content:center; align-items:center;
+           min-height:100vh; text-align:center; background:#1c2833; color:white; page-break-after:always; }
+  .cover h1 { font-size:2.4em; margin-bottom:.3em; }
+  .cover h2 { font-size:1.4em; font-weight:normal; opacity:.8; margin:.2em 0; }
+  .cover .meta { margin-top:2em; font-size:.95em; opacity:.7; line-height:1.8; }
+  .toc { padding:40px 60px; page-break-after:always; }
+  .toc h1 { font-size:1.8em; border-bottom:3px solid #1c2833; padding-bottom:.3em; margin-bottom:1em; }
+  .toc table { width:100%; border-collapse:collapse; }
+  .toc td, .toc th { padding:6px 10px; border-bottom:1px solid #ddd; }
+  .toc th { background:#f0f0f0; font-weight:bold; }
+  .toc .sec { font-weight:bold; background:#e8eef7; }
+  .divider { display:flex; flex-direction:column; justify-content:center; align-items:center;
+             min-height:100vh; page-break-after:always; }
+  .divider .tab-num { font-size:8em; font-weight:900; color:#e8eef7; line-height:1; }
+  .divider .tab-title { font-size:2em; font-weight:bold; color:#1c2833; margin-top:.2em; }
+  .divider .tab-desc { font-size:1em; color:#666; margin-top:.5em; }
+  .divider-bar { width:80px; height:6px; background:#2980b9; margin:1em auto; border-radius:3px; }
+"""
+
+def _binder_cover_html(project, title_page):
+    """Return an HTML string for the binder cover page."""
+    now = datetime.now().strftime("%B %d, %Y")
+    crows = title_page.get("crows", []) if title_page else []
+    outages = ", ".join(c.get("outage_number", "") for c in crows if c.get("outage_number")) or "—"
+    notes = (title_page or {}).get("notes", "").strip()
+    return f"""<!DOCTYPE html><html><head><meta charset="utf-8">
+<title>{project} — Red-Line Binder</title>
+<style>{_BINDER_CSS}</style></head><body>
+<div class="cover">
+  <div style="font-size:.9em;letter-spacing:.15em;text-transform:uppercase;opacity:.6;margin-bottom:.5em;">Red-Line-Routing</div>
+  <h1>{project or "Red-Line Plan"}</h1>
+  <div class="divider-bar" style="background:white;opacity:.4;"></div>
+  <div class="meta">
+    <div><b>Outage / CROW:</b> {outages}</div>
+    <div><b>Printed:</b> {now}</div>
+    {f'<div style="margin-top:1em;max-width:500px;opacity:.8;">{notes}</div>' if notes else ''}
+  </div>
+</div>
+</body></html>"""
+
+
+def _binder_toc_html(project, sections):
+    """Return an HTML TOC page.
+
+    *sections* is a list of dicts:
+      { "tab": int, "title": str, "items": [{"label": str, "note": str}, ...] }
+    """
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    rows_html = ""
+    for sec in sections:
+        rows_html += (f'<tr class="sec"><td>Tab {sec["tab"]}</td>'
+                      f'<td colspan="2">{sec["title"]}</td></tr>\n')
+        for item in sec.get("items", []):
+            note = f'<span style="color:#888;font-size:.9em">{item["note"]}</span>' if item.get("note") else ""
+            rows_html += f'<tr><td></td><td>{item["label"]}</td><td>{note}</td></tr>\n'
+    return f"""<!DOCTYPE html><html><head><meta charset="utf-8">
+<title>Table of Contents — {project}</title>
+<style>{_BINDER_CSS}</style></head><body>
+<div class="toc">
+  <h1>Table of Contents</h1>
+  <p style="color:#888;font-size:.9em">Generated {now}</p>
+  <table>
+    <thead><tr><th style="width:80px">Section</th><th>Document</th><th>Notes</th></tr></thead>
+    <tbody>{rows_html}</tbody>
+  </table>
+</div>
+</body></html>"""
+
+
+def _binder_divider_html(tab_num, title, description=""):
+    """Return an HTML section-divider (tab) page."""
+    return f"""<!DOCTYPE html><html><head><meta charset="utf-8">
+<title>Tab {tab_num} — {title}</title>
+<style>{_BINDER_CSS}</style></head><body>
+<div class="divider">
+  <div class="tab-num">{tab_num}</div>
+  <div class="divider-bar"></div>
+  <div class="tab-title">{title}</div>
+  {f'<div class="tab-desc">{description}</div>' if description else ''}
+</div>
+</body></html>"""
+
+
+def _binder_drawing_index_html(project, drawing_registry):
+    """Return an HTML drawing index page."""
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    rows = ""
+    for name in sorted(drawing_registry.keys()):
+        info = drawing_registry[name]
+        url  = info.get("url", "")
+        link = f'<a href="{url}">{url[:60]}{"…" if len(url) > 60 else ""}</a>' if url else "—"
+        rows += (f'<tr><td>{name}</td><td>{info.get("title","")}</td>'
+                 f'<td style="text-align:center">{info.get("rev","")}</td>'
+                 f'<td style="font-size:.8em">{link}</td></tr>\n')
+    return f"""<!DOCTYPE html><html><head><meta charset="utf-8">
+<title>Drawing Index — {project}</title>
+<style>
+  {_BINDER_CSS}
+  body {{ padding:40px 60px; }}
+  h1 {{ font-size:1.8em; border-bottom:3px solid #1c2833; padding-bottom:.3em; }}
+  table {{ width:100%; border-collapse:collapse; font-size:.92em; }}
+  th {{ background:#1c2833; color:white; padding:7px 10px; text-align:left; }}
+  td {{ padding:5px 10px; border-bottom:1px solid #e0e0e0; vertical-align:top; }}
+  tr:nth-child(even) {{ background:#f7f9fc; }}
+</style></head><body>
+  <h1>Drawing Index</h1>
+  <p style="color:#888;font-size:.9em">{len(drawing_registry)} drawing(s) &nbsp;·&nbsp; Generated {now}</p>
+  <table>
+    <thead><tr><th>Drawing #</th><th>Title</th><th>Rev</th><th>URL</th></tr></thead>
+    <tbody>{rows}</tbody>
+  </table>
+</body></html>"""
+
+
+# ──────────────────────────────────────────────────────────────────
 # CROW dialog (outage record: outage_number + URL)
 # ──────────────────────────────────────────────────────────────────
 
@@ -3789,6 +3910,7 @@ class RedLineApp(tk.Tk):
         fm.add_command(label="Export Table (text)…",   command=self._export_table)
         fm.add_command(label="Export CSV (Excel)…",    command=self._export_csv)
         fm.add_command(label="Export HTML (colour PDF)…",command=self._export_html)
+        fm.add_command(label="🖨 Print for Binder…",   command=self._print_for_binder)
         fm.add_separator()
         fm.add_command(label="Software Settings…",     command=self._open_software_settings)
         fm.add_separator()
@@ -6540,6 +6662,199 @@ class RedLineApp(tk.Tk):
             f"Saved to:\n{path}\n\n"
             "Opened in your browser.\n"
             "Ctrl+P → Save as PDF to create a PDF copy.")
+
+    # ──────────────────────────────────────────────────────────────────
+    # Print for Binder
+    # ──────────────────────────────────────────────────────────────────
+
+    def _print_for_binder(self):
+        proj = self.project_var.get().strip() or "Red-Line Plan"
+        tp   = dict(self.title_page); tp["notes"] = self.title_notes.get("1.0","end").strip()
+
+        # Resolve folders
+        pf = self.project_folder or ""
+        drw_dir  = os.path.join(pf, "Drawings")          if pf else ""
+        rly_dir  = os.path.join(pf, "Relay Settings")    if pf else ""
+        mnt_dir  = os.path.join(pf, "Maintenance Standards") if pf else ""
+        eng_dir  = os.path.join(pf, "Engineering Standards") if pf else ""
+
+        def _ls(d):
+            if d and os.path.isdir(d):
+                return sorted(f for f in os.listdir(d)
+                              if os.path.isfile(os.path.join(d, f))
+                              and not f.startswith("."))
+            return []
+
+        drw_files = _ls(drw_dir)
+        rly_files = _ls(rly_dir)
+        mnt_files = _ls(mnt_dir)
+        eng_files = _ls(eng_dir)
+
+        # ── Dialog ────────────────────────────────────────────────────
+        dlg = tk.Toplevel(self)
+        dlg.title("Print for Binder")
+        dlg.resizable(False, False)
+        dlg.grab_set()
+
+        hdr = tk.Frame(dlg, bg="#1c2833"); hdr.pack(fill="x")
+        tk.Label(hdr, text="🖨  Print for Binder", bg="#1c2833", fg="white",
+                 font=("", 12, "bold"), padx=14, pady=10).pack(side="left")
+        tk.Label(hdr, text=proj, bg="#1c2833", fg="#85c1e9",
+                 font=("", 9), padx=8).pack(side="left")
+
+        body = ttk.Frame(dlg, padding=14); body.pack(fill="both", expand=True)
+
+        ttk.Label(body, text="Select sections to include:",
+                  font=("", 9, "bold")).grid(row=0, column=0, columnspan=2,
+                  sticky="w", pady=(0, 8))
+
+        sections_def = [
+            ("cover",    "Tab 1 — Cover page + Job Report",
+             f"{len(self.jobs)} job(s)"),
+            ("drawings", "Tab 2 — Drawing Index + Drawings",
+             f"{len(self.drawing_registry)} registered  ·  {len(drw_files)} downloaded"),
+            ("relay",    "Tab 3 — Relay Settings",
+             f"{len(rly_files)} file(s)"),
+            ("maint",    "Tab 4 — Maintenance Standards",
+             f"{len(mnt_files)} file(s)"),
+            ("eng",      "Tab 5 — Engineering Standards",
+             f"{len(eng_files)} file(s)"),
+        ]
+
+        chk_vars = {}
+        for i, (key, label, note) in enumerate(sections_def):
+            var = tk.BooleanVar(value=True)
+            chk_vars[key] = var
+            ttk.Checkbutton(body, text=label, variable=var).grid(
+                row=i+1, column=0, sticky="w", padx=(4,0), pady=2)
+            ttk.Label(body, text=note, foreground="grey",
+                      font=("", 8)).grid(row=i+1, column=1, sticky="w", padx=(12,0))
+
+        # Log area
+        sep = ttk.Separator(body, orient="horizontal")
+        sep.grid(row=len(sections_def)+1, column=0, columnspan=2, sticky="ew", pady=(12,6))
+
+        log_var = tk.StringVar(value="Click 'Print All' to begin.")
+        log_lbl = ttk.Label(body, textvariable=log_var, foreground="#2980b9",
+                            font=("Courier", 8), wraplength=380, justify="left")
+        log_lbl.grid(row=len(sections_def)+2, column=0, columnspan=2, sticky="w")
+
+        bf = ttk.Frame(dlg, padding=(14,4,14,12)); bf.pack(fill="x")
+        ttk.Button(bf, text="Cancel", command=dlg.destroy).pack(side="right", padx=4)
+        print_btn = ttk.Button(bf, text="🖨  Print All",
+                               command=lambda: self._do_binder_print(
+                                   dlg, proj, tp, pf, chk_vars,
+                                   drw_dir, drw_files, rly_dir, rly_files,
+                                   mnt_dir, mnt_files, eng_dir, eng_files,
+                                   log_var, print_btn))
+        print_btn.pack(side="right", padx=4)
+
+        _center_window(dlg, 520, 360)
+
+    def _do_binder_print(self, dlg, proj, tp, pf, chk_vars,
+                         drw_dir, drw_files, rly_dir, rly_files,
+                         mnt_dir, mnt_files, eng_dir, eng_files,
+                         log_var, print_btn):
+        import tempfile
+
+        print_btn.configure(state="disabled")
+        opened = 0
+        tmp_files = []
+
+        def _write_tmp(html, suffix=".html"):
+            fd, path = tempfile.mkstemp(suffix=suffix)
+            os.close(fd)
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(html)
+            tmp_files.append(path)
+            return path
+
+        def _open(path):
+            nonlocal opened
+            _open_file(path)
+            opened += 1
+
+        def _log(msg):
+            log_var.set(msg)
+            dlg.update_idletasks()
+
+        # ── Build TOC data ────────────────────────────────────────────
+        toc_sections = []
+        tab = 1
+
+        if chk_vars["cover"].get():
+            toc_sections.append({"tab": tab, "title": "Cover Page & Job Report",
+                                  "items": [{"label": "Cover page"},
+                                            {"label": f"Job report ({len(self.jobs)} job(s))"}]})
+            tab += 1
+
+        if chk_vars["drawings"].get():
+            items = [{"label": "Drawing index"}]
+            items += [{"label": f, "note": "downloaded"} for f in drw_files]
+            not_dl = [n for n in sorted(self.drawing_registry)
+                      if not any(f.startswith(n) for f in drw_files)]
+            items += [{"label": n, "note": "not downloaded"} for n in not_dl]
+            toc_sections.append({"tab": tab, "title": "Drawings", "items": items})
+            tab += 1
+
+        if chk_vars["relay"].get():
+            toc_sections.append({"tab": tab, "title": "Relay Settings",
+                                  "items": [{"label": f} for f in rly_files]})
+            tab += 1
+
+        if chk_vars["maint"].get():
+            toc_sections.append({"tab": tab, "title": "Maintenance Standards",
+                                  "items": [{"label": f} for f in mnt_files]})
+            tab += 1
+
+        if chk_vars["eng"].get():
+            toc_sections.append({"tab": tab, "title": "Engineering Standards",
+                                  "items": [{"label": f} for f in eng_files]})
+
+        # ── Print sequence ────────────────────────────────────────────
+        tab = 1
+
+        # Always open TOC first
+        _log("Generating Table of Contents…")
+        _open(_write_tmp(_binder_toc_html(proj, toc_sections)))
+
+        if chk_vars["cover"].get():
+            _log(f"Tab {tab}: Cover page…")
+            _open(_write_tmp(_binder_cover_html(proj, tp)))
+            _log(f"Tab {tab}: Job report…")
+            _open(_write_tmp(generate_html_table(
+                self.jobs, proj, self.drawing_registry, title_page=tp)))
+            tab += 1
+
+        if chk_vars["drawings"].get():
+            _log(f"Tab {tab}: Drawing section divider…")
+            _open(_write_tmp(_binder_divider_html(
+                tab, "Drawings",
+                f"{len(self.drawing_registry)} drawing(s) registered · "
+                f"{len(drw_files)} downloaded")))
+            _log(f"Tab {tab}: Drawing index…")
+            _open(_write_tmp(_binder_drawing_index_html(proj, self.drawing_registry)))
+            for fname in drw_files:
+                _log(f"Tab {tab}: {fname}")
+                _open(os.path.join(drw_dir, fname))
+            tab += 1
+
+        for key, label, folder, files in [
+            ("relay", "Relay Settings",        rly_dir, rly_files),
+            ("maint", "Maintenance Standards",  mnt_dir, mnt_files),
+            ("eng",   "Engineering Standards",  eng_dir, eng_files),
+        ]:
+            if chk_vars[key].get():
+                _log(f"Tab {tab}: {label} divider…")
+                _open(_write_tmp(_binder_divider_html(
+                    tab, label, f"{len(files)} file(s)")))
+                for fname in files:
+                    _log(f"Tab {tab}: {fname}")
+                    _open(os.path.join(folder, fname))
+                tab += 1
+
+        _log(f"✓  Done — {opened} item(s) opened for printing.")
+        print_btn.configure(state="normal", text="Done")
 
     # ──────────────────────────────────────────────────────────────────
     # Save / Load
