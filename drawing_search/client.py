@@ -40,12 +40,14 @@ class DrawingSearchClient:
             "Chrome/148.0.0.0 Safari/537.36 Edg/148.0.0.0"
         ),
         cache=None,
+        extra_headers: Optional[dict[str, str]] = None,
     ):
-        self.base_url   = base_url.rstrip("/")
-        self.cookies    = cookies or {}
-        self.timeout    = timeout
-        self.user_agent = user_agent
-        self.cache      = cache  # DrawingSearchCache | None
+        self.base_url      = base_url.rstrip("/")
+        self.cookies       = cookies or {}
+        self.timeout       = timeout
+        self.user_agent    = user_agent
+        self.cache         = cache  # DrawingSearchCache | None
+        self.extra_headers = extra_headers or {}
 
     # ── public API ────────────────────────────────────────────────
 
@@ -122,20 +124,24 @@ class DrawingSearchClient:
         body     = urllib.parse.urlencode(form_data).encode("utf-8")
         cookie_h = "; ".join(f"{k}={v}" for k, v in self.cookies.items())
 
+        headers = {
+            "Content-Type":    "application/x-www-form-urlencoded",
+            "Accept":          "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Cache-Control":   "max-age=0",
+            "Origin":          self.base_url,
+            "Referer":         self.base_url + _SEARCH_PATH,
+            "User-Agent":      self.user_agent,
+            **({"Cookie": cookie_h} if cookie_h else {}),
+            # extra_headers last so caller-supplied values (e.g. a full Cookie line
+            # copied from DevTools) override the defaults above
+            **self.extra_headers,
+        }
         req = urllib.request.Request(
             url,
             data=body,
             method="POST",
-            headers={
-                "Content-Type":  "application/x-www-form-urlencoded",
-                "Accept":        "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                "Accept-Language": "en-US,en;q=0.9",
-                "Cache-Control": "max-age=0",
-                "Origin":        self.base_url,
-                "Referer":       self.base_url + _SEARCH_PATH,
-                "User-Agent":    self.user_agent,
-                **({"Cookie": cookie_h} if cookie_h else {}),
-            },
+            headers=headers,
         )
 
         with urllib.request.urlopen(req, timeout=self.timeout) as resp:

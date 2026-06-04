@@ -2236,10 +2236,10 @@ class DrawingSearchDialog(tk.Toplevel):
         base_url = self.app_config.get("drawing_search_url", "").strip()
         if not base_url:
             return None
-        cookies = _parse_cookies_from_headers(
-            self.app_config.get("request_headers", ""))
+        raw_headers = self.app_config.get("request_headers", "")
+        extra_headers = _parse_request_headers_raw(raw_headers)
         cache = DrawingSearchCache() if _DRAWING_SEARCH_AVAILABLE else None
-        return DrawingSearchClient(base_url=base_url, cookies=cookies, cache=cache)
+        return DrawingSearchClient(base_url=base_url, extra_headers=extra_headers, cache=cache)
 
     def _get_params(self, page=0):
         # Parse code from "CODE — Label" or raw code
@@ -2569,6 +2569,8 @@ class SoftwareSetupDialog(tk.Toplevel):
         canvas.bind("<Configure>", _on_canvas_configure)
         canvas.bind_all("<MouseWheel>",
                         lambda e: canvas.yview_scroll(int(-1 * (e.delta / 120)), "units"))
+        self.bind("<Destroy>", lambda e: canvas.unbind_all("<MouseWheel>")
+                  if e.widget is self else None)
 
     def _fetch_drawing_options(self):
         url = self._cfg_vars.get("drawing_search_url", tk.StringVar()).get().strip()
@@ -4226,6 +4228,8 @@ class RedLineApp(tk.Tk):
             "<MouseWheel>",
             lambda e: _canvas.yview_scroll(int(-1 * (e.delta / 120)), "units"),
         )
+        dlg.bind("<Destroy>", lambda e: _canvas.unbind_all("<MouseWheel>")
+                 if e.widget is dlg else None)
 
         sections = [
             ("Drawings", [
