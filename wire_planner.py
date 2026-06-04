@@ -128,21 +128,6 @@ def empty_protection():
             "drawings": [], "iso_points": [], "mb_enabled": False, "mb_remote": "", "mb_notes": ""}
 
 
-def empty_job(job_type="REMOVE"):
-    if job_type in ("BLOCK", "UNBLOCK"):
-        return {"type": job_type, "description": "", "protection": empty_protection()}
-    if job_type == "TESTING":
-        return {"type": "TESTING", "description": "", "notes": ""}
-    if job_type in ("DEVICE ADD", "DEVICE REMOVE"):
-        return {"type": job_type, "description": "",
-                "endpoint": empty_endpoint(), "notes": ""}
-    job = {"type": job_type, "description": "", "wire": "",
-           "start": empty_endpoint(), "end": empty_endpoint()}
-    if job_type == "MOVE":
-        job["add_wire"] = ""
-        job["add_start"] = empty_endpoint()
-        job["add_end"] = empty_endpoint()
-    return job
 
 
 def _get_prot_drawings(prot):
@@ -216,9 +201,6 @@ class _FilterCombobox(ttk.Combobox):
         self.bind("<<ComboboxSelected>>", self._restore)
         self.bind("<FocusOut>", self._restore)
 
-    def set_all_values(self, values):
-        self._all_values = list(values)
-        self["values"] = self._all_values
 
     def _on_key(self, event):
         if event.keysym in ("Return", "Tab", "Escape", "Up", "Down"):
@@ -419,9 +401,6 @@ class DrawingAwareFrame(ttk.LabelFrame):
             else:
                 wrap.configure(highlightthickness=0)
 
-    def _update_drawing_list(self):
-        if self._drawing_combo is not None:
-            self._drawing_combo["values"] = self._drawing_suggestions()
 
     def _on_drawing_selected(self, _=None):
         self._autofill(self.vars["drawing"].get().strip())
@@ -5179,15 +5158,6 @@ class RedLineApp(tk.Tk):
         self.file_nb.add(eng_tab, text="  Engineering Standards  ")
         self._build_standards_impl_tab(eng_tab, "impl_eng_lb", "Engineering Standards")
 
-    def _build_file_listbox(self, parent, attr, subfolder):
-        lb = tk.Listbox(parent, selectmode="browse", font=("Courier", 9),
-                        activestyle="none", relief="flat", borderwidth=0)
-        vsb = ttk.Scrollbar(parent, orient="vertical", command=lb.yview)
-        lb.configure(yscrollcommand=vsb.set)
-        lb.pack(side="left", fill="both", expand=True)
-        vsb.pack(side="right", fill="y")
-        lb.bind("<Double-1>", lambda e, l=lb, s=subfolder: self._open_impl_file(l, s))
-        setattr(self, attr, lb)
 
     def _build_relay_impl_tab(self, parent):
         """Relay Settings tab — file list (left) + formatted setting preview (right)."""
