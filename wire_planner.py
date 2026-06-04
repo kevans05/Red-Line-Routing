@@ -2444,7 +2444,7 @@ def _show_fetch_options_dialog(parent, url: str, headers: dict, skip_ssl: bool =
                 f"\n✓  Saved — {len(fac)} facilities, {len(typs)} types, "
                 f"{len(subjs)} subjects.\n", "ok"))
         except Exception as exc:
-            dlg.after(0, lambda: _log(f"\n✗  Error: {exc}\n", "err"))
+            dlg.after(0, lambda e=exc: _log(f"\n✗  Error: {e}\n", "err"))
         finally:
             dlg.after(0, lambda: close_btn.configure(state="normal"))
 
