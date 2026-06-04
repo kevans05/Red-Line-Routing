@@ -13,6 +13,7 @@ for r in results:
     print(r.drawing_number, r.title, r.document_url)
 """
 
+import ssl
 import threading
 import urllib.request
 import urllib.parse
@@ -41,6 +42,7 @@ class DrawingSearchClient:
         ),
         cache=None,
         extra_headers: Optional[dict[str, str]] = None,
+        verify_ssl: bool = True,
     ):
         self.base_url      = base_url.rstrip("/")
         self.cookies       = cookies or {}
@@ -48,6 +50,7 @@ class DrawingSearchClient:
         self.user_agent    = user_agent
         self.cache         = cache  # DrawingSearchCache | None
         self.extra_headers = extra_headers or {}
+        self.verify_ssl    = verify_ssl
 
     # ── public API ────────────────────────────────────────────────
 
@@ -137,6 +140,12 @@ class DrawingSearchClient:
             # copied from DevTools) override the defaults above
             **self.extra_headers,
         }
+        ctx = None
+        if not self.verify_ssl:
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+
         req = urllib.request.Request(
             url,
             data=body,
@@ -144,7 +153,7 @@ class DrawingSearchClient:
             headers=headers,
         )
 
-        with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+        with urllib.request.urlopen(req, timeout=self.timeout, context=ctx) as resp:
             charset = _charset_from_headers(resp.headers)
             return resp.read().decode(charset, errors="replace")
 
