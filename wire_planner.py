@@ -3975,17 +3975,26 @@ class RedLineApp(tk.Tk):
         ttk.Label(tb, text="Drawing names entered in any job are added here automatically.  Ctrl+click a row to open its URL.",
                   foreground="grey").pack(side="left", padx=8)
         frame = ttk.Frame(parent); frame.pack(fill="both", expand=True, padx=4, pady=(0,4))
-        cols = ("Drawing","Title","Revision","URL","Notes")
+        cols = ("Drawing","Title","Revision","Local","URL","Notes")
         self.drawings_tree = ttk.Treeview(frame, columns=cols, show="headings")
-        self.drawings_tree.heading("Drawing",text="Drawing"); self.drawings_tree.heading("Title",text="Title")
-        self.drawings_tree.heading("Revision",text="Revision")
-        self.drawings_tree.heading("URL",text="Drawing URL"); self.drawings_tree.heading("Notes",text="Notes")
-        self.drawings_tree.column("Drawing",width=140,stretch=False); self.drawings_tree.column("Title",width=160,stretch=False)
-        self.drawings_tree.column("Revision",width=68,stretch=False)
-        self.drawings_tree.column("URL",width=300); self.drawings_tree.column("Notes",width=160)
+        self.drawings_tree.heading("Drawing",  text="Drawing")
+        self.drawings_tree.heading("Title",    text="Title")
+        self.drawings_tree.heading("Revision", text="Rev")
+        self.drawings_tree.heading("Local",    text="Local")
+        self.drawings_tree.heading("URL",      text="Drawing URL")
+        self.drawings_tree.heading("Notes",    text="Notes")
+        self.drawings_tree.column("Drawing",  width=140, stretch=False)
+        self.drawings_tree.column("Title",    width=160, stretch=False)
+        self.drawings_tree.column("Revision", width=46,  stretch=False)
+        self.drawings_tree.column("Local",    width=76,  stretch=False, anchor="center")
+        self.drawings_tree.column("URL",      width=280)
+        self.drawings_tree.column("Notes",    width=150)
+        self.drawings_tree.tag_configure("local",  foreground="#1a7a1a")
+        self.drawings_tree.tag_configure("remote", foreground="#888888")
         vsb = ttk.Scrollbar(frame, orient="vertical", command=self.drawings_tree.yview)
         self.drawings_tree.configure(yscrollcommand=vsb.set)
-        self.drawings_tree.pack(side="left", fill="both", expand=True); vsb.pack(side="right", fill="y")
+        self.drawings_tree.pack(side="left", fill="both", expand=True)
+        vsb.pack(side="right", fill="y")
         self.drawings_tree.bind("<Double-1>", lambda _: self._edit_drawing())
         self.drawings_tree.bind("<Control-Button-1>", self._on_drawings_ctrl_click)
 
@@ -4006,11 +4015,31 @@ class RedLineApp(tk.Tk):
                 self._write(self.current_file)
 
     def _refresh_drawings_list(self):
-        for iid in self.drawings_tree.get_children(): self.drawings_tree.delete(iid)
+        for iid in self.drawings_tree.get_children():
+            self.drawings_tree.delete(iid)
+        drw_base = os.path.join(self.project_folder, "Drawings") if self.project_folder else None
         for name in sorted(self.drawing_registry.keys()):
             info = self.drawing_registry[name]
-            self.drawings_tree.insert("","end",iid=name,
-                values=(name,info.get("title",""),info.get("rev",""),info.get("url",""),info.get("notes","")))
+            # Check if any local file exists for this drawing number
+            local_file = None
+            if drw_base and os.path.isdir(drw_base):
+                sub = _drawing_subdir(drw_base, name)
+                search_dirs = [sub] if sub != drw_base else [drw_base]
+                if sub != drw_base:
+                    search_dirs.append(drw_base)
+                for d in search_dirs:
+                    if not os.path.isdir(d):
+                        continue
+                    matches = [f for f in os.listdir(d)
+                               if f.startswith(name) and os.path.isfile(os.path.join(d, f))]
+                    if matches:
+                        local_file = matches[0]
+                        break
+            local_lbl = "✓ local" if local_file else "remote"
+            tag = "local" if local_file else "remote"
+            self.drawings_tree.insert("", "end", iid=name, tags=(tag,),
+                values=(name, info.get("title",""), info.get("rev",""),
+                        local_lbl, info.get("url",""), info.get("notes","")))
 
     def _add_drawing(self):
         dlg = DrawingEditDialog(self, base_url=self.app_config.get("base_drawing_url",""),
