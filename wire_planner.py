@@ -1481,47 +1481,6 @@ def _esc(t):
     return (str(t).replace("&","&amp;").replace("<","&lt;")
             .replace(">","&gt;").replace('"',"&quot;"))
 
-def _ep_html(ep):
-    parts = []
-    if ep.get("device"):   parts.append(f"<b>{_esc(ep['device'])}</b>")
-    if ep.get("pin"):      parts.append(f"Pin {_esc(ep['pin'])}")
-    if ep.get("location"): parts.append(_esc(ep["location"]))
-    if ep.get("panel"):    parts.append(f"Panel {_esc(ep['panel'])}")
-    if ep.get("drawing"):
-        rev  = f" Rev{_esc(ep['drawing_rev'])}" if ep.get("drawing_rev") else ""
-        cell = f" [{_esc(ep['drawing_cell'])}]" if ep.get("drawing_cell") else ""
-        url  = ep.get("drawing_url","")
-        tag  = f'<a href="{_esc(url)}">' if url else ""
-        etag = "</a>" if url else ""
-        parts.append(f"{tag}{_esc(ep['drawing'])}{rev}{etag}{cell}")
-    return "<br>".join(parts)
-
-def _prot_html(prot):
-    parts = []
-    if prot.get("equipment"): parts.append(f"<b>{_esc(prot['equipment'])}</b>")
-    if prot.get("location"):  parts.append(_esc(prot["location"]))
-    if prot.get("panel"):     parts.append(f"Panel {_esc(prot['panel'])}")
-    if prot.get("notes"):     parts.append(f"<i>{_esc(prot['notes'])}</i>")
-    for d in _get_prot_drawings(prot):
-        rev  = f" Rev{_esc(d['drawing_rev'])}" if d.get("drawing_rev") else ""
-        cell = f" [{_esc(d['drawing_cell'])}]" if d.get("drawing_cell") else ""
-        url  = d.get("drawing_url","")
-        tag  = f'<a href="{_esc(url)}">' if url else ""
-        etag = "</a>" if url else ""
-        parts.append(f"Dwg: {tag}{_esc(d.get('drawing',''))}{rev}{etag}{cell}")
-    for p in prot.get("iso_points", []):
-        equip = f" <i>({_esc(p['equipment'])})</i>" if p.get("equipment") else ""
-        notes = f" — {_esc(p['notes'])}" if p.get("notes") else ""
-        parts.append(f"<span style='color:#555'>{_esc(p.get('iso_type','ISO'))} block "
-                     f"{_esc(p.get('reference',''))}{equip}{notes}</span>")
-    if prot.get("mb_enabled"):
-        remote = f" &nbsp;<i>[{_esc(prot['mb_remote'])}]</i>" if prot.get("mb_remote") else ""
-        notes  = f" &nbsp;{_esc(prot['mb_notes'])}"            if prot.get("mb_notes")  else ""
-        parts.append(
-            f'<span style="background:#fff3cd;color:#7d4e00;font-weight:bold;'
-            f'padding:1px 5px;border-radius:3px">'
-            f'&#9888; MB INPUT — also required: block/unblock{remote}{notes}</span>')
-    return "<br>".join(parts)
 
 def generate_html_table(jobs, project="", drawing_registry=None, title_page=None):
     now   = datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -1566,13 +1525,9 @@ def generate_html_table(jobs, project="", drawing_registry=None, title_page=None
 
     reg = drawing_registry or {}
 
-    # ep_html_r and prot_html_r are local closures that wrap the module-level _ep_html / _prot_html
-    # helpers but additionally look up each drawing name in the registry to append its title and
-    # to fall back to the registry URL when the endpoint's own drawing_url is blank.  They are
-    # defined inline (rather than reusing _ep_html/_prot_html) so that 'reg' is captured by closure
-    # without needing to pass it as a parameter on every call inside the tight loop below.
+    # ep_html_r / prot_html_r look up each drawing name in the registry to append its title
+    # and fall back to the registry URL when the endpoint's own drawing_url is blank.
     def ep_html_r(ep):
-        """Like _ep_html but enriches the drawing line with title and URL from the registry."""
         parts = []
         if ep.get("device"):   parts.append(f"<b>{_esc(ep['device'])}</b>")
         if ep.get("pin"):      parts.append(f"Pin {_esc(ep['pin'])}")
@@ -1593,7 +1548,6 @@ def generate_html_table(jobs, project="", drawing_registry=None, title_page=None
         return "<br>".join(parts)
 
     def prot_html_r(prot):
-        """Like _prot_html but enriches drawing lines with title from the registry."""
         parts = []
         if prot.get("equipment"): parts.append(f"<b>{_esc(prot['equipment'])}</b>")
         if prot.get("location"):  parts.append(_esc(prot["location"]))
@@ -1983,8 +1937,7 @@ class EngineeringStandardDialog(tk.Toplevel):
             if base and stored_url.startswith(base):
                 doc_code_default = stored_url[len(base):]
             else:
-                import urllib.parse as _up
-                qs = _up.parse_qs(_up.urlparse(stored_url).query)
+                qs = urllib.parse.parse_qs(urllib.parse.urlparse(stored_url).query)
                 if "documentId" in qs:
                     doc_code_default = qs["documentId"][0]
                     # also derive base as everything up to and including "documentId="
@@ -4730,45 +4683,39 @@ class RedLineApp(tk.Tk):
         for path in files:
             self._open_file_for_print(path)
 
-    def _print_selected_drawings(self):
-        sel = self.drawings_tree.selection()
-        if not sel: messagebox.showinfo("Select", "Please select a drawing."); return
-        folder = os.path.join(self.project_folder, "Drawings") if self.project_folder else None
+    def _print_selected(self, tree, subfolder, label):
+        sel = tree.selection()
+        if not sel: messagebox.showinfo("Select", f"Please select a {label}."); return
+        folder = os.path.join(self.project_folder, subfolder) if self.project_folder else None
         self._print_files_for_key(folder, sel[0])
+
+    def _print_all(self, subfolder):
+        folder = os.path.join(self.project_folder, subfolder) if self.project_folder else None
+        self._print_files_in_folder(folder)
+
+    def _print_selected_drawings(self):
+        self._print_selected(self.drawings_tree, "Drawings", "drawing")
 
     def _print_all_drawings(self):
-        folder = os.path.join(self.project_folder, "Drawings") if self.project_folder else None
-        self._print_files_in_folder(folder)
+        self._print_all("Drawings")
 
     def _print_selected_relay(self):
-        sel = self.relay_tree.selection()
-        if not sel: messagebox.showinfo("Select", "Please select a relay record."); return
-        folder = os.path.join(self.project_folder, "Relay Settings") if self.project_folder else None
-        self._print_files_for_key(folder, sel[0])
+        self._print_selected(self.relay_tree, "Relay Settings", "relay record")
 
     def _print_all_relay(self):
-        folder = os.path.join(self.project_folder, "Relay Settings") if self.project_folder else None
-        self._print_files_in_folder(folder)
+        self._print_all("Relay Settings")
 
     def _print_selected_maintenance(self):
-        sel = self.maint_tree.selection()
-        if not sel: messagebox.showinfo("Select", "Please select a maintenance standard."); return
-        folder = os.path.join(self.project_folder, "Maintenance Standards") if self.project_folder else None
-        self._print_files_for_key(folder, sel[0])
+        self._print_selected(self.maint_tree, "Maintenance Standards", "maintenance standard")
 
     def _print_all_maintenance(self):
-        folder = os.path.join(self.project_folder, "Maintenance Standards") if self.project_folder else None
-        self._print_files_in_folder(folder)
+        self._print_all("Maintenance Standards")
 
     def _print_selected_engineering(self):
-        sel = self.eng_tree.selection()
-        if not sel: messagebox.showinfo("Select", "Please select an engineering standard."); return
-        folder = os.path.join(self.project_folder, "Engineering Standards") if self.project_folder else None
-        self._print_files_for_key(folder, sel[0])
+        self._print_selected(self.eng_tree, "Engineering Standards", "engineering standard")
 
     def _print_all_engineering(self):
-        folder = os.path.join(self.project_folder, "Engineering Standards") if self.project_folder else None
-        self._print_files_in_folder(folder)
+        self._print_all("Engineering Standards")
 
     # ── Mode switching ────────────────────────────────────────────
 
@@ -6351,6 +6298,7 @@ class RedLineApp(tk.Tk):
     def _new_plan(self):
         if self.jobs and not messagebox.askyesno("New Plan","Discard current plan and start fresh?"): return
         self.jobs=[]; self.drawing_registry={}; self.relay_registry={}
+        self.maintenance_standards_registry={}; self.engineering_standards_registry={}
         self.current_file=None; self.project_folder=None
         self.project_var.set("")
         self.history = {"device": [], "location": [], "pin": [], "panel": [], "wire": []}
@@ -6359,7 +6307,8 @@ class RedLineApp(tk.Tk):
         self.title_notes.delete("1.0", "end")
         self.title("Red-Line-Routing")
         self._refresh_list(); self._refresh_drawings_list()
-        self._refresh_relay_list(); self._refresh_crows()
+        self._refresh_relay_list(); self._refresh_maintenance_list()
+        self._refresh_engineering_list(); self._refresh_crows()
         self.preview.configure(state="normal"); self.preview.delete("1.0","end")
         self.preview.configure(state="disabled")
         self.impl_preview.configure(state="normal"); self.impl_preview.delete("1.0","end")
