@@ -16,6 +16,7 @@ opts = fetch_form_options(
 """
 
 import re
+import ssl
 import urllib.request
 import urllib.error
 from html.parser import HTMLParser
@@ -81,6 +82,7 @@ def fetch_form_options(
     timeout: int = 30,
     user_agent: str = _DEFAULT_UA,
     extra_headers: Optional[dict[str, str]] = None,
+    ssl_context=None,
 ) -> dict[str, dict[str, str]]:
     """GET the search form page and return parsed dropdown options.
 
@@ -90,6 +92,9 @@ def fetch_form_options(
     ``extra_headers`` are merged in and take precedence over the defaults,
     so callers can pass the full set of request headers (including Cookie)
     without going through the cookies dict.
+
+    Pass ``ssl_context=ssl._create_unverified_context()`` to skip certificate
+    verification for internal sites with self-signed or corporate-CA certs.
 
     Raises ``urllib.error.URLError`` / ``urllib.error.HTTPError`` on failure.
     """
@@ -104,7 +109,7 @@ def fetch_form_options(
         **(extra_headers or {}),
     }
     req = urllib.request.Request(url, headers=headers)
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
+    with urllib.request.urlopen(req, timeout=timeout, context=ssl_context) as resp:
         charset = "utf-8"
         for part in resp.headers.get("Content-Type", "").split(";"):
             p = part.strip()
