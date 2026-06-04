@@ -6326,7 +6326,7 @@ class RedLineApp(tk.Tk):
             with open(path,encoding="utf-8") as fh: data = json.load(fh)
             self.jobs = data.get("jobs",[]); self.project_var.set(data.get("project",""))
             self.drawing_registry = data.get("drawing_registry",{})
-            self.relay_registry   = data.get("relay_settings",{})
+            self.relay_registry   = data.get("relay_settings",{})  # key kept as "relay_settings" for file compatibility
             self.maintenance_standards_registry = data.get("maintenance_standards", {})
             self.engineering_standards_registry = data.get("engineering_standards", {})
             self.history = data.get("history", {"device":[],"location":[],"pin":[],"panel":[],"wire":[]})
@@ -6380,7 +6380,7 @@ class RedLineApp(tk.Tk):
                 json.dump({"project":self.project_var.get().strip(),
                            "title_page":tp,
                            "drawing_registry":self.drawing_registry,
-                           "relay_settings":self.relay_registry,
+                           "relay_settings":self.relay_registry,           # key kept as "relay_settings" for file compatibility
                            "maintenance_standards":self.maintenance_standards_registry,
                            "engineering_standards":self.engineering_standards_registry,
                            "history":self.history,

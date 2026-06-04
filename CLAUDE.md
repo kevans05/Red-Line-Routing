@@ -19,7 +19,7 @@ python3 -c "import ast; ast.parse(open('wire_planner.py').read()); print('OK')"
 ## Repository layout
 
 ```
-wire_planner.py   # entire application (~3 500 lines)
+wire_planner.py   # entire application (~6 400 lines)
 .gitignore        # ignores __pycache__ and *.pyc
 ```
 
@@ -31,29 +31,41 @@ All code lives in `wire_planner.py`. Reading top-to-bottom follows the dependenc
 
 | Lines (approx) | Layer |
 |---|---|
-| 1 – 110 | Module-level data factories and UI helpers |
-| 117 – 560 | Reusable widget classes (`DrawingAwareFrame`, `EndpointFrame`, composite frames) |
-| 640 – 1015 | Job and protection dialogs (`JobDialog`, `DrawingEditDialog`, …) |
-| 1016 – 1497 | Plain-text / HTML / CSV export generators (no GUI) |
-| 1498 – 2320 | Startup flow dialogs and the project wizard |
-| 2324 – 3507 | `RedLineApp` — the main `tk.Tk` window |
+| 1 – 198 | Module-level data factories and UI helpers |
+| 200 – 696 | Reusable widget classes (`DrawingAwareFrame`, `EndpointFrame`, composite frames) |
+| 698 – 1237 | Job and protection dialogs (`JobDialog`, `DrawingEditDialog`, …) |
+| 1239 – 1706 | Plain-text / HTML / CSV export generators (no GUI) |
+| 1709 – 3353 | Startup flow dialogs and the project wizard |
+| 3355 – end | `RedLineApp` — the main `tk.Tk` window |
 
 ## Key data model
 
 `RedLineApp` owns these instance attributes; they are serialised together into the `.redline` JSON:
 
 ```python
-self.jobs             # list of job dicts (see empty_job())
-self.drawing_registry # {name: {title, rev, url, notes}}
-self.relay_registry   # {device_id: {title, revision, engineer, contact, url, …}}
-self.title_page       # {notes: str, crows: [{outage_number, url}]}
-self.history          # {device/location/pin/panel/wire: [str, …]}  – autocomplete pool
+self.jobs                           # list of job dicts (see empty_job())
+self.drawing_registry               # {name: {title, rev, url, notes}}
+self.relay_registry                 # {device_id: {title, revision, engineer, contact, url, …}}
+self.maintenance_standards_registry # {standard_id: {title, revision, url_telecom, url_transmission, notes}}
+self.engineering_standards_registry # {standard_id: {title, revision, standard_type, url, notes}}
+self.title_page                     # {notes: str, crows: [{outage_number, url}]}
+self.history                        # {device/location/pin/panel/wire: [str, …]}  – autocomplete pool
 ```
 
 Global (not per-project) settings live in `~/.redlinerouting.json` and are loaded into `self.app_config`.
 
 Job types: `REMOVE`, `ADD`, `MOVE`, `BLOCK`, `UNBLOCK`, `TESTING`.  
 `BLOCK`/`UNBLOCK` carry a `protection` sub-dict; `MOVE` carries both `start/end` and `add_start/add_end` endpoint pairs.
+
+### JSON key names vs Python attribute names
+
+One intentional mismatch exists for backwards compatibility with files saved by older versions:
+
+| Python attribute | JSON key in `.redline` file |
+|---|---|
+| `self.relay_registry` | `"relay_settings"` |
+
+All other registries use the same name in both Python and JSON.
 
 ## Drawing name convention
 
@@ -79,6 +91,10 @@ Call `_center_window(win)` (no w/h) to auto-size a dialog to its content. Only p
 
 Walks the full widget tree under `frame` and binds `<Enter>`/`<Leave>` to swap background colour. Use this on any `tk.Frame` acting as a clickable card. Remember to bind `<Button-1>` on **all** children including the accent strip, not just the content frame.
 
+### Generic print helpers
+
+`_print_selected(tree, subfolder, label)` and `_print_all(subfolder)` are the single implementation for all eight "Print Selected / Print All" toolbar buttons across the four registry tabs (Drawings, Relay Settings, Maintenance Standards, Engineering Standards). Each tab's named method is a one-line delegate.
+
 ## Startup flow
 
 ```
@@ -100,13 +116,19 @@ These four functions are pure and can be called or tested independently:
 | `generate_csv(jobs, …)` | RFC 4180 CSV |
 | `generate_html_table(jobs, …)` | Self-contained HTML with print/checkbox JS |
 
+`generate_html_table` uses two local closures (`ep_html_r`, `prot_html_r`) that look up each drawing name in the registry to enrich the output with the drawing title and fall back to the registry URL when the endpoint's own `drawing_url` is blank.
+
 ## Project folder structure (on save)
 
 ```
 <ProjectName>/
-  <ProjectName>.redline   ← JSON (the source of truth)
-  Drawings/                ← downloaded drawing files
-  Relay Settings/          ← downloaded relay setting files
-  CROW Outage/             ← CROW-related files
+  <ProjectName>.redline        ← JSON (the source of truth)
+  Drawings/                    ← downloaded drawing files
+  Relay Settings/              ← downloaded relay setting files
+  Maintenance Standards/       ← downloaded maintenance standard files
+  Engineering Standards/       ← downloaded engineering standard files
+  CROW Outage/                 ← CROW-related files
+  Tailboards/
+    Completed/
   Other/
 ```
