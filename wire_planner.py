@@ -1171,13 +1171,14 @@ class JobDialog(tk.Toplevel):
 # ──────────────────────────────────────────────────────────────────
 
 class DrawingEditDialog(tk.Toplevel):
-    def __init__(self, parent, existing=None, base_url="", app_config=None):
+    def __init__(self, parent, existing=None, base_url="", app_config=None, proj_cache=None):
         super().__init__(parent)
         self.title("Edit Drawing" if existing else "Add Drawing")
         self.result = None
         self._old_name = existing.get("name") if existing else None
         self._base_url = base_url
         self._app_config = app_config or {}
+        self._proj_cache = proj_cache
         self.resizable(False, False)
         self._build(existing or {})
         self.grab_set()
@@ -1209,7 +1210,8 @@ class DrawingEditDialog(tk.Toplevel):
         self.geometry("460x268")
 
     def _search_drawing(self):
-        dlg = DrawingSearchDialog(self, self._app_config, multi_select=False)
+        dlg = DrawingSearchDialog(self, self._app_config, multi_select=False,
+                                  proj_cache=self._proj_cache)
         if dlg.selected:
             r = dlg.selected[0]
             self.vars["name"].set(r.drawing_number)
@@ -1702,6 +1704,774 @@ document.querySelectorAll('input[type=checkbox]').forEach(function(cb){{
 </body></html>"""
 
 
+
+# ──────────────────────────────────────────────────────────────────
+# Export Wizard — helpers and dialog
+# ──────────────────────────────────────────────────────────────────
+
+_EW_DIVIDER_COLORS = [
+    "#2c3e50","#1a5276","#1e8449","#7d6608",
+    "#78281f","#4a235a","#1b4f72","#0e6655",
+]
+
+_EW_PAGE_SIZES = [
+    "Letter Portrait", "Letter Landscape",
+    "11×17 Landscape", "11×17 Portrait",
+]
+
+_EW_PAGE_DIMS = {
+    "Letter Portrait":  ("8.5in", "11in"),
+    "Letter Landscape": ("11in",  "8.5in"),
+    "11×17 Landscape":  ("17in",  "11in"),
+    "11×17 Portrait":   ("11in",  "17in"),
+}
+
+
+def _ew_url_cell(url: str, label: str, mode: str,
+                 project_folder: str, subfolders: list) -> str:
+    """URL cell: truncated text for paper, local-path link for tablet, hyperlink for digital."""
+    if not url:
+        return ""
+    if mode == "paper":
+        s = url[:72] + ("…" if len(url) > 72 else "")
+        return _esc(s)
+    if mode == "tablet" and project_folder:
+        try:
+            basename = os.path.basename(urllib.parse.urlparse(url).path)
+            if basename:
+                for sf in subfolders:
+                    local = os.path.join(project_folder, sf, basename)
+                    if os.path.isfile(local):
+                        rel = (sf + "/" + basename).replace("\\", "/")
+                        return f'<a href="{_esc(rel)}" class="doc-link">{_esc(label)} ↗</a>'
+        except Exception:
+            pass
+    return f'<a href="{_esc(url)}" class="doc-link">{_esc(label)} ↗</a>'
+
+
+def _ew_full_html(title: str, body_html: str, page_css: str, mode: str) -> str:
+    vp = '<meta name="viewport" content="width=device-width,initial-scale=1">' \
+         if mode == "tablet" else ""
+    base_fs = "11pt" if mode == "tablet" else "9pt"
+    tablet_css = """
+    body { font-size: 11pt !important; }
+    td, th { padding: 8px 10px !important; font-size: 10pt !important; }
+    h2.sec-hdr { font-size: 14pt !important; }
+    a.doc-link {
+        display: inline-block; background: #2980b9; color: white !important;
+        padding: 5px 12px; border-radius: 5px; text-decoration: none;
+        font-size: 9pt; margin: 2px;
+    }
+    .qr-grid { gap: 20px; }
+    .qr-card { width: 170px; padding: 12px; }
+""" if mode == "tablet" else ""
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+{vp}
+<title>{_esc(title)}</title>
+<style>
+*,*::before,*::after{{box-sizing:border-box}}
+body{{font-family:-apple-system,"Helvetica Neue",Arial,sans-serif;
+     font-size:{base_fs};color:#1a252f;margin:0;background:#888}}
+@media screen{{
+  body{{padding:24px}}
+  section{{background:white;margin:0 auto 24px;padding:0.7in;
+          box-shadow:0 2px 14px rgba(0,0,0,.3);position:relative;overflow:hidden;
+          min-width:6in;max-width:16.5in}}
+  section.page-divider{{min-height:10in}}
+  section.page-cover{{padding:0 0 0.7in}}
+}}
+@media print{{
+  body{{background:white;padding:0}}
+  section{{page-break-after:always}}
+  section:last-child{{page-break-after:auto}}
+  -webkit-print-color-adjust:exact;print-color-adjust:exact
+  a{{color:#000!important;text-decoration:none}}
+  input[type=checkbox]{{
+    -webkit-appearance:none;appearance:none;
+    border:1.5px solid #444;width:11px;height:11px;
+    display:inline-block;vertical-align:middle}}
+  tr.done td{{text-decoration:line-through;opacity:.55}}
+}}
+{page_css}
+/* Cover */
+.cover-hdr{{background:#1a252f;color:white;padding:2cm 0.7in 1.5cm;text-align:center;margin-bottom:.4in}}
+.cover-title{{font-size:22pt;margin:0 0 6px;font-weight:bold}}
+.cover-sub{{font-size:11pt;opacity:.75;margin:0}}
+.cover-meta{{border-collapse:collapse;margin-bottom:18px}}
+.cover-meta td{{padding:3px 12px 3px 0;font-size:10pt}}
+.meta-lbl{{color:#666;font-weight:bold;white-space:nowrap}}
+.cover-tbl{{border-collapse:collapse;width:100%;margin-bottom:18px;font-size:9pt}}
+.cover-tbl th{{background:#1a252f;color:white;padding:4px 8px;text-align:left}}
+.cover-tbl td{{padding:4px 8px;border:1px solid #ccc}}
+h3{{font-size:10pt;margin:14px 0 4px;color:#1a252f}}
+/* Dividers */
+.divider-name{{font-size:36pt;font-weight:bold;margin:.3in 0 .1in;line-height:1.1}}
+.divider-proj{{font-size:12pt;color:#555}}
+.divider-date{{font-size:9pt;color:#888;margin-top:4px}}
+.divider-tab{{
+  position:absolute;right:0;width:2.4cm;height:2cm;
+  color:white;font-weight:bold;font-size:7.5pt;
+  display:flex;align-items:center;justify-content:center;
+  writing-mode:vertical-rl;transform:rotate(180deg);
+  text-transform:uppercase;letter-spacing:.05em}}
+/* General */
+h2.sec-hdr{{font-size:13pt;color:#1a252f;border-bottom:2px solid #1a252f;
+           padding-bottom:3px;margin:0 0 10px}}
+table{{border-collapse:collapse;width:100%;margin-bottom:12px}}
+th{{background:#1a252f;color:white;padding:5px 7px;text-align:left;font-size:8pt}}
+td{{padding:4px 7px;border:1px solid #ddd;vertical-align:top;line-height:1.4;font-size:8pt}}
+tr{{break-inside:avoid;page-break-inside:avoid}}
+tr:nth-child(even){{background:#f7f9fc}}
+.num{{text-align:center;font-weight:bold;color:#555}}
+.wire{{font-family:"Courier New",monospace;font-size:7.5pt}}
+.chk{{width:22px;text-align:center;padding:3px}}
+.dim{{color:#666;font-style:italic;font-size:7.5pt}}
+.std-ref{{color:#1a5276;font-size:7.5pt}}
+.mb-warn{{background:#fff3cd;color:#7d4e00;font-weight:bold;padding:1px 5px;border-radius:3px}}
+.empty-note{{color:#999;font-style:italic}}
+a{{color:#1a5276}}
+a.doc-link{{color:#2980b9}}
+input[type=checkbox]{{width:13px;height:13px;cursor:pointer;accent-color:#1a252f}}
+.qr-grid{{display:flex;flex-wrap:wrap;gap:14px;margin-top:12px}}
+.qr-card{{width:155px;border:1px solid #ddd;border-radius:4px;padding:8px;text-align:center}}
+.qr-lbl{{font-weight:bold;font-size:7.5pt;margin:4px 0 2px}}
+.qr-url{{font-size:6pt;color:#666;word-break:break-all}}
+.qr-note{{font-size:7.5pt;color:#888;font-style:italic;margin-bottom:10px}}
+{tablet_css}
+</style>
+</head>
+<body>
+{body_html}
+<script>
+document.querySelectorAll('input[type=checkbox]').forEach(function(cb){{
+  cb.addEventListener('change',function(){{
+    var tr=this.closest('tr');
+    if(tr)tr.classList[this.checked?'add':'remove']('done');
+  }});
+}});
+</script>
+</body></html>"""
+
+
+def _ew_cover(project, crows, date, toc_items, mode, css_class="page-cover"):
+    outage_rows = "".join(
+        "<tr><td><b>{}</b></td><td>{}</td></tr>".format(
+            _esc(c.get("outage_number", "")),
+            f'<a href="{_esc(c["url"])}">{_esc(c["url"])}</a>'
+            if c.get("url") and mode != "paper"
+            else _esc(c.get("url", ""))
+        )
+        for c in crows
+    ) if crows else ""
+    outage_html = (
+        "<h3>Outage / CROW Numbers</h3>"
+        "<table class='cover-tbl'><thead><tr><th>Outage #</th><th>URL</th></tr></thead>"
+        f"<tbody>{outage_rows}</tbody></table>"
+    ) if crows else ""
+    toc_rows = "".join(f"<tr><td>{_esc(n)}</td></tr>" for n in toc_items)
+    toc_html = (
+        "<h3>Contents</h3>"
+        f"<table class='cover-tbl'><tbody>{toc_rows}</tbody></table>"
+    ) if toc_items else ""
+    return (
+        f'<section class="{css_class}">'
+        f'<div class="cover-hdr">'
+        f'<div style="font-size:32pt;margin-bottom:8px">&#9889;</div>'
+        f'<div class="cover-title">{_esc(project) or "Red-Line-Routing"}</div>'
+        f'<p class="cover-sub">Red-Line Routing Work Package</p>'
+        f'</div>'
+        f'<div style="padding:0 0.7in">'
+        f'<table class="cover-meta"><tbody>'
+        f'<tr><td class="meta-lbl">Generated</td><td>{_esc(date)}</td></tr>'
+        f'</tbody></table>'
+        f'{outage_html}{toc_html}'
+        f'</div></section>\n'
+    )
+
+
+def _ew_divider(section_name, project, date, tab_idx, n_tabs, color, css_class="page-divider"):
+    usable_cm = 22.0
+    tab_h_cm  = 2.0
+    gap_cm    = max(0.2, (usable_cm - n_tabs * tab_h_cm) / max(n_tabs - 1, 1))
+    top_cm    = 1.5 + tab_idx * (tab_h_cm + gap_cm)
+    return (
+        f'<section class="{css_class}">'
+        f'<div class="divider-tab" style="background:{color};top:{top_cm:.1f}cm">'
+        f'{_esc(section_name)}</div>'
+        f'<div style="padding:.35in 3cm .35in .5in">'
+        f'<div class="divider-name" style="color:{color}">{_esc(section_name)}</div>'
+        f'<div class="divider-proj">{_esc(project)}</div>'
+        f'<div class="divider-date">{_esc(date)}</div>'
+        f'</div></section>\n'
+    )
+
+
+def _ew_work_orders(jobs, drawing_registry, mode, css_class="page-content"):
+    reg = drawing_registry or {}
+
+    def ep_r(ep):
+        parts = []
+        if ep.get("device"):   parts.append(f"<b>{_esc(ep['device'])}</b>")
+        if ep.get("pin"):      parts.append(f"Pin {_esc(ep['pin'])}")
+        if ep.get("location"): parts.append(_esc(ep["location"]))
+        if ep.get("panel"):    parts.append(f"Panel {_esc(ep['panel'])}")
+        if ep.get("drawing"):
+            name = ep["drawing"]
+            ri   = reg.get(name, {})
+            rev  = f" Rev{_esc(ep['drawing_rev'])}" if ep.get("drawing_rev") else ""
+            cell = f" [{_esc(ep['drawing_cell'])}]" if ep.get("drawing_cell") else ""
+            url  = ep.get("drawing_url", "") or ri.get("url", "")
+            ttl  = ri.get("title", "")
+            ttl_h = f' <span class="dim">— {_esc(ttl)}</span>' if ttl else ""
+            if url and mode != "paper":
+                parts.append(f'<a href="{_esc(url)}">{_esc(name)}</a>{ttl_h}{rev}{cell}')
+            else:
+                parts.append(f'{_esc(name)}{ttl_h}{rev}{cell}')
+        return "<br>".join(parts)
+
+    def prot_r(prot):
+        parts = []
+        if prot.get("equipment"): parts.append(f"<b>{_esc(prot['equipment'])}</b>")
+        if prot.get("location"):  parts.append(_esc(prot["location"]))
+        if prot.get("panel"):     parts.append(f"Panel {_esc(prot['panel'])}")
+        if prot.get("notes"):     parts.append(f"<i>{_esc(prot['notes'])}</i>")
+        for d in _get_prot_drawings(prot):
+            name = d.get("drawing", "")
+            ri   = reg.get(name, {})
+            url  = d.get("drawing_url", "") or ri.get("url", "")
+            rev  = f" Rev{_esc(d['drawing_rev'])}" if d.get("drawing_rev") else ""
+            if url and mode != "paper":
+                parts.append(f'Dwg: <a href="{_esc(url)}">{_esc(name)}</a>{rev}')
+            else:
+                parts.append(f"Dwg: {_esc(name)}{rev}")
+        for p in prot.get("iso_points", []):
+            notes = f" — {_esc(p['notes'])}" if p.get("notes") else ""
+            parts.append(f'<span class="dim">{_esc(p.get("iso_type","ISO"))} '
+                         f'{_esc(p.get("reference",""))}{notes}</span>')
+        if prot.get("mb_enabled"):
+            remote = f" [{_esc(prot.get('mb_remote',''))}]" if prot.get("mb_remote") else ""
+            parts.append(f'<span class="mb-warn">&#9888; MB INPUT — '
+                         f'block/unblock required{remote}</span>')
+        return "<br>".join(parts)
+
+    tl = {
+        "REMOVE":"Remove Wire","ADD":"Add Wire","MOVE":"Move Wire",
+        "BLOCK":"Block Protection","UNBLOCK":"Unblock Protection","TESTING":"Testing",
+    }
+    rows = ""
+    seq  = 1
+    for job in jobs:
+        jt  = job["type"]
+        dsc = _esc(job.get("description", ""))
+        ms  = _std_list(job, "maintenance_standards")
+        es  = _std_list(job, "engineering_standards")
+        stds = []
+        if ms: stds.append("Maint: " + ", ".join(_esc(s) for s in ms))
+        if es: stds.append("Eng: "   + ", ".join(_esc(s) for s in es))
+        if stds:
+            dsc += ("<br>" if dsc else "") + " &nbsp; ".join(
+                f'<span class="std-ref">{s}</span>' for s in stds)
+
+        def _tr(key, label, s_html, wire, e_html, _d=dsc):
+            nonlocal seq
+            bg = _ROW_STYLE.get(key, ("", ""))[0]
+            ts = _ROW_STYLE.get(key, ("", ""))[1]
+            bc = _ROW_BORDER.get(key, "#aaa")
+            r = (f'<tr style="{bg}">'
+                 f'<td class="chk" style="border-left:4px solid {bc}">'
+                 f'<input type="checkbox"></td>'
+                 f'<td class="num">{seq}</td>'
+                 f'<td style="{ts}">{_esc(label)}</td>'
+                 f'<td>{_d}</td><td>{s_html}</td>'
+                 f'<td class="wire">{_esc(wire)}</td>'
+                 f'<td>{e_html}</td></tr>')
+            seq += 1
+            return r
+
+        if jt in ("REMOVE", "ADD"):
+            rows += _tr(jt, tl[jt],
+                        ep_r(job.get("start", {})), job.get("wire", ""),
+                        ep_r(job.get("end", {})))
+        elif jt == "MOVE":
+            rows += _tr("MOVE-REMOVE", "Move — Remove",
+                        ep_r(job.get("start", {})), job.get("wire", ""),
+                        ep_r(job.get("end", {})))
+            rows += _tr("MOVE-ADD", "Move — Add",
+                        ep_r(job.get("add_start", {})), job.get("add_wire", ""),
+                        ep_r(job.get("add_end", {})))
+        elif jt in ("BLOCK", "UNBLOCK"):
+            rows += _tr(jt, tl[jt], prot_r(job.get("protection", {})), "", "")
+        elif jt == "TESTING":
+            rows += _tr("TESTING", tl.get("TESTING", "Testing"),
+                        _esc(job.get("notes", "")), "", "")
+
+    return (
+        f'<section class="{css_class}">'
+        '<h2 class="sec-hdr">Work Orders</h2>'
+        '<table>'
+        '<thead><tr>'
+        '<th class="chk">✓</th><th style="width:28px">#</th>'
+        '<th style="width:110px">Type</th><th style="width:14%">Description</th>'
+        '<th style="width:23%">Start Point / Device</th>'
+        '<th style="width:80px">Wire</th>'
+        '<th style="width:23%">End Point / Device</th>'
+        '</tr></thead>'
+        f'<tbody>{rows}</tbody></table></section>\n'
+    )
+
+
+def _ew_drawings_reg(reg, mode, project_folder="", css_class="page-content"):
+    if not reg:
+        return (f'<section class="{css_class}"><h2 class="sec-hdr">Drawings Register</h2>'
+                '<p class="empty-note">No drawings registered.</p></section>\n')
+    rows = ""
+    for name, info in sorted(reg.items()):
+        uc = _ew_url_cell(info.get("url", ""), "Open", mode, project_folder, ["Drawings"])
+        rows += (f"<tr><td><b>{_esc(name)}</b></td>"
+                 f"<td>{_esc(info.get('title',''))}</td>"
+                 f"<td>{_esc(info.get('rev',''))}</td>"
+                 f"<td>{uc}</td>"
+                 f"<td>{_esc(info.get('notes',''))}</td></tr>")
+    return (
+        f'<section class="{css_class}"><h2 class="sec-hdr">Drawings Register</h2>'
+        '<table><thead><tr>'
+        '<th>Drawing #</th><th>Title</th><th>Rev</th><th>URL / Link</th><th>Notes</th>'
+        f'</tr></thead><tbody>{rows}</tbody></table></section>\n'
+    )
+
+
+def _ew_relay_reg(reg, mode, project_folder="", css_class="page-content"):
+    if not reg:
+        return (f'<section class="{css_class}"><h2 class="sec-hdr">Relay Settings</h2>'
+                '<p class="empty-note">No relay settings registered.</p></section>\n')
+    rows = ""
+    for dev_id, info in sorted(reg.items()):
+        uc = _ew_url_cell(info.get("url", ""), "Open", mode, project_folder, ["Relay Settings"])
+        rows += (f"<tr><td><b>{_esc(dev_id)}</b></td>"
+                 f"<td>{_esc(info.get('title',''))}</td>"
+                 f"<td>{_esc(info.get('revision',''))}</td>"
+                 f"<td>{_esc(info.get('engineer',''))}</td>"
+                 f"<td>{uc}</td></tr>")
+    return (
+        f'<section class="{css_class}"><h2 class="sec-hdr">Relay Settings</h2>'
+        '<table><thead><tr>'
+        '<th>Device ID</th><th>Title</th><th>Rev</th><th>Engineer</th><th>URL / Link</th>'
+        f'</tr></thead><tbody>{rows}</tbody></table></section>\n'
+    )
+
+
+def _ew_standards(maint_reg, eng_reg, mode, project_folder="",
+                  maint_css="page-content", eng_css="page-content"):
+    parts = []
+    if maint_reg:
+        rows = ""
+        for sid, info in sorted(maint_reg.items()):
+            ut = info.get("url_telecom", "")
+            ux = info.get("url_transmission", "")
+            if mode == "paper":
+                links = "; ".join(filter(None, [
+                    (ut[:55] + "…" if len(ut) > 55 else ut) if ut else "",
+                    (ux[:55] + "…" if len(ux) > 55 else ux) if ux else "",
+                ]))
+            else:
+                lp = []
+                sf = ["Maintenance Standards"]
+                if ut: lp.append(_ew_url_cell(ut, "Telecom", mode, project_folder, sf))
+                if ux: lp.append(_ew_url_cell(ux, "Trans",   mode, project_folder, sf))
+                links = " ".join(lp)
+            rows += (f"<tr><td><b>{_esc(sid)}</b></td>"
+                     f"<td>{_esc(info.get('title',''))}</td>"
+                     f"<td>{_esc(info.get('revision',''))}</td>"
+                     f"<td>{links}</td>"
+                     f"<td>{_esc(info.get('notes',''))}</td></tr>")
+        parts.append(
+            f'<section class="{maint_css}"><h2 class="sec-hdr">Maintenance Standards</h2>'
+            '<table><thead><tr>'
+            '<th>Standard ID</th><th>Title</th><th>Rev</th><th>Links</th><th>Notes</th>'
+            f'</tr></thead><tbody>{rows}</tbody></table></section>\n'
+        )
+    if eng_reg:
+        rows = ""
+        for sid, info in sorted(eng_reg.items()):
+            uc = _ew_url_cell(info.get("url", ""), "Open", mode,
+                               project_folder, ["Engineering Standards"])
+            rows += (f"<tr><td><b>{_esc(sid)}</b></td>"
+                     f"<td>{_esc(info.get('title',''))}</td>"
+                     f"<td>{_esc(info.get('revision',''))}</td>"
+                     f"<td>{_esc(info.get('standard_type',''))}</td>"
+                     f"<td>{uc}</td>"
+                     f"<td>{_esc(info.get('notes',''))}</td></tr>")
+        parts.append(
+            f'<section class="{eng_css}"><h2 class="sec-hdr">Engineering Standards</h2>'
+            '<table><thead><tr>'
+            '<th>Standard ID</th><th>Title</th><th>Rev</th><th>Type</th>'
+            '<th>URL / Link</th><th>Notes</th>'
+            f'</tr></thead><tbody>{rows}</tbody></table></section>\n'
+        )
+    return "".join(parts)
+
+
+def _ew_qr_sheet(items, css_class="page-content"):
+    """QR code reference sheet (paper mode). Requires internet to render codes."""
+    if not items:
+        return ""
+    cards = ""
+    for label, url in items:
+        if not url:
+            continue
+        qr = ("https://api.qrserver.com/v1/create-qr-code/"
+              f"?size=100x100&data={urllib.parse.quote(url, safe='')}")
+        cards += (
+            f'<div class="qr-card">'
+            f'<img src="{_esc(qr)}" width="100" height="100" alt="QR" loading="lazy">'
+            f'<div class="qr-lbl">{_esc(label)}</div>'
+            f'<div class="qr-url">{_esc(url)}</div>'
+            f'</div>'
+        )
+    return (
+        f'<section class="{css_class}"><h2 class="sec-hdr">Document URLs</h2>'
+        '<p class="qr-note">QR codes require internet access when opening this file. '
+        'Scan or type URLs to access documents.</p>'
+        f'<div class="qr-grid">{cards}</div></section>\n'
+    )
+
+
+class ExportWizard(tk.Toplevel):
+    """Three-step wizard generating Paper, HTML/PDF, and Tablet export packages."""
+
+    _SECTIONS = [
+        ("drawings",    "Drawings Register"),
+        ("relay",       "Relay Settings"),
+        ("maintenance", "Maintenance Standards"),
+        ("engineering", "Engineering Standards"),
+    ]
+    # default paper sizes per section key
+    _DEFAULTS = {
+        "cover":       "Letter Portrait",
+        "work_orders": "11×17 Landscape",
+        "drawings":    "11×17 Landscape",
+        "relay":       "Letter Portrait",
+        "maintenance": "Letter Portrait",
+        "engineering": "Letter Portrait",
+    }
+
+    def __init__(self, parent, app):
+        super().__init__(parent)
+        self.app = app
+        self.title("Export Wizard")
+        self.resizable(False, False)
+
+        self._v_paper   = tk.BooleanVar(value=True)
+        self._v_digital = tk.BooleanVar(value=True)
+        self._v_tablet  = tk.BooleanVar(value=False)
+        self._v_sec     = {k: tk.BooleanVar(value=False) for k, _ in self._SECTIONS}
+        self._v_dividers = tk.BooleanVar(value=True)
+        self._v_qr      = tk.BooleanVar(value=True)
+        self._v_sizes   = {k: tk.StringVar(value=v) for k, v in self._DEFAULTS.items()}
+
+        self._step = 1
+        self._build()
+        self.geometry("600x530")
+        _center_window(self)
+        self.grab_set()
+        self.wait_window()
+
+    # ── build ─────────────────────────────────────────────────────
+
+    def _build(self):
+        self._hdr = tk.Frame(self, bg="#1a252f"); self._hdr.pack(fill="x")
+        self._hdr_lbl = tk.Label(self._hdr, bg="#1a252f", fg="white",
+                                  font=("", 11, "bold"), padx=14, pady=10)
+        self._hdr_lbl.pack(side="left")
+
+        container = tk.Frame(self, bg=self.cget("bg"))
+        container.pack(fill="both", expand=True)
+
+        self._frames = [
+            self._step1(container),
+            self._step2(container),
+            self._step3(container),
+        ]
+
+        nav = ttk.Frame(self, padding=(14, 6, 14, 10)); nav.pack(fill="x")
+        self._back_btn = ttk.Button(nav, text="◄ Back",  command=self._back,    state="disabled")
+        self._back_btn.pack(side="left")
+        self._cancel_btn = ttk.Button(nav, text="Cancel", command=self.destroy)
+        self._cancel_btn.pack(side="right")
+        self._next_btn = ttk.Button(nav, text="Next ►",  command=self._next)
+        self._next_btn.pack(side="right", padx=(0, 6))
+
+        self._show_step(1)
+
+    def _step1(self, parent):
+        f = ttk.Frame(parent, padding=20)
+        ttk.Label(f, text="Choose which formats to generate:",
+                  font=("", 9, "bold")).pack(anchor="w", pady=(0, 12))
+        cards = [
+            (self._v_paper,   "📄  Paper",
+             "Print-ready layouts with binder dividers and a QR code URL sheet.\n"
+             "Open in browser → Ctrl+P → Save as PDF."),
+            (self._v_digital, "💻  HTML / PDF",
+             "Screen-optimised with live hyperlinks.\n"
+             "Open in browser → Ctrl+P → Save as PDF."),
+            (self._v_tablet,  "📱  Tablet (iPad)",
+             "Large-text HTML for Safari. Downloaded files linked locally;\n"
+             "remaining documents linked by URL."),
+        ]
+        for var, title_text, desc in cards:
+            card = tk.Frame(f, bd=1, relief="solid", padx=14, pady=10,
+                            bg="white", cursor="hand2")
+            card.pack(fill="x", pady=4)
+            top = tk.Frame(card, bg="white"); top.pack(fill="x")
+            cb = tk.Checkbutton(top, variable=var, bg="white",
+                                activebackground="white")
+            cb.pack(side="left")
+            tk.Label(top, text=title_text, font=("", 10, "bold"), bg="white",
+                     cursor="hand2").pack(side="left", padx=(4, 0))
+            tk.Label(card, text=desc, fg="grey", font=("", 8),
+                     justify="left", bg="white", wraplength=500,
+                     cursor="hand2").pack(anchor="w", padx=22)
+            for w in [card] + card.winfo_children() + top.winfo_children():
+                w.bind("<Button-1>", lambda e, v=var: v.set(not v.get()))
+        return f
+
+    def _step2(self, parent):
+        f = ttk.Frame(parent, padding=(20, 14, 20, 14))
+        req = ttk.LabelFrame(f, text="Always included", padding=(12, 6))
+        req.pack(fill="x", pady=(0, 10))
+        for txt in ("Cover Page  — project name, outage numbers, date, table of contents",
+                    "Work Orders  — full work order table with colour coding"):
+            r = ttk.Frame(req); r.pack(fill="x", pady=2)
+            ttk.Label(r, text="✓", foreground="#27ae60",
+                      font=("", 9, "bold")).pack(side="left")
+            ttk.Label(r, text=txt).pack(side="left", padx=(6, 0))
+
+        opt = ttk.LabelFrame(f, text="Optional sections", padding=(12, 6))
+        opt.pack(fill="x", pady=(0, 10))
+        for key, label in self._SECTIONS:
+            r = ttk.Frame(opt); r.pack(fill="x", pady=2)
+            ttk.Checkbutton(r, variable=self._v_sec[key]).pack(side="left")
+            ttk.Label(r, text=label).pack(side="left", padx=(4, 0))
+
+        ext = ttk.LabelFrame(f, text="Extras", padding=(12, 6))
+        ext.pack(fill="x")
+        r1 = ttk.Frame(ext); r1.pack(fill="x", pady=2)
+        ttk.Checkbutton(r1, variable=self._v_dividers).pack(side="left")
+        ttk.Label(r1, text="Binder Dividers  (Avery-style tab pages, paper & digital only)"
+                  ).pack(side="left", padx=(4, 0))
+        r2 = ttk.Frame(ext); r2.pack(fill="x", pady=2)
+        ttk.Checkbutton(r2, variable=self._v_qr).pack(side="left")
+        ttk.Label(r2, text="QR Code Sheet  (paper only — all document URLs as scannable codes)"
+                  ).pack(side="left", padx=(4, 0))
+        return f
+
+    def _step3(self, parent):
+        f = ttk.Frame(parent, padding=(20, 14, 20, 14))
+        ttk.Label(f, text="Paper output — select page size per section:",
+                  font=("", 9, "bold")).pack(anchor="w", pady=(0, 10))
+        grid = ttk.Frame(f); grid.pack(fill="x")
+        rows = [
+            ("cover",       "Cover Page"),
+            ("work_orders", "Work Orders"),
+            ("drawings",    "Drawings Register"),
+            ("relay",       "Relay Settings"),
+            ("maintenance", "Maintenance Standards"),
+            ("engineering", "Engineering Standards"),
+        ]
+        for i, (key, lbl) in enumerate(rows):
+            ttk.Label(grid, text=lbl).grid(row=i, column=0, sticky="w",
+                                           pady=4, padx=(0, 18))
+            ttk.Combobox(grid, textvariable=self._v_sizes[key],
+                         values=_EW_PAGE_SIZES, state="readonly",
+                         width=22).grid(row=i, column=1, sticky="w", pady=4)
+        ttk.Label(f,
+                  text="Tip: 11×17 Landscape gives wider columns for work orders and drawing registers.",
+                  foreground="grey", font=("", 8), wraplength=520
+                  ).pack(anchor="w", pady=(14, 0))
+        return f
+
+    # ── navigation ─────────────────────────────────────────────────
+
+    def _show_step(self, n):
+        self._step = n
+        for i, fr in enumerate(self._frames, 1):
+            if i == n: fr.pack(fill="both", expand=True)
+            else:       fr.pack_forget()
+        labels = ["Choose Outputs", "Choose Sections", "Paper Sizes"]
+        self._hdr_lbl.configure(
+            text=f"Export Wizard — Step {n} of 3: {labels[n-1]}")
+        self._back_btn.configure(state="normal" if n > 1 else "disabled")
+        self._next_btn.configure(
+            text="Generate ⚡" if n == 3 else "Next ►")
+
+    def _back(self):
+        if self._step > 1: self._show_step(self._step - 1)
+
+    def _next(self):
+        if self._step == 1 and not any(
+                [self._v_paper.get(), self._v_digital.get(), self._v_tablet.get()]):
+            messagebox.showwarning("Nothing Selected",
+                                   "Choose at least one output format.", parent=self)
+            return
+        if self._step == 2 and not self._v_paper.get():
+            # Skip paper-size step if paper not selected
+            self._generate(); return
+        if self._step < 3:
+            self._show_step(self._step + 1)
+        else:
+            self._generate()
+
+    # ── generation ─────────────────────────────────────────────────
+
+    def _generate(self):
+        app = self.app
+        project = app.project_var.get().strip() or "Red-Line-Routing"
+        folder  = app.project_folder or ""
+        if not folder:
+            messagebox.showwarning("Save First",
+                                   "Save the project before exporting.", parent=self)
+            return
+
+        date   = datetime.now().strftime("%Y-%m-%d %H:%M")
+        date_s = datetime.now().strftime("%Y-%m-%d")
+        crows  = app.title_page.get("crows", [])
+        inc    = {k: self._v_sec[k].get() for k, _ in self._SECTIONS}
+        sizes  = {k: v.get() for k, v in self._v_sizes.items()}
+        dividers = self._v_dividers.get()
+        qr_flag  = self._v_qr.get()
+
+        toc = ["Work Orders"] + [
+            lbl for k, lbl in self._SECTIONS if inc.get(k)]
+
+        # Collect all document URLs for the QR sheet
+        qr_items = []
+        for n, info in sorted(app.drawing_registry.items()):
+            if info.get("url"): qr_items.append((n, info["url"]))
+        for d, info in sorted(app.relay_registry.items()):
+            if info.get("url"): qr_items.append((d, info["url"]))
+
+        modes = (["paper"]   if self._v_paper.get()   else []) + \
+                (["digital"] if self._v_digital.get() else []) + \
+                (["tablet"]  if self._v_tablet.get()  else [])
+
+        generated = []
+        errors    = []
+        for mode in modes:
+            try:
+                html = self._assemble(
+                    mode, project, date, crows, toc, inc, dividers, qr_flag,
+                    sizes, qr_items, folder,
+                    app.jobs, app.drawing_registry,
+                    app.relay_registry,
+                    app.maintenance_standards_registry,
+                    app.engineering_standards_registry,
+                )
+                suffix = {"paper": "Paper", "digital": "Digital", "tablet": "Tablet"}[mode]
+                fpath  = os.path.join(folder, f"{suffix}_{date_s}.html")
+                with open(fpath, "w", encoding="utf-8") as fh:
+                    fh.write(html)
+                generated.append(fpath)
+            except Exception as exc:
+                errors.append(f"{mode}: {exc}")
+
+        if errors:
+            messagebox.showerror("Export Errors",
+                                  "Some exports failed:\n" + "\n".join(errors),
+                                  parent=self)
+        if generated:
+            self.destroy()
+            for path in generated:
+                _open_file(path)
+
+    def _assemble(self, mode, project, date, crows, toc, inc,
+                  dividers, qr_flag, sizes, qr_items, folder,
+                  jobs, drw_reg, relay_reg, maint_reg, eng_reg):
+        """Build the complete HTML for one output mode."""
+
+        def pcls(key):
+            """Return CSS class name for a section (adds @page binding in paper mode)."""
+            return f"ew-{key}" if mode == "paper" else "page-content"
+
+        # Build @page CSS for paper mode
+        page_css = ""
+        if mode == "paper":
+            mapping = {
+                "ew-cover":       sizes.get("cover",       "Letter Portrait"),
+                "ew-work-orders": sizes.get("work_orders", "11×17 Landscape"),
+                "ew-drawings":    sizes.get("drawings",    "11×17 Landscape"),
+                "ew-relay":       sizes.get("relay",       "Letter Portrait"),
+                "ew-maintenance": sizes.get("maintenance", "Letter Portrait"),
+                "ew-engineering": sizes.get("engineering", "Letter Portrait"),
+                "ew-divider":     "Letter Portrait",
+                "ew-qr":         "Letter Portrait",
+            }
+            lines = []
+            for cls, size_name in mapping.items():
+                w, h = _EW_PAGE_DIMS.get(size_name, ("8.5in", "11in"))
+                pn   = cls.replace("-", "_")
+                lines.append(f"@page {pn}{{size:{w} {h};margin:0.6in}}")
+                lines.append(f"section.{cls}{{page:{pn}}}")
+            page_css = "\n".join(lines)
+
+        pf = folder if mode == "tablet" else ""
+
+        # Sections and dividers
+        div_sections = ["Work Orders"] + [lbl for k, lbl in self._SECTIONS if inc.get(k)]
+        n_divs  = len(div_sections)
+        div_idx = 0
+        body    = ""
+
+        # Cover
+        body += _ew_cover(project, crows, date, toc, mode,
+                           css_class=pcls("cover") if mode == "paper" else "page-cover")
+
+        # Work Orders
+        if dividers and mode != "tablet":
+            color = _EW_DIVIDER_COLORS[div_idx % len(_EW_DIVIDER_COLORS)]
+            body += _ew_divider("Work Orders", project, date, div_idx, n_divs, color,
+                                 css_class="ew-divider" if mode == "paper" else "page-divider")
+        div_idx += 1
+        body += _ew_work_orders(jobs, drw_reg, mode,
+                                 css_class="ew-work-orders" if mode == "paper" else "page-content")
+
+        # Optional sections
+        sec_funcs = {
+            "drawings":    lambda: _ew_drawings_reg(
+                drw_reg, mode, pf,
+                css_class="ew-drawings" if mode == "paper" else "page-content"),
+            "relay":       lambda: _ew_relay_reg(
+                relay_reg, mode, pf,
+                css_class="ew-relay" if mode == "paper" else "page-content"),
+            "maintenance": lambda: _ew_standards(
+                maint_reg, {}, mode, pf,
+                maint_css="ew-maintenance" if mode == "paper" else "page-content",
+                eng_css="page-content"),
+            "engineering": lambda: _ew_standards(
+                {}, eng_reg, mode, pf,
+                maint_css="page-content",
+                eng_css="ew-engineering" if mode == "paper" else "page-content"),
+        }
+        for key, label in self._SECTIONS:
+            if not inc.get(key):
+                continue
+            if dividers and mode != "tablet":
+                color = _EW_DIVIDER_COLORS[div_idx % len(_EW_DIVIDER_COLORS)]
+                body += _ew_divider(label, project, date, div_idx, n_divs, color,
+                                     css_class="ew-divider" if mode == "paper" else "page-divider")
+            div_idx += 1
+            body += sec_funcs[key]()
+
+        # QR sheet (paper only)
+        if qr_flag and mode == "paper" and qr_items:
+            body += _ew_qr_sheet(qr_items, css_class="ew-qr")
+
+        suffix = {"paper":"Paper Export","digital":"HTML/PDF","tablet":"Tablet"}[mode]
+        return _ew_full_html(f"{suffix} — {project}", body, page_css, mode)
+
+
 # ──────────────────────────────────────────────────────────────────
 # CROW dialog (outage record: outage_number + URL)
 # ──────────────────────────────────────────────────────────────────
@@ -2097,7 +2867,7 @@ def _styled_header(parent, title, subtitle=None, bg="#1c2833"):
 class DrawingSearchDialog(tk.Toplevel):
     """Reusable drawing search UI backed by DrawingSearchClient."""
 
-    def __init__(self, parent, app_config: dict, multi_select=True):
+    def __init__(self, parent, app_config: dict, multi_select=True, proj_cache=None):
         super().__init__(parent)
         self.title("Search Drawings")
         self.resizable(True, True)
@@ -2108,6 +2878,7 @@ class DrawingSearchDialog(tk.Toplevel):
         self._last_paged = None   # most recent PagedResults
         self._from_cache = False
         self._client = None
+        self._proj_cache: "_ProjectDrawingCache | None" = proj_cache
         self._build()
         self.geometry("900x580")
         _center_window(self)
@@ -2208,7 +2979,9 @@ class DrawingSearchDialog(tk.Toplevel):
         # ── Status / pagination bar ───────────────────────────────────
         status_bar = ttk.Frame(self); status_bar.pack(fill="x", padx=10, pady=(0, 2))
         self._status_var = tk.StringVar(value="Enter search criteria and click Search.")
-        ttk.Label(status_bar, textvariable=self._status_var, foreground="grey").pack(side="left")
+        self._status_lbl = tk.Label(status_bar, textvariable=self._status_var,
+                                    fg="grey", bg=self.cget("bg"), font=("", 9))
+        self._status_lbl.pack(side="left")
 
         pag_frame = ttk.Frame(status_bar); pag_frame.pack(side="right")
         self._prev_btn = ttk.Button(pag_frame, text="◄ Prev",
@@ -2242,16 +3015,12 @@ class DrawingSearchDialog(tk.Toplevel):
         base_url = self.app_config.get("drawing_search_url", "").strip()
         if not base_url:
             return None
-        path    = self.app_config.get("drawing_search_path", "").strip() or None
         raw_hdrs = self.app_config.get("request_headers", "")
         cookies  = _parse_cookies_from_headers(raw_hdrs)
-        # Pass non-Cookie headers (e.g. Authorization) as extra_headers so the
-        # POST request sends them too — form_fetcher already does this via extra_headers.
-        extra = _parse_request_headers_raw(raw_hdrs)
+        extra    = _parse_request_headers_raw(raw_hdrs)
         extra.pop("Cookie", None)
-        cache   = DrawingSearchCache() if _DRAWING_SEARCH_AVAILABLE else None
-        return DrawingSearchClient(base_url=base_url, cookies=cookies, cache=cache,
-                                   search_path=path, extra_headers=extra or None)
+        return DrawingSearchClient(base_url=base_url, cookies=cookies,
+                                   extra_headers=extra or None)
 
     def _get_params(self, page=0):
         # Parse code from "CODE — Label" or raw code
@@ -2263,7 +3032,7 @@ class DrawingSearchDialog(tk.Toplevel):
             title=self._v_title.get().strip(),
             serial_from=self._v_serial_from.get().strip(),
             serial_to=self._v_serial_to.get().strip(),
-            facility=self._v_facility.get().strip(),
+            facility=_code(self._v_facility.get()),
             drawing_type=_code(self._v_type.get()),
             drawing_subject=_code(self._v_subject.get()),
             state=self._v_state.get().strip(),
@@ -2283,19 +3052,56 @@ class DrawingSearchDialog(tk.Toplevel):
         params = self._get_params(page=page)
         self._search_btn.configure(state="disabled")
         self._status_var.set("Searching…")
+        self._status_lbl.configure(fg="grey")
         self.update_idletasks()
 
-        def on_done(paged):
-            self.after(0, lambda: self._on_results(paged))
+        # ── Cache-first path ──────────────────────────────────────────────
+        if self._proj_cache is not None and page == 0:
+            cached = self._proj_cache.get(params)
+            if cached is not None:
+                paged = PagedResults(results=cached, page=0, page_size=params.page_size,
+                                     total_count=len(cached), has_next=False)
+                self._on_results(paged, from_cache=True)
+                # Background refresh — silently update cache then redisplay
+                def _refresh():
+                    try:
+                        fresh = client.search_all_pages(params)
+                        self._proj_cache.put(params, fresh)
+                        fp = PagedResults(results=fresh, page=0,
+                                          page_size=params.page_size,
+                                          total_count=len(fresh), has_next=False)
+                        self.after(0, lambda p=fp: self._on_results(p, from_cache=False))
+                    except Exception:
+                        pass  # keep showing cached results
+                threading.Thread(target=_refresh, daemon=True).start()
+                return
 
-        def on_error(exc):
-            self.after(0, lambda: self._on_error(exc))
+        # ── Live search path ──────────────────────────────────────────────
+        if (self._proj_cache is not None
+                and _ProjectDrawingCache.is_cacheable(params)
+                and page == 0):
+            # Fetch all pages so the cache is useful for future searches
+            def _run_all():
+                try:
+                    results = client.search_all_pages(params)
+                    self._proj_cache.put(params, results)
+                    fp = PagedResults(results=results, page=0,
+                                      page_size=params.page_size,
+                                      total_count=len(results), has_next=False)
+                    self.after(0, lambda p=fp: self._on_results(p, from_cache=False))
+                except Exception as exc:
+                    self.after(0, lambda e=exc: self._on_error(e))
+            threading.Thread(target=_run_all, daemon=True).start()
+        else:
+            def on_done(paged):
+                self.after(0, lambda: self._on_results(paged))
+            def on_error(exc):
+                self.after(0, lambda: self._on_error(exc))
+            client.search_async(params, on_done=on_done, on_error=on_error)
 
-        client.search_async(params, on_done=on_done, on_error=on_error)
-
-    def _on_results(self, paged):
+    def _on_results(self, paged, from_cache=False):
         self._last_paged = paged
-        self._from_cache = False
+        self._from_cache = from_cache
         for iid in self.tree.get_children():
             self.tree.delete(iid)
         for r in paged.results:
@@ -2308,15 +3114,20 @@ class DrawingSearchDialog(tk.Toplevel):
         self._prev_btn.configure(state="normal" if paged.page > 0 else "disabled")
         self._next_btn.configure(state="normal" if paged.has_next else "disabled")
         self._search_btn.configure(state="normal")
+        self._show_response_btn.configure(state="normal")
         if count == 0:
-            self._status_var.set("0 results — auth issue or no matches (click 'Show Response' to inspect)")
-            self._show_response_btn.configure(state="normal")
+            self._status_var.set("0 results — possible auth issue. Click 'Show Response' to inspect the server reply.")
+            self._status_lbl.configure(fg="#c0392b")
+        elif from_cache:
+            self._status_var.set(f"{count} result(s) (cached — refreshing in background…)")
+            self._status_lbl.configure(fg="#5dade2")
         else:
-            self._status_var.set(f"{count} result(s)   Page {paged.page + 1}")
-            self._show_response_btn.configure(state="normal")
+            self._status_var.set(f"{count} result(s)")
+            self._status_lbl.configure(fg="grey")
 
     def _on_error(self, exc):
         self._status_var.set(f"Error: {exc}")
+        self._status_lbl.configure(fg="#c0392b")
         self._search_btn.configure(state="normal")
         self._show_response_btn.configure(state="normal")
         url = ""
@@ -2520,6 +3331,60 @@ class _ComboFilterHelper:
 def _bind_filter_combobox(combo: ttk.Combobox, all_choices: list) -> None:
     """Attach a floating autocomplete popup to a ttk.Combobox (no focus stealing)."""
     _ComboFilterHelper(combo, all_choices)
+
+
+class _ProjectDrawingCache:
+    """Per-project drawing search cache stored inside the .redline JSON.
+
+    Only categorical searches (facility / drawing_type / drawing_subject / state,
+    no free-text filters) are cached and auto-refreshed.  The caller owns the
+    backing dict (``RedLineApp.drawing_search_cache``) so it is persisted when
+    the project is saved.
+    """
+
+    def __init__(self, store: dict):
+        self._store = store   # mutable ref — changes are visible to the caller
+
+    # ── helpers ───────────────────────────────────────────────────
+
+    @staticmethod
+    def is_cacheable(params) -> bool:
+        return not any([
+            params.drawing_num, params.title, params.title2,
+            params.serial_from, params.serial_to,
+            params.manufacturer_name, params.manufacturer_doc_num,
+            params.remarks_contain, params.legacy_document_num,
+        ])
+
+    @staticmethod
+    def _key(params) -> str:
+        return f"{params.facility}|{params.drawing_type}|{params.drawing_subject}|{params.state}"
+
+    # ── public API ─────────────────────────────────────────────────
+
+    def get(self, params) -> "list | None":
+        if not self.is_cacheable(params):
+            return None
+        entry = self._store.get(self._key(params))
+        if entry is None:
+            return None
+        try:
+            return [DrawingResult(**d) for d in entry["results"]]
+        except Exception:
+            return None
+
+    def put(self, params, results: list) -> None:
+        self._store[self._key(params)] = {
+            "results": [vars(r) for r in results],
+            "cached_at": datetime.now().timestamp(),
+        }
+
+    def iter_keys(self):
+        """Yield (facility, drawing_type, drawing_subject, state) for every cached entry."""
+        for k in list(self._store.keys()):
+            parts = k.split("|")
+            if len(parts) == 4:
+                yield tuple(parts)
 
 
 def _show_search_error_dialog(parent, exc: Exception, url: str = "", context: str = "") -> None:
@@ -2744,7 +3609,7 @@ class SoftwareSetupDialog(tk.Toplevel):
         sections = [
             ("Drawings",       [("base_drawing_url",    "Base Drawing URL"),
                                  ("drawing_search_url",  "Drawing Search URL"),
-                                 ("drawing_search_path", "Drawing Search Path")]),
+                                ]),
             ("Aspen",          [("aspen_url",           "Aspen URL (future)")]),
             ("CROWs",          [("base_crow_url",       "Base CROW URL")]),
             ("Relay Settings", [("base_relay_url",      "Base Relay URL")]),
@@ -2854,10 +3719,9 @@ class SoftwareSetupDialog(tk.Toplevel):
 
     def _fetch_drawing_options(self):
         url  = self._cfg_vars.get("drawing_search_url", tk.StringVar()).get().strip()
-        path = self._cfg_vars.get("drawing_search_path", tk.StringVar()).get().strip() or None
         raw  = self._headers_txt.get("1.0", "end") if self._headers_txt else ""
         headers = _parse_request_headers_raw(raw)
-        _show_fetch_options_dialog(self, url, headers, search_path=path)
+        _show_fetch_options_dialog(self, url, headers)
 
     def _skip(self):
         self.result = {}; self.destroy()
@@ -3687,6 +4551,7 @@ class RedLineApp(tk.Tk):
         self.relay_registry = {}          # keyed by device_id
         self.maintenance_standards_registry = {}  # keyed by standard_id
         self.engineering_standards_registry = {}  # keyed by standard_id
+        self.drawing_search_cache = {}    # keyed by "facility|type|subject|state"
         self.app_config = self._load_app_config()   # global prefs (~/.redlinerouting.json)
         self._build_menu()
         self._build_ui()
@@ -3866,6 +4731,8 @@ class RedLineApp(tk.Tk):
         fm.add_command(label="Save",                   command=self._save,         accelerator="Ctrl+S")
         fm.add_command(label="Save As…",               command=self._save_as)
         fm.add_separator()
+        fm.add_command(label="Export Wizard…",            command=self._open_export_wizard, accelerator="Ctrl+W")
+        fm.add_separator()
         fm.add_command(label="Export Report (detail)…",command=self._export_report,accelerator="Ctrl+E")
         fm.add_command(label="Export Table (text)…",   command=self._export_table)
         fm.add_command(label="Export CSV (Excel)…",    command=self._export_csv)
@@ -3880,6 +4747,7 @@ class RedLineApp(tk.Tk):
         self.bind("<Control-o>", lambda _: self._open())
         self.bind("<Control-s>", lambda _: self._save())
         self.bind("<Control-e>", lambda _: self._export_report())
+        self.bind("<Control-w>", lambda _: self._open_export_wizard())
         self.bind("<Control-q>", lambda _: self.quit())
 
     def _build_ui(self):
@@ -4052,7 +4920,8 @@ class RedLineApp(tk.Tk):
     # ── Drawing registry CRUD ─────────────────────────────────────
 
     def _search_drawings(self):
-        dlg = DrawingSearchDialog(self, self.app_config, multi_select=True)
+        dlg = DrawingSearchDialog(self, self.app_config, multi_select=True,
+                                  proj_cache=_ProjectDrawingCache(self.drawing_search_cache))
         for r in dlg.selected:
             if r.drawing_number not in self.drawing_registry:
                 self.drawing_registry[r.drawing_number] = {
@@ -4073,7 +4942,8 @@ class RedLineApp(tk.Tk):
 
     def _add_drawing(self):
         dlg = DrawingEditDialog(self, base_url=self.app_config.get("base_drawing_url",""),
-                                app_config=self.app_config)
+                                app_config=self.app_config,
+                                proj_cache=_ProjectDrawingCache(self.drawing_search_cache))
         if dlg.result:
             name = dlg.result["name"]
             self.drawing_registry[name] = {"title":dlg.result["title"],"rev":dlg.result["rev"],"url":dlg.result["url"],"notes":dlg.result["notes"]}
@@ -4085,7 +4955,8 @@ class RedLineApp(tk.Tk):
         name = sel[0]; info = self.drawing_registry.get(name,{})
         dlg = DrawingEditDialog(self, existing={"name":name,**info},
                                 base_url=self.app_config.get("base_drawing_url",""),
-                                app_config=self.app_config)
+                                app_config=self.app_config,
+                                proj_cache=_ProjectDrawingCache(self.drawing_search_cache))
         if dlg.result:
             old = dlg.result.get("old_name"); new_name = dlg.result["name"]
             if old and old != new_name and old in self.drawing_registry: del self.drawing_registry[old]
@@ -4540,7 +5411,6 @@ class RedLineApp(tk.Tk):
             ("Drawings", [
                 ("base_drawing_url",    "Base Drawing URL:",    "Used to pre-fill URLs when adding drawings"),
                 ("drawing_search_url",  "Drawing Search URL:",  "Base URL for the corporate drawing search server"),
-                ("drawing_search_path", "Drawing Search Path:", "Path appended to base URL for the search form (default: /search/searchGT.html)"),
             ]),
             ("Aspen", [
                 ("aspen_url",         "Aspen URL:",         "Base URL for Aspen (future use)"),
@@ -4611,9 +5481,8 @@ class RedLineApp(tk.Tk):
 
         def _do_fetch_options():
             url  = cfg_vars.get("drawing_search_url", tk.StringVar()).get().strip()
-            path = cfg_vars.get("drawing_search_path", tk.StringVar()).get().strip() or None
             headers = _parse_request_headers_raw(headers_txt.get("1.0", "end"))
-            _show_fetch_options_dialog(dlg, url, headers, search_path=path)
+            _show_fetch_options_dialog(dlg, url, headers)
 
         ttk.Button(drw_search_lf, text="🔄 Fetch Drawing Options",
                    command=_do_fetch_options).pack(anchor="w")
@@ -6575,6 +7444,9 @@ class RedLineApp(tk.Tk):
         ttk.Button(bf,text="Export Report…",command=self._export_report).pack(side="left",padx=4)
         ttk.Button(bf,text="Close",command=win.destroy).pack(side="left",padx=4)
 
+    def _open_export_wizard(self):
+        ExportWizard(self, self)
+
     def _export_report(self):
         tp = dict(self.title_page); tp["notes"] = self.title_notes.get("1.0","end").strip()
         self._export_text(generate_report(self.jobs,self.project_var.get().strip(),self.drawing_registry,title_page=tp),
@@ -6644,6 +7516,7 @@ class RedLineApp(tk.Tk):
         if self.jobs and not messagebox.askyesno("New Plan","Discard current plan and start fresh?"): return
         self.jobs=[]; self.drawing_registry={}; self.relay_registry={}
         self.maintenance_standards_registry={}; self.engineering_standards_registry={}
+        self.drawing_search_cache={}
         self.current_file=None; self.project_folder=None
         self.project_var.set("")
         self.history = {"device": [], "location": [], "pin": [], "panel": [], "wire": []}
@@ -6675,6 +7548,7 @@ class RedLineApp(tk.Tk):
             self.maintenance_standards_registry = data.get("maintenance_standards", {})
             self.engineering_standards_registry = data.get("engineering_standards", {})
             self.history = data.get("history", {"device":[],"location":[],"pin":[],"panel":[],"wire":[]})
+            self.drawing_search_cache = data.get("drawing_search_cache", {})
             self.title_page = data.get("title_page", {"notes": "", "crows": []})
             self.current_file = path
             self.project_folder = os.path.dirname(path)
@@ -6689,6 +7563,7 @@ class RedLineApp(tk.Tk):
             if self.mode_var.get() == "impl": self._refresh_file_tabs()
             proj = data.get("project","") or os.path.splitext(os.path.basename(path))[0]
             self.title(f"Red-Line-Routing — {proj}")
+            self.after_idle(self._refresh_drawing_cache_bg)
         except Exception as exc: messagebox.showerror("Open Error",str(exc))
 
     def _save(self):
@@ -6728,12 +7603,48 @@ class RedLineApp(tk.Tk):
                            "relay_settings":self.relay_registry,           # key kept as "relay_settings" for file compatibility
                            "maintenance_standards":self.maintenance_standards_registry,
                            "engineering_standards":self.engineering_standards_registry,
+                           "drawing_search_cache":self.drawing_search_cache,
                            "history":self.history,
                            "jobs":self.jobs},fh,indent=2)
             proj = self.project_var.get().strip() or os.path.splitext(os.path.basename(path))[0]
             self.title(f"Red-Line-Routing — {proj}")
             self._update_status()
         except Exception as exc: messagebox.showerror("Save Error",str(exc))
+
+    def _refresh_drawing_cache_bg(self):
+        """Silently refresh every cached drawing-search entry in the background.
+
+        Called after a project is loaded.  For each (facility, type, subject, state)
+        tuple stored in the project cache, re-runs search_all_pages and updates the
+        cached results so the next search in the session is up-to-date.
+        """
+        if not _DRAWING_SEARCH_AVAILABLE:
+            return
+        cache = _ProjectDrawingCache(self.drawing_search_cache)
+        keys = list(cache.iter_keys())
+        if not keys:
+            return
+        base_url = self.app_config.get("drawing_search_url", "").strip()
+        if not base_url:
+            return
+        raw_hdrs = self.app_config.get("request_headers", "")
+        cookies  = _parse_cookies_from_headers(raw_hdrs)
+        extra    = _parse_request_headers_raw(raw_hdrs)
+        extra.pop("Cookie", None)
+        client   = DrawingSearchClient(base_url=base_url, cookies=cookies,
+                                        extra_headers=extra or None)
+
+        def _run():
+            for fac, typ, subj, state in keys:
+                try:
+                    params = SearchParams(facility=fac, drawing_type=typ,
+                                          drawing_subject=subj, state=state)
+                    results = client.search_all_pages(params)
+                    cache.put(params, results)
+                except Exception:
+                    pass
+
+        threading.Thread(target=_run, daemon=True).start()
 
 
 # ──────────────────────────────────────────────────────────────────
