@@ -2459,7 +2459,8 @@ class SoftwareSetupDialog(tk.Toplevel):
         self.resizable(False, False)
         self.result = None
         self._cfg_vars = {}
-        self._headers_txt  = None   # ScrolledText for request headers, set in _build
+        self._headers_txt      = None   # ScrolledText for request headers, set in _build
+        self._eng_headers_txt  = None   # ScrolledText for engineering-specific headers
         self._build(dict(app_config))
         self.resizable(True, True)
         _center_window(self)          # auto-size to content
@@ -2523,6 +2524,19 @@ class SoftwareSetupDialog(tk.Toplevel):
         self._headers_txt = scrolledtext.ScrolledText(auth_body, height=3, font=("Courier", 9), wrap="none")
         self._headers_txt.pack(fill="x", padx=4, pady=(2, 0))
         self._headers_txt.insert("1.0", cfg.get("request_headers", ""))
+        # Engineering Standards Headers (optional per-server override)
+        eng_hdr_row = tk.Frame(body, bg="white"); eng_hdr_row.pack(fill="x", pady=(6, 4))
+        tk.Frame(eng_hdr_row, bg="#2980b9", width=3).pack(side="left", fill="y")
+        tk.Label(eng_hdr_row, text="Engineering Standards Headers (optional override)", bg="white", fg="#1c2833",
+                 font=("", 9, "bold"), padx=8, pady=2).pack(side="left", anchor="w")
+        eng_body = tk.Frame(body, bg="white"); eng_body.pack(fill="x", pady=(0, 4))
+        tk.Label(eng_body,
+                 text="Leave blank to use the master headers above. Fill in only if engineering\n"
+                      "standards are served from a different server with different auth credentials.",
+                 bg="white", fg="#7f8c8d", font=("", 8), justify="left").pack(anchor="w", padx=4)
+        self._eng_headers_txt = scrolledtext.ScrolledText(eng_body, height=3, font=("Courier", 9), wrap="none")
+        self._eng_headers_txt.pack(fill="x", padx=4, pady=(2, 0))
+        self._eng_headers_txt.insert("1.0", cfg.get("engineering_request_headers", ""))
         # Drawing Search — Fetch Options button (uses master auth from above)
         ds_hdr_row = tk.Frame(body, bg="white"); ds_hdr_row.pack(fill="x", pady=(6, 4))
         tk.Frame(ds_hdr_row, bg="#2980b9", width=3).pack(side="left", fill="y")
@@ -2588,6 +2602,8 @@ class SoftwareSetupDialog(tk.Toplevel):
         self.result = {k: v.get().strip() for k, v in self._cfg_vars.items()}
         if self._headers_txt:
             self.result["request_headers"] = self._headers_txt.get("1.0", "end").strip()
+        if self._eng_headers_txt:
+            self.result["engineering_request_headers"] = self._eng_headers_txt.get("1.0", "end").strip()
         self.destroy()
 
 
@@ -4290,6 +4306,16 @@ class RedLineApp(tk.Tk):
         headers_txt.pack(fill="x")
         headers_txt.insert("1.0", self.app_config.get("request_headers", ""))
 
+        eng_hdrs_lf = ttk.LabelFrame(f, text="Engineering Standards Headers (optional override)", padding=8)
+        eng_hdrs_lf.pack(fill="x", pady=(0, 8))
+        ttk.Label(eng_hdrs_lf,
+                  text="Leave blank to use the master headers above. Fill in only if engineering\n"
+                       "standards are served from a different server with different auth credentials.",
+                  foreground="grey", font=("", 8), justify="left").pack(anchor="w", pady=(0, 4))
+        eng_headers_txt = scrolledtext.ScrolledText(eng_hdrs_lf, height=3, font=("Courier", 9), wrap="none")
+        eng_headers_txt.pack(fill="x")
+        eng_headers_txt.insert("1.0", self.app_config.get("engineering_request_headers", ""))
+
         drw_search_lf = ttk.LabelFrame(f, text="Drawing Search", padding=8)
         drw_search_lf.pack(fill="x", pady=(0, 8))
         ttk.Label(drw_search_lf,
@@ -4312,6 +4338,7 @@ class RedLineApp(tk.Tk):
         def _save():
             self.app_config.update({k: v.get().strip() for k, v in cfg_vars.items()})
             self.app_config["request_headers"] = headers_txt.get("1.0", "end").strip()
+            self.app_config["engineering_request_headers"] = eng_headers_txt.get("1.0", "end").strip()
             self._save_app_config()
             dlg.destroy()
 
@@ -4673,7 +4700,13 @@ class RedLineApp(tk.Tk):
         )
 
     def _build_engineering_headers(self):
-        """Return extra HTTP headers for engineering downloads (from master auth)."""
+        """Return extra HTTP headers for engineering downloads.
+
+        Uses engineering_request_headers if set; falls back to the master headers.
+        """
+        eng_raw = self.app_config.get("engineering_request_headers", "").strip()
+        if eng_raw:
+            return _parse_request_headers_raw(eng_raw)
         return self._parse_request_headers()
 
     # ── Print helpers ─────────────────────────────────────────────

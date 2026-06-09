@@ -42,12 +42,22 @@ class DrawingSearchClient:
         cache=None,
         search_path: Optional[str] = None,
     ):
-        self.base_url    = base_url.rstrip("/")
+        _base = base_url.rstrip("/")
+        if search_path is not None:
+            self.base_url    = _base
+            self.search_path = search_path
+        else:
+            _parsed = urllib.parse.urlparse(_base)
+            if _parsed.path and _parsed.path not in ("", "/"):
+                self.base_url    = _parsed.scheme + "://" + _parsed.netloc
+                self.search_path = _parsed.path
+            else:
+                self.base_url    = _base
+                self.search_path = _SEARCH_PATH
         self.cookies     = cookies or {}
         self.timeout     = timeout
         self.user_agent  = user_agent
         self.cache       = cache  # DrawingSearchCache | None
-        self.search_path = search_path if search_path is not None else _SEARCH_PATH
 
     # ── public API ────────────────────────────────────────────────
 

@@ -16,6 +16,7 @@ opts = fetch_form_options(
 """
 
 import re
+import urllib.parse
 import urllib.request
 import urllib.error
 from html.parser import HTMLParser
@@ -97,7 +98,13 @@ def fetch_form_options(
 
     Raises ``urllib.error.URLError`` / ``urllib.error.HTTPError`` on failure.
     """
-    url = base_url.rstrip("/") + (form_path if form_path is not None else _FORM_PATH)
+    _parsed_base = urllib.parse.urlparse(base_url.rstrip("/"))
+    if form_path is not None:
+        url = base_url.rstrip("/") + form_path
+    elif _parsed_base.path and _parsed_base.path not in ("", "/"):
+        url = base_url  # full URL already supplied — use as-is
+    else:
+        url = base_url.rstrip("/") + _FORM_PATH
     cookie_h = "; ".join(f"{k}={v}" for k, v in (cookies or {}).items())
 
     headers = {
