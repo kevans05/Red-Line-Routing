@@ -3239,7 +3239,10 @@ class ExportWizard(tk.Toplevel):
         if generated:
             self.destroy()
             for path in generated:
-                _open_file(path)
+                if path.lower().endswith(".pdf"):
+                    _reveal_file(path)
+                else:
+                    _open_file(path)
 
     def _assemble(self, mode, project, date, crows, toc, inc,
                   qr_flag, sizes, qr_items, folder,
@@ -8601,6 +8604,19 @@ def _open_file(path):
         elif sys.platform=="darwin": subprocess.call(["open",path])
         else: subprocess.call(["xdg-open",path])
     except Exception: pass
+
+
+def _reveal_file(path):
+    """Open the containing folder with the file selected/highlighted."""
+    try:
+        if sys.platform == "win32":
+            subprocess.Popen(["explorer", "/select,", os.path.normpath(path)])
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", "-R", path])
+        else:
+            subprocess.Popen(["xdg-open", os.path.dirname(path)])
+    except Exception:
+        _open_file(path)
 
 
 if __name__ == "__main__":
