@@ -153,9 +153,16 @@ class DrawingSearchClient:
             },
         )
 
-        with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-            charset = _charset_from_headers(resp.headers)
-            return resp.read().decode(charset, errors="replace")
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                charset = _charset_from_headers(resp.headers)
+                return resp.read().decode(charset, errors="replace")
+        except urllib.error.HTTPError as exc:
+            try:
+                exc._response_body = exc.read().decode("utf-8", errors="replace")
+            except Exception:
+                exc._response_body = ""
+            raise
 
 
 def _charset_from_headers(headers) -> str:

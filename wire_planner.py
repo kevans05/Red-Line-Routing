@@ -2162,18 +2162,21 @@ class DrawingSearchDialog(tk.Toplevel):
         self._cb_facility = ttk.Combobox(row1, textvariable=self._v_facility,
                                          values=fac_choices, width=18)
         self._cb_facility.pack(side="left", padx=(2, 10))
+        _bind_filter_combobox(self._cb_facility, fac_choices)
 
         ttk.Label(row1, text="Type:").pack(side="left")
         self._v_type = tk.StringVar()
         type_choices = [""] + [f"{k} — {v}" for k, v in _typ.items()] if _DRAWING_SEARCH_AVAILABLE else [""]
-        self._cb_type = ttk.Combobox(row1, textvariable=self._v_type, values=type_choices, width=22, state="readonly")
+        self._cb_type = ttk.Combobox(row1, textvariable=self._v_type, values=type_choices, width=22)
         self._cb_type.pack(side="left", padx=(2, 10))
+        _bind_filter_combobox(self._cb_type, type_choices)
 
         ttk.Label(row1, text="Subject:").pack(side="left")
         self._v_subject = tk.StringVar()
         subj_choices = [""] + [f"{k} — {v}" for k, v in _subj.items()] if _DRAWING_SEARCH_AVAILABLE else [""]
-        self._cb_subject = ttk.Combobox(row1, textvariable=self._v_subject, values=subj_choices, width=22, state="readonly")
+        self._cb_subject = ttk.Combobox(row1, textvariable=self._v_subject, values=subj_choices, width=22)
         self._cb_subject.pack(side="left", padx=(2, 10))
+        _bind_filter_combobox(self._cb_subject, subj_choices)
 
         ttk.Label(row1, text="State:").pack(side="left")
         self._v_state = tk.StringVar(value="Released")
@@ -2307,7 +2310,10 @@ class DrawingSearchDialog(tk.Toplevel):
     def _on_error(self, exc):
         self._status_var.set(f"Error: {exc}")
         self._search_btn.configure(state="normal")
-        messagebox.showerror("Search Error", str(exc), parent=self)
+        url = ""
+        if self._client:
+            url = self._client.base_url + self._client.search_path
+        _show_search_error_dialog(self, exc, url=url, context="Drawing search request failed.")
 
     def _import(self):
         if self._last_paged is None:
@@ -2352,6 +2358,92 @@ class _StickyRedirectHandler(urllib.request.HTTPRedirectHandler):
             if k.lower() not in self._SKIP:
                 new_req.add_unredirected_header(k, v)
         return new_req
+
+
+def _bind_filter_combobox(combo: ttk.Combobox, all_choices: list) -> None:
+    """Bind case-insensitive substring filtering to a ttk.Combobox.
+
+    As the user types, the dropdown narrows to entries containing the typed
+    text anywhere in the string.  On focus-out the full list is restored.
+    """
+    _NAV = frozenset({
+        "Return", "Escape", "Tab", "Up", "Down", "Prior", "Next",
+        "Left", "Right", "Home", "End",
+        "Shift_L", "Shift_R", "Control_L", "Control_R", "Alt_L", "Alt_R",
+    })
+
+    def _do_filter():
+        typed = combo.get().lower().strip()
+        combo["values"] = (
+            [c for c in all_choices if typed in c.lower()] or all_choices
+            if typed else all_choices
+        )
+
+    def _on_key(event):
+        if event.keysym not in _NAV:
+            combo.after_idle(_do_filter)
+
+    def _on_focus_out(_event):
+        combo.after_idle(lambda: combo.configure(values=all_choices))
+
+    combo.configure(state="normal")
+    combo.bind("<KeyRelease>", _on_key)
+    combo.bind("<FocusOut>", _on_focus_out)
+
+
+def _show_search_error_dialog(parent, exc: Exception, url: str = "", context: str = "") -> None:
+    """Show a scrollable error-detail dialog for HTTP/search failures."""
+    win = tk.Toplevel(parent)
+    win.title("Request Error")
+    win.resizable(True, True)
+
+    hdr = tk.Frame(win, bg="#7b241c"); hdr.pack(fill="x")
+    tk.Label(hdr, text="Request Error", bg="#7b241c", fg="white",
+             font=("", 11, "bold"), padx=14, pady=8).pack(side="left")
+
+    body_f = ttk.Frame(win, padding=12); body_f.pack(fill="both", expand=True)
+
+    if context:
+        ttk.Label(body_f, text=context, font=("", 9, "bold")).pack(anchor="w")
+
+    if url:
+        r = ttk.Frame(body_f); r.pack(fill="x", pady=(4, 2))
+        ttk.Label(r, text="URL:", font=("", 9, "bold")).pack(side="left")
+        ttk.Label(r, text=url, font=("Courier", 8), foreground="#2980b9",
+                  wraplength=520, justify="left").pack(side="left", padx=(4, 0))
+
+    lines = [f"Error: {type(exc).__name__}: {exc}"]
+    if hasattr(exc, "code"):
+        lines.append(f"HTTP status: {exc.code} {getattr(exc, 'reason', '')}")
+
+    body_text = getattr(exc, "_response_body", None)
+    if body_text is None:
+        try:
+            raw = exc.read() if hasattr(exc, "read") else b""
+            body_text = raw.decode("utf-8", errors="replace") if raw else ""
+        except Exception:
+            body_text = ""
+    if body_text:
+        plain = re.sub(r"<[^>]+>", " ", body_text)
+        plain = re.sub(r"\s+", " ", plain).strip()[:2000]
+        lines.append(f"\nServer response:\n{plain}")
+
+    txt = scrolledtext.ScrolledText(body_f, height=12, font=("Courier", 9), wrap="word")
+    txt.pack(fill="both", expand=True, pady=(6, 0))
+    txt.insert("1.0", "\n".join(lines))
+    txt.configure(state="disabled")
+
+    ttk.Label(body_f,
+              text="Check: correct URL in Software Settings · current Cookie value · "
+                   "Authorization header if required",
+              foreground="grey", font=("", 8), wraplength=520).pack(anchor="w", pady=(6, 0))
+
+    bf = ttk.Frame(win, padding=(12, 0, 12, 10)); bf.pack(fill="x")
+    ttk.Button(bf, text="Close", command=win.destroy).pack(side="right")
+
+    win.geometry("600x400")
+    _center_window(win)
+    win.grab_set()
 
 
 def _parse_request_headers_raw(raw_headers: str) -> dict:
@@ -2468,7 +2560,16 @@ def _show_fetch_options_dialog(parent, url: str, headers: dict, search_path: str
                 f"\n✓  Saved — {len(fac)} facilities, {len(typs)} types, "
                 f"{len(subjs)} subjects.\n", "ok"))
         except Exception as exc:
-            dlg.after(0, lambda: _log(f"\n✗  Error: {exc}\n", "err"))
+            body_info = ""
+            try:
+                _b = exc.read().decode("utf-8", errors="replace") if hasattr(exc, "read") else ""
+                if _b:
+                    _b = re.sub(r"<[^>]+>", " ", _b)
+                    _b = re.sub(r"\s+", " ", _b).strip()[:500]
+                    body_info = f"\n  Server: {_b}"
+            except Exception:
+                pass
+            dlg.after(0, lambda bi=body_info: _log(f"\n✗  Error: {exc}{bi}\n", "err"))
         finally:
             dlg.after(0, lambda: close_btn.configure(state="normal"))
 
@@ -4184,11 +4285,19 @@ class RedLineApp(tk.Tk):
                     q.put(("log", f"✓  {name}  ({kb} KB)  →  {rel}{arch_note}", "ok"))
                     ok += 1
                 except urllib.error.HTTPError as exc:
+                    try:
+                        _b = exc.read().decode("utf-8", errors="replace")
+                        _b = re.sub(r"<[^>]+>", " ", _b)
+                        _b = re.sub(r"\s+", " ", _b).strip()[:300]
+                    except Exception:
+                        _b = ""
                     msg = f"✗  {name}: HTTP {exc.code} {exc.reason}  [{url}]"
+                    if _b:
+                        msg += f"\n     Server: {_b}"
                     if exc.code == 401:
                         msg += "\n  → Tip: add a Cookie or Authorization header in File → Software Settings"
                     elif exc.code == 403:
-                        msg += "\n  → Tip: server recognised the request but denied access — confirm the Cookie is current and correct for this server (File → Software Settings → Engineering Standards Headers)"
+                        msg += "\n  → Tip: server denied access — confirm the Cookie is current for this server (Software Settings → Engineering Standards Headers)"
                     q.put(("log", msg, "err"))
                 except urllib.error.URLError as exc:
                     q.put(("log",
