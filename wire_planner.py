@@ -1825,17 +1825,15 @@ body{{font-family:-apple-system,"Helvetica Neue",Arial,sans-serif;
 .cover-tbl{{border-collapse:collapse;width:100%;margin-bottom:18px;font-size:9pt}}
 .cover-tbl th{{background:#1a252f;color:white;padding:4px 8px;text-align:left}}
 .cover-tbl td{{padding:4px 8px;border:1px solid #ccc}}
-h3{{font-size:10pt;margin:14px 0 4px;color:#1a252f}}
-/* Dividers */
-.divider-name{{font-size:36pt;font-weight:bold;margin:.3in 0 .1in;line-height:1.1}}
-.divider-proj{{font-size:12pt;color:#555}}
-.divider-date{{font-size:9pt;color:#888;margin-top:4px}}
-.divider-tab{{
-  position:absolute;right:0;width:2.4cm;height:2cm;
-  color:white;font-weight:bold;font-size:7.5pt;
-  display:flex;align-items:center;justify-content:center;
-  writing-mode:vertical-rl;transform:rotate(180deg);
-  text-transform:uppercase;letter-spacing:.05em}}
+h3{{font-size:10pt;margin:14px 0 4px;color:#1a252f;text-transform:uppercase;
+    letter-spacing:.06em;border-bottom:1px solid #ccc;padding-bottom:3px}}
+/* Table of Contents */
+.toc-tbl{{border-collapse:collapse;width:100%;margin-bottom:18px}}
+.toc-tbl td{{padding:7px 8px;border:none;border-bottom:1px solid #eee;font-size:10pt}}
+.toc-num{{color:#1a252f;font-weight:bold;width:32px;text-align:right;
+          padding-right:14px !important;font-size:11pt}}
+.toc-tbl a{{color:#1a252f;text-decoration:none;font-weight:500}}
+.toc-tbl tr:hover td{{background:#f0f4f8}}
 /* General */
 h2.sec-hdr{{font-size:13pt;color:#1a252f;border-bottom:2px solid #1a252f;
            padding-bottom:3px;margin:0 0 10px}}
@@ -1873,6 +1871,13 @@ document.querySelectorAll('input[type=checkbox]').forEach(function(cb){{
 }});
 </script>
 </body></html>"""
+
+
+def _ew_with_id(html: str, section_id: str) -> str:
+    """Inject id attribute into the first <section tag in html."""
+    if not section_id or not html:
+        return html
+    return html.replace("<section ", f'<section id="{section_id}" ', 1)
 
 
 def _ew_cover(project, crows, date, toc_items, mode, css_class="page-cover",
@@ -1917,10 +1922,14 @@ def _ew_cover(project, crows, date, toc_items, mode, css_class="page-cover",
         f"<th>URL</th>{file_th}</tr></thead>"
         f"<tbody>{outage_rows}</tbody></table>"
     ) if crows else ""
-    toc_rows = "".join(f"<tr><td>{_esc(n)}</td></tr>" for n in toc_items)
+    toc_rows = "".join(
+        f"<tr><td class='toc-num'>{i + 1}</td>"
+        f"<td><a href='#{_esc(anch)}'>{_esc(label)}</a></td></tr>"
+        for i, (label, anch) in enumerate(toc_items)
+    ) if toc_items else ""
     toc_html = (
-        "<h3>Contents</h3>"
-        f"<table class='cover-tbl'><tbody>{toc_rows}</tbody></table>"
+        "<h3>Table of Contents</h3>"
+        f"<table class='toc-tbl'><tbody>{toc_rows}</tbody></table>"
     ) if toc_items else ""
     return (
         f'<section class="{css_class}">'
@@ -2284,7 +2293,6 @@ class ExportWizard(tk.Toplevel):
         self._v_digital = tk.BooleanVar(value=True)
         self._v_tablet  = tk.BooleanVar(value=False)
         self._v_sec     = {k: tk.BooleanVar(value=False) for k, _ in self._SECTIONS}
-        self._v_dividers = tk.BooleanVar(value=True)
         self._v_qr      = tk.BooleanVar(value=True)
         self._v_sizes   = {k: tk.StringVar(value=v) for k, v in self._DEFAULTS.items()}
 
@@ -2328,7 +2336,7 @@ class ExportWizard(tk.Toplevel):
                   font=("", 9, "bold")).pack(anchor="w", pady=(0, 12))
         cards = [
             (self._v_paper,   "📄  Paper",
-             "Print-ready layouts with binder dividers and a QR code URL sheet.\n"
+             "Print-ready layouts with a table of contents and QR code URL sheet.\n"
              "Open in browser → Ctrl+P → Save as PDF."),
             (self._v_digital, "💻  HTML / PDF",
              "Screen-optimised with live hyperlinks.\n"
@@ -2374,10 +2382,6 @@ class ExportWizard(tk.Toplevel):
 
         ext = ttk.LabelFrame(f, text="Extras", padding=(12, 6))
         ext.pack(fill="x")
-        r1 = ttk.Frame(ext); r1.pack(fill="x", pady=2)
-        ttk.Checkbutton(r1, variable=self._v_dividers).pack(side="left")
-        ttk.Label(r1, text="Binder Dividers  (Avery-style tab pages, paper & digital only)"
-                  ).pack(side="left", padx=(4, 0))
         r2 = ttk.Frame(ext); r2.pack(fill="x", pady=2)
         ttk.Checkbutton(r2, variable=self._v_qr).pack(side="left")
         ttk.Label(r2, text="QR Code Sheet  (paper only — all document URLs as scannable codes)"
@@ -2456,11 +2460,16 @@ class ExportWizard(tk.Toplevel):
         crows  = app.title_page.get("crows", [])
         inc    = {k: self._v_sec[k].get() for k, _ in self._SECTIONS}
         sizes  = {k: v.get() for k, v in self._v_sizes.items()}
-        dividers = self._v_dividers.get()
-        qr_flag  = self._v_qr.get()
+        qr_flag = self._v_qr.get()
 
-        toc = ["Work Orders"] + [
-            lbl for k, lbl in self._SECTIONS if inc.get(k)]
+        _sec_anchor = {
+            "drawings":    "sec-drawings",
+            "relay":       "sec-relay",
+            "maintenance": "sec-maintenance",
+            "engineering": "sec-engineering",
+        }
+        toc = [("Work Orders", "sec-work-orders")] + [
+            (lbl, _sec_anchor[k]) for k, lbl in self._SECTIONS if inc.get(k)]
 
         # Collect all document URLs for the QR sheet
         qr_items = []
@@ -2478,7 +2487,7 @@ class ExportWizard(tk.Toplevel):
         for mode in modes:
             try:
                 html = self._assemble(
-                    mode, project, date, crows, toc, inc, dividers, qr_flag,
+                    mode, project, date, crows, toc, inc, qr_flag,
                     sizes, qr_items, folder,
                     app.jobs, app.drawing_registry,
                     app.relay_registry,
@@ -2503,7 +2512,7 @@ class ExportWizard(tk.Toplevel):
                 _open_file(path)
 
     def _assemble(self, mode, project, date, crows, toc, inc,
-                  dividers, qr_flag, sizes, qr_items, folder,
+                  qr_flag, sizes, qr_items, folder,
                   jobs, drw_reg, relay_reg, maint_reg, eng_reg):
         """Build the complete HTML for one output mode."""
 
@@ -2521,8 +2530,7 @@ class ExportWizard(tk.Toplevel):
                 "ew-relay":       sizes.get("relay",       "Letter Portrait"),
                 "ew-maintenance": sizes.get("maintenance", "Letter Portrait"),
                 "ew-engineering": sizes.get("engineering", "Letter Portrait"),
-                "ew-divider":     "Letter Portrait",
-                "ew-qr":         "Letter Portrait",
+                "ew-qr":          "Letter Portrait",
             }
             lines = []
             for cls, size_name in mapping.items():
@@ -2534,11 +2542,7 @@ class ExportWizard(tk.Toplevel):
 
         pf = folder  # always pass project folder for local-file resolution
 
-        # Sections and dividers
-        div_sections = ["Work Orders"] + [lbl for k, lbl in self._SECTIONS if inc.get(k)]
-        n_divs  = len(div_sections)
-        div_idx = 0
-        body    = ""
+        body = ""
 
         # Cover (+ CROW attached documents for paper/tablet)
         body += _ew_cover(project, crows, date, toc, mode,
@@ -2553,52 +2557,59 @@ class ExportWizard(tk.Toplevel):
             )
 
         # Work Orders
-        if dividers and mode != "tablet":
-            color = _EW_DIVIDER_COLORS[div_idx % len(_EW_DIVIDER_COLORS)]
-            body += _ew_divider("Work Orders", project, date, div_idx, n_divs, color,
-                                 css_class="ew-divider" if mode == "paper" else "page-divider")
-        div_idx += 1
-        body += _ew_work_orders(jobs, drw_reg, mode,
-                                 css_class="ew-work-orders" if mode == "paper" else "page-content")
+        body += _ew_with_id(
+            _ew_work_orders(jobs, drw_reg, mode,
+                            css_class="ew-work-orders" if mode == "paper" else "page-content"),
+            "sec-work-orders",
+        )
 
         # Optional sections — table + embedded local files
         _emb_cls = "page-content"  # embedded files always use generic class
+        _sec_id = {
+            "drawings":    "sec-drawings",
+            "relay":       "sec-relay",
+            "maintenance": "sec-maintenance",
+            "engineering": "sec-engineering",
+        }
         sec_funcs = {
             "drawings": lambda: (
-                _ew_drawings_reg(
-                    drw_reg, mode, pf,
-                    css_class="ew-drawings" if mode == "paper" else "page-content") +
+                _ew_with_id(
+                    _ew_drawings_reg(
+                        drw_reg, mode, pf,
+                        css_class="ew-drawings" if mode == "paper" else "page-content"),
+                    "sec-drawings") +
                 _ew_embedded_files(pf, "Drawings", mode, css_class=_emb_cls, recurse=True)
             ),
             "relay": lambda: (
-                _ew_relay_reg(
-                    relay_reg, mode, pf,
-                    css_class="ew-relay" if mode == "paper" else "page-content") +
+                _ew_with_id(
+                    _ew_relay_reg(
+                        relay_reg, mode, pf,
+                        css_class="ew-relay" if mode == "paper" else "page-content"),
+                    "sec-relay") +
                 _ew_embedded_files(pf, "Relay Settings", mode, css_class=_emb_cls)
             ),
             "maintenance": lambda: (
-                _ew_standards(
-                    maint_reg, {}, mode, pf,
-                    maint_css="ew-maintenance" if mode == "paper" else "page-content",
-                    eng_css="page-content") +
+                _ew_with_id(
+                    _ew_standards(
+                        maint_reg, {}, mode, pf,
+                        maint_css="ew-maintenance" if mode == "paper" else "page-content",
+                        eng_css="page-content"),
+                    "sec-maintenance") +
                 _ew_embedded_files(pf, "Maintenance Standards", mode, css_class=_emb_cls)
             ),
             "engineering": lambda: (
-                _ew_standards(
-                    {}, eng_reg, mode, pf,
-                    maint_css="page-content",
-                    eng_css="ew-engineering" if mode == "paper" else "page-content") +
+                _ew_with_id(
+                    _ew_standards(
+                        {}, eng_reg, mode, pf,
+                        maint_css="page-content",
+                        eng_css="ew-engineering" if mode == "paper" else "page-content"),
+                    "sec-engineering") +
                 _ew_embedded_files(pf, "Engineering Standards", mode, css_class=_emb_cls)
             ),
         }
-        for key, label in self._SECTIONS:
+        for key, _ in self._SECTIONS:
             if not inc.get(key):
                 continue
-            if dividers and mode != "tablet":
-                color = _EW_DIVIDER_COLORS[div_idx % len(_EW_DIVIDER_COLORS)]
-                body += _ew_divider(label, project, date, div_idx, n_divs, color,
-                                     css_class="ew-divider" if mode == "paper" else "page-divider")
-            div_idx += 1
             body += sec_funcs[key]()
 
         # QR sheet (paper only)
