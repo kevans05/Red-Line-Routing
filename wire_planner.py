@@ -114,6 +114,25 @@ def _archive_existing(folder, drawing_name):
     return moved
 
 
+def _file_url_to_path(url: str) -> str:
+    """Convert a file:// URL to a local filesystem path.
+
+    Handles UNC network shares (file://server/share/path → \\\\server\\share\\path
+    on Windows) and URL-encoded characters (%20 → space, etc.).
+    """
+    parsed = urllib.parse.urlparse(url)
+    path = urllib.parse.unquote(parsed.path)
+    if parsed.netloc:
+        # Network share: file://server/share/path
+        if os.name == "nt":
+            return "\\\\" + parsed.netloc + path.replace("/", "\\")
+        return "//" + parsed.netloc + path
+    # Local path: file:///C:/... or file:///unix/path
+    if os.name == "nt" and len(path) > 2 and path[0] == "/" and path[2] == ":":
+        path = path[1:]  # strip leading slash before drive letter
+    return path
+
+
 # ──────────────────────────────────────────────────────────────────
 # Data helpers
 # ──────────────────────────────────────────────────────────────────
@@ -1856,19 +1875,46 @@ document.querySelectorAll('input[type=checkbox]').forEach(function(cb){{
 </body></html>"""
 
 
-def _ew_cover(project, crows, date, toc_items, mode, css_class="page-cover"):
+def _ew_cover(project, crows, date, toc_items, mode, css_class="page-cover",
+              project_folder=""):
+    def _crow_url_cell(c):
+        url = c.get("url", "")
+        if mode == "paper" or not url:
+            return _esc(url)
+        return f'<a href="{_esc(url)}">{_esc(url)}</a>'
+
+    def _crow_files_cell(c):
+        files = c.get("files", [])
+        if not files:
+            return ""
+        if mode == "tablet" and project_folder:
+            links = []
+            for fname in files:
+                local = os.path.join(project_folder, "CROW Outage", fname)
+                rel   = os.path.join("CROW Outage", fname).replace("\\", "/")
+                if os.path.isfile(local):
+                    links.append(f'<a href="{_esc(rel)}">{_esc(fname)}</a>')
+                else:
+                    links.append(_esc(fname))
+            return " ".join(links)
+        if mode == "paper":
+            return _esc(", ".join(files))
+        return _esc(", ".join(files))
+
+    has_files = any(c.get("files") for c in crows) if crows else False
     outage_rows = "".join(
-        "<tr><td><b>{}</b></td><td>{}</td></tr>".format(
+        "<tr><td><b>{}</b></td><td>{}</td>{}</tr>".format(
             _esc(c.get("outage_number", "")),
-            f'<a href="{_esc(c["url"])}">{_esc(c["url"])}</a>'
-            if c.get("url") and mode != "paper"
-            else _esc(c.get("url", ""))
+            _crow_url_cell(c),
+            f"<td>{_crow_files_cell(c)}</td>" if has_files else "",
         )
         for c in crows
     ) if crows else ""
+    file_th = "<th>Documents</th>" if has_files else ""
     outage_html = (
         "<h3>Outage / CROW Numbers</h3>"
-        "<table class='cover-tbl'><thead><tr><th>Outage #</th><th>URL</th></tr></thead>"
+        "<table class='cover-tbl'><thead><tr><th>Outage #</th>"
+        f"<th>URL</th>{file_th}</tr></thead>"
         f"<tbody>{outage_rows}</tbody></table>"
     ) if crows else ""
     toc_rows = "".join(f"<tr><td>{_esc(n)}</td></tr>" for n in toc_items)
@@ -2137,6 +2183,76 @@ def _ew_qr_sheet(items, css_class="page-content"):
         'Scan or type URLs to access documents.</p>'
         f'<div class="qr-grid">{cards}</div></section>\n'
     )
+
+
+_PDF_EXTS  = {".pdf"}
+_DOC_EXTS  = {".doc", ".docx"}
+_EMBED_EXTS = _PDF_EXTS | _DOC_EXTS
+
+
+def _ew_embedded_files(project_folder, subfolder, mode, css_class="page-content",
+                       recurse=False, crow_files=None):
+    """Append embedded/linked local documents after a registry section.
+
+    ``crow_files`` overrides directory scanning — pass a list of filenames
+    already copied into ``<project_folder>/<subfolder>/``.
+    """
+    if not project_folder or mode == "digital":
+        return ""
+
+    full_dir = os.path.join(project_folder, subfolder)
+
+    if crow_files is not None:
+        # Explicit list from CROW attachments
+        found = []
+        for fname in crow_files:
+            fpath = os.path.join(full_dir, fname)
+            if os.path.isfile(fpath):
+                rel = os.path.join(subfolder, fname).replace("\\", "/")
+                found.append((fname, rel))
+    elif os.path.isdir(full_dir):
+        found = []
+        if recurse:
+            for root, dirs, files in os.walk(full_dir):
+                dirs[:] = sorted(d for d in dirs if d.lower() != "archive")
+                for f in sorted(files):
+                    if os.path.splitext(f)[1].lower() in _EMBED_EXTS:
+                        full = os.path.join(root, f)
+                        rel  = os.path.relpath(full, project_folder).replace("\\", "/")
+                        found.append((f, rel))
+        else:
+            for f in sorted(os.listdir(full_dir)):
+                fpath = os.path.join(full_dir, f)
+                if os.path.isfile(fpath) and os.path.splitext(f)[1].lower() in _EMBED_EXTS:
+                    rel = os.path.join(subfolder, f).replace("\\", "/")
+                    found.append((f, rel))
+    else:
+        return ""
+
+    if not found:
+        return ""
+
+    items = []
+    for fname, rel in found:
+        ext = os.path.splitext(fname)[1].lower()
+        if ext in _PDF_EXTS:
+            items.append(
+                f'<div style="page-break-before:always;margin:0;padding:0">'
+                f'<p style="font-size:7pt;color:#aaa;margin:0 0 2px;'
+                f'font-family:monospace">{_esc(fname)}</p>'
+                f'<embed src="{_esc(rel)}" type="application/pdf" '
+                f'width="100%" style="height:10.5in;border:none;display:block">'
+                f'</div>\n'
+            )
+        else:
+            items.append(
+                f'<p style="margin:4px 0"><a href="{_esc(rel)}">'
+                f'&#128196; {_esc(fname)}</a>'
+                f' <span style="font-size:8pt;color:#888">'
+                f'(open in Word to print)</span></p>\n'
+            )
+
+    return f'<section class="{css_class}">{"".join(items)}</section>\n'
 
 
 class ExportWizard(tk.Toplevel):
@@ -2416,7 +2532,7 @@ class ExportWizard(tk.Toplevel):
                 lines.append(f"section.{cls}{{page:{pn}}}")
             page_css = "\n".join(lines)
 
-        pf = folder if mode == "tablet" else ""
+        pf = folder  # always pass project folder for local-file resolution
 
         # Sections and dividers
         div_sections = ["Work Orders"] + [lbl for k, lbl in self._SECTIONS if inc.get(k)]
@@ -2424,9 +2540,17 @@ class ExportWizard(tk.Toplevel):
         div_idx = 0
         body    = ""
 
-        # Cover
+        # Cover (+ CROW attached documents for paper/tablet)
         body += _ew_cover(project, crows, date, toc, mode,
-                           css_class=pcls("cover") if mode == "paper" else "page-cover")
+                           css_class=pcls("cover") if mode == "paper" else "page-cover",
+                           project_folder=pf)
+        all_crow_files = [f for c in crows for f in c.get("files", [])]
+        if all_crow_files:
+            body += _ew_embedded_files(
+                pf, "CROW Outage", mode,
+                css_class="ew-cover" if mode == "paper" else "page-content",
+                crow_files=all_crow_files,
+            )
 
         # Work Orders
         if dividers and mode != "tablet":
@@ -2437,22 +2561,35 @@ class ExportWizard(tk.Toplevel):
         body += _ew_work_orders(jobs, drw_reg, mode,
                                  css_class="ew-work-orders" if mode == "paper" else "page-content")
 
-        # Optional sections
+        # Optional sections — table + embedded local files
+        _emb_cls = "page-content"  # embedded files always use generic class
         sec_funcs = {
-            "drawings":    lambda: _ew_drawings_reg(
-                drw_reg, mode, pf,
-                css_class="ew-drawings" if mode == "paper" else "page-content"),
-            "relay":       lambda: _ew_relay_reg(
-                relay_reg, mode, pf,
-                css_class="ew-relay" if mode == "paper" else "page-content"),
-            "maintenance": lambda: _ew_standards(
-                maint_reg, {}, mode, pf,
-                maint_css="ew-maintenance" if mode == "paper" else "page-content",
-                eng_css="page-content"),
-            "engineering": lambda: _ew_standards(
-                {}, eng_reg, mode, pf,
-                maint_css="page-content",
-                eng_css="ew-engineering" if mode == "paper" else "page-content"),
+            "drawings": lambda: (
+                _ew_drawings_reg(
+                    drw_reg, mode, pf,
+                    css_class="ew-drawings" if mode == "paper" else "page-content") +
+                _ew_embedded_files(pf, "Drawings", mode, css_class=_emb_cls, recurse=True)
+            ),
+            "relay": lambda: (
+                _ew_relay_reg(
+                    relay_reg, mode, pf,
+                    css_class="ew-relay" if mode == "paper" else "page-content") +
+                _ew_embedded_files(pf, "Relay Settings", mode, css_class=_emb_cls)
+            ),
+            "maintenance": lambda: (
+                _ew_standards(
+                    maint_reg, {}, mode, pf,
+                    maint_css="ew-maintenance" if mode == "paper" else "page-content",
+                    eng_css="page-content") +
+                _ew_embedded_files(pf, "Maintenance Standards", mode, css_class=_emb_cls)
+            ),
+            "engineering": lambda: (
+                _ew_standards(
+                    {}, eng_reg, mode, pf,
+                    maint_css="page-content",
+                    eng_css="ew-engineering" if mode == "paper" else "page-content") +
+                _ew_embedded_files(pf, "Engineering Standards", mode, css_class=_emb_cls)
+            ),
         }
         for key, label in self._SECTIONS:
             if not inc.get(key):
@@ -2478,12 +2615,14 @@ class ExportWizard(tk.Toplevel):
 
 class CrowDialog(tk.Toplevel):
     """Add/edit a CROW outage record."""
-    def __init__(self, parent, existing=None, base_url=""):
+    def __init__(self, parent, existing=None, base_url="", project_folder=""):
         super().__init__(parent)
         self.title("Edit CROW" if existing else "Add CROW")
         self.result = None
         self._base_url = base_url
-        self.resizable(False, False)
+        self._project_folder = project_folder
+        self._files = list((existing or {}).get("files", []))
+        self.resizable(True, False)
         self._build(existing or {})
         self.grab_set()
         self.wait_window()
@@ -2503,19 +2642,74 @@ class CrowDialog(tk.Toplevel):
         ttk.Label(f, text="Ctrl+click to open", foreground="grey",
                   font=("", 7)).grid(row=1, column=2, sticky="w", padx=(4, 0))
         _bind_url_open(crow_url_e, self.url_var)
+
+        # Attached documents
+        ttk.Label(f, text="Attached Files:").grid(row=2, column=0, sticky="ne", padx=(0, 6), pady=4)
+        file_fr = ttk.Frame(f)
+        file_fr.grid(row=2, column=1, columnspan=2, sticky="nsew", pady=4)
+        self._file_lb = tk.Listbox(file_fr, height=4, selectmode="single",
+                                   relief="flat", bd=1, highlightthickness=1)
+        self._file_lb.pack(side="left", fill="both", expand=True)
+        lbsb = ttk.Scrollbar(file_fr, orient="vertical", command=self._file_lb.yview)
+        self._file_lb.configure(yscrollcommand=lbsb.set)
+        lbsb.pack(side="left", fill="y")
+        btns = ttk.Frame(file_fr)
+        btns.pack(side="left", padx=(4, 0), anchor="n")
+        ttk.Button(btns, text="Add…",   width=8, command=self._add_file).pack(pady=(0, 2))
+        ttk.Button(btns, text="Remove", width=8, command=self._remove_file).pack()
+        for fname in self._files:
+            self._file_lb.insert("end", fname)
+        if not self._project_folder:
+            ttk.Label(f, text="Save project first to attach files.",
+                      foreground="grey", font=("", 8)).grid(
+                row=3, column=1, sticky="w", pady=(0, 4))
+
         f.columnconfigure(1, weight=1)
+        f.rowconfigure(2, weight=1)
         br = ttk.Frame(self)
         br.pack(fill="x", padx=10, pady=(0, 8))
         ttk.Button(br, text="Cancel", command=self.destroy).pack(side="right", padx=2)
         ttk.Button(br, text="Save",   command=self._save).pack(side="right", padx=2)
-        self.geometry("480x140")
+        self.geometry("520x280")
+
+    def _add_file(self):
+        if not self._project_folder:
+            messagebox.showinfo("Save First",
+                                "Save the project first, then you can attach files.",
+                                parent=self)
+            return
+        path = filedialog.askopenfilename(parent=self, title="Attach file to CROW")
+        if not path:
+            return
+        dest_dir = os.path.join(self._project_folder, "CROW Outage")
+        os.makedirs(dest_dir, exist_ok=True)
+        fname = os.path.basename(path)
+        dest = os.path.join(dest_dir, fname)
+        try:
+            shutil.copy2(path, dest)
+            self._files.append(fname)
+            self._file_lb.insert("end", fname)
+        except Exception as exc:
+            messagebox.showerror("Copy Failed", str(exc), parent=self)
+
+    def _remove_file(self):
+        sel = self._file_lb.curselection()
+        if not sel:
+            return
+        idx = sel[0]
+        self._files.pop(idx)
+        self._file_lb.delete(idx)
 
     def _save(self):
         num = self.num_var.get().strip()
         if not num:
             messagebox.showwarning("Required", "Outage number is required.", parent=self)
             return
-        self.result = {"outage_number": num, "url": self.url_var.get().strip()}
+        self.result = {
+            "outage_number": num,
+            "url": self.url_var.get().strip(),
+            "files": list(self._files),
+        }
         self.destroy()
 
 
@@ -5267,24 +5461,29 @@ class RedLineApp(tk.Tk):
                 q.put(("progress", i, name, dest))
 
                 try:
-                    _p = urllib.parse.urlparse(url)
-                    hdrs = {
-                        "User-Agent": (
-                            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                            "AppleWebKit/537.36 (KHTML, like Gecko) "
-                            "Chrome/148.0.0.0 Safari/537.36 Edg/148.0.0.0"
-                        ),
-                        "Accept":  "*/*",
-                        "Referer": f"{_p.scheme}://{_p.netloc}",
-                        **self._parse_request_headers(),
-                    }
-                    if extra_headers:
-                        hdrs.update(extra_headers)
-                    req = urllib.request.Request(url, headers=hdrs)
-                    # Preserve auth headers across redirects (e.g. SharePoint SSO)
-                    _opener = urllib.request.build_opener(_StickyRedirectHandler())
-                    with _opener.open(req, timeout=30) as resp:
-                        data = resp.read()
+                    if url.lower().startswith("file://"):
+                        local_path = _file_url_to_path(url)
+                        with open(local_path, "rb") as fh:
+                            data = fh.read()
+                    else:
+                        _p = urllib.parse.urlparse(url)
+                        hdrs = {
+                            "User-Agent": (
+                                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                                "Chrome/148.0.0.0 Safari/537.36 Edg/148.0.0.0"
+                            ),
+                            "Accept":  "*/*",
+                            "Referer": f"{_p.scheme}://{_p.netloc}",
+                            **self._parse_request_headers(),
+                        }
+                        if extra_headers:
+                            hdrs.update(extra_headers)
+                        req = urllib.request.Request(url, headers=hdrs)
+                        # Preserve auth headers across redirects (e.g. SharePoint SSO)
+                        _opener = urllib.request.build_opener(_StickyRedirectHandler())
+                        with _opener.open(req, timeout=30) as resp:
+                            data = resp.read()
                     archived = _archive_existing(sub_dir, name) if organize else 0
                     with open(dest, "wb") as fh:
                         fh.write(data)
@@ -5527,12 +5726,14 @@ class RedLineApp(tk.Tk):
         ttk.Button(ctb, text="Remove",     command=self._remove_crow).pack(side="left", padx=2)
         crow_fr = ttk.Frame(cf)
         crow_fr.pack(fill="both", expand=True)
-        ccols = ("Outage Number", "URL")
+        ccols = ("Outage Number", "URL", "Files")
         self.crow_tree = ttk.Treeview(crow_fr, columns=ccols, show="headings", height=6)
         self.crow_tree.heading("Outage Number", text="Outage Number")
         self.crow_tree.heading("URL",           text="URL")
+        self.crow_tree.heading("Files",         text="Files")
         self.crow_tree.column("Outage Number", width=160, stretch=False)
-        self.crow_tree.column("URL",           width=450)
+        self.crow_tree.column("URL",           width=360)
+        self.crow_tree.column("Files",         width=80,  stretch=False)
         cvsb = ttk.Scrollbar(crow_fr, orient="vertical", command=self.crow_tree.yview)
         self.crow_tree.configure(yscrollcommand=cvsb.set)
         self.crow_tree.pack(side="left", fill="both", expand=True)
@@ -5547,11 +5748,14 @@ class RedLineApp(tk.Tk):
         for iid in self.crow_tree.get_children():
             self.crow_tree.delete(iid)
         for crow in self.title_page.get("crows", []):
+            n = len(crow.get("files", []))
+            file_str = f"{n} file(s)" if n else ""
             self.crow_tree.insert("", "end", values=(
-                crow.get("outage_number", ""), crow.get("url", "")))
+                crow.get("outage_number", ""), crow.get("url", ""), file_str))
 
     def _add_crow(self):
-        dlg = CrowDialog(self, base_url=self.app_config.get("base_crow_url",""))
+        dlg = CrowDialog(self, base_url=self.app_config.get("base_crow_url", ""),
+                         project_folder=self.project_folder or "")
         if dlg.result:
             self.title_page.setdefault("crows", []).append(dlg.result)
             self._refresh_crows()
@@ -5561,7 +5765,8 @@ class RedLineApp(tk.Tk):
         if not sel:
             return
         idx = self.crow_tree.index(sel[0])
-        dlg = CrowDialog(self, existing=self.title_page.get("crows", [])[idx])
+        dlg = CrowDialog(self, existing=self.title_page.get("crows", [])[idx],
+                         project_folder=self.project_folder or "")
         if dlg.result:
             self.title_page["crows"][idx] = dlg.result
             self._refresh_crows()
