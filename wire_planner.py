@@ -2434,10 +2434,10 @@ class _SimplePDFBuilder:
     SIZES = {
         "Letter Portrait":  (612.0,  792.0),
         "Letter Landscape": (792.0,  612.0),
-        "11x17 Landscape":  (1224.0, 792.0),
+        "11x17 Landscape":  (1224.0, 792.0),   # ASCII x
         "11x17 Portrait":   (792.0, 1224.0),
-        "11x17 Landscape":  (1224.0, 792.0),
-        "11x17 Portrait":   (792.0, 1224.0),
+        "11×17 Landscape":  (1224.0, 792.0),  # Unicode ×
+        "11×17 Portrait":   (792.0, 1224.0),
     }
     _FNMS = ["Helvetica", "Helvetica-Bold", "Courier"]
 
@@ -2850,32 +2850,173 @@ def _merge_pdfs_bytes(pdf_bytes_list: list) -> bytes:
     return buf.getvalue()
 
 
-def _collect_pdfs(folder: str, subfolder: str, recurse: bool = False) -> list:
-    """Return list of PDF bytes from a project subfolder, sorted by filename."""
+_CONVERTIBLE_EXTS = {".pdf", ".txt", ".docx", ".doc"}
+
+
+def _txt_to_pdf_bytes(path):
+    """Render a plain-text file as a PDF using _SimplePDFBuilder."""
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            text = fh.read()
+    except OSError:
+        return b""
+
+    pw, ph = 612.0, 792.0
+    margin = 50.0
+    sz = 8.5
+    line_h = sz * 1.5
+    max_w = pw - 2 * margin
+    HDR_H = 26.0
+    content_top = HDR_H + 10
+    max_y = ph - margin
+    fname = os.path.basename(path)
+
+    bld = _SimplePDFBuilder()
+    state = {"p": None, "y": content_top}
+
+    def new_pg():
+        pg = bld.new_page("Letter Portrait")
+        pg.frect(0, 0, pw, HDR_H, _PDFPage.DARK)
+        pg.frect(0, HDR_H - 3, pw, 3, (39, 174, 96))
+        pg.text(margin, 6, _ptrunc(fname, max_w, 10, True),
+                fi=_PDFPage.FB, sz=10, color=_PDFPage.WHITE)
+        state["p"] = pg
+        state["y"] = content_top
+
+    new_pg()
+
+    def emit_line(line):
+        if state["y"] + line_h > max_y:
+            new_pg()
+        state["p"].text(margin, state["y"], line, fi=_PDFPage.FM, sz=sz)
+        state["y"] += line_h
+
+    for raw_line in text.splitlines():
+        if not raw_line.strip():
+            state["y"] += line_h * 0.4  # blank line gap
+            continue
+        # word-wrap
+        words = raw_line.split(" ")
+        current = ""
+        for word in words:
+            test = (current + " " + word).lstrip() if current else word
+            if _ptw(test, sz) <= max_w:
+                current = test
+            else:
+                if current:
+                    emit_line(current)
+                current = word if _ptw(word, sz) <= max_w else _ptrunc(word, max_w, sz)
+        if current is not None:
+            emit_line(current)
+
+    return bld.build()
+
+
+def _docx_to_pdf_bytes(path):
+    """Try to convert a .docx/.doc file to PDF bytes.
+
+    Attempts LibreOffice headless first, then PowerShell + Word on Windows.
+    Returns PDF bytes on success, None if no converter is available.
+    """
+    import tempfile
+    abs_path = os.path.abspath(path)
+
+    # ── LibreOffice (Windows / macOS / Linux) ─────────────────────
+    for cmd in ("libreoffice", "soffice"):
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                r = subprocess.run(
+                    [cmd, "--headless", "--convert-to", "pdf",
+                     "--outdir", tmpdir, abs_path],
+                    timeout=60, capture_output=True)
+                if r.returncode == 0:
+                    stem = os.path.splitext(os.path.basename(abs_path))[0]
+                    out = os.path.join(tmpdir, stem + ".pdf")
+                    if os.path.isfile(out):
+                        with open(out, "rb") as fh:
+                            return fh.read()
+        except (FileNotFoundError, OSError):
+            continue
+        except subprocess.TimeoutExpired:
+            break
+
+    # ── PowerShell + Word COM (Windows only, no extra packages) ───
+    if sys.platform == "win32":
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                out = os.path.join(tmpdir, "out.pdf")
+                ps = (
+                    f'$w = New-Object -ComObject Word.Application; '
+                    f'$w.Visible = $false; '
+                    f'$d = $w.Documents.Open("{abs_path}"); '
+                    f'$d.SaveAs2("{out}", 17); '
+                    f'$d.Close(); $w.Quit()'
+                )
+                subprocess.run(
+                    ["powershell", "-NoProfile", "-Command", ps],
+                    timeout=60, capture_output=True)
+                if os.path.isfile(out):
+                    with open(out, "rb") as fh:
+                        return fh.read()
+        except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
+            pass
+
+    return None
+
+
+def _convert_file_to_pdf(path):
+    """Convert a supported file to PDF bytes.
+
+    Returns (bytes, error_str). bytes is None when conversion fails.
+    Supported: .pdf (pass-through), .txt, .docx, .doc
+    """
+    ext = os.path.splitext(path)[1].lower()
+    try:
+        if ext == ".pdf":
+            with open(path, "rb") as fh:
+                return fh.read(), ""
+        elif ext == ".txt":
+            data = _txt_to_pdf_bytes(path)
+            return (data, "") if data else (None, "text conversion failed")
+        elif ext in (".docx", ".doc"):
+            data = _docx_to_pdf_bytes(path)
+            if data:
+                return data, ""
+            return None, "requires LibreOffice or Microsoft Word"
+        else:
+            return None, f"unsupported type {ext}"
+    except Exception as exc:
+        return None, str(exc)
+
+
+def _collect_pdfs(folder, subfolder, recurse=False):
+    """Return list of PDF bytes from a project subfolder.
+
+    Collects .pdf files directly; converts .txt, .docx, .doc to PDF.
+    """
     result = []
     full = os.path.join(folder, subfolder)
     if not os.path.isdir(full):
         return result
+
+    def _try_file(fpath):
+        ext = os.path.splitext(fpath)[1].lower()
+        if ext not in _CONVERTIBLE_EXTS:
+            return
+        data, _ = _convert_file_to_pdf(fpath)
+        if data:
+            result.append(data)
+
     if recurse:
         for root, dirs, files in os.walk(full):
             dirs[:] = sorted(d for d in dirs if d.lower() != "archive")
             for f in sorted(files):
-                if f.lower().endswith(".pdf"):
-                    try:
-                        with open(os.path.join(root, f), "rb") as fh:
-                            result.append(fh.read())
-                    except OSError:
-                        pass
+                _try_file(os.path.join(root, f))
     else:
         for f in sorted(os.listdir(full)):
-            if f.lower().endswith(".pdf"):
-                fpath = os.path.join(full, f)
-                if os.path.isfile(fpath):
-                    try:
-                        with open(fpath, "rb") as fh:
-                            result.append(fh.read())
-                    except OSError:
-                        pass
+            fpath = os.path.join(full, f)
+            if os.path.isfile(fpath):
+                _try_file(fpath)
     return result
 
 
@@ -2947,15 +3088,11 @@ def _build_print_pdf(app, inc: dict, sizes: dict, crows: list,
             for fname in crow.get("files", []):
                 fpath = os.path.join(crow_dir, fname)
                 if os.path.isfile(fpath):
-                    ext = os.path.splitext(fname)[1].lower()
-                    if ext == ".pdf":
-                        try:
-                            with open(fpath, "rb") as fh:
-                                parts.append(fh.read())
-                        except OSError:
-                            nopdf.append(fname)
+                    data, err = _convert_file_to_pdf(fpath)
+                    if data:
+                        parts.append(data)
                     else:
-                        nopdf.append(fname)
+                        nopdf.append(f"{fname} ({err})")
 
     # ── Build + merge ─────────────────────────────────────────────
     doc_pdf = bld.build()
