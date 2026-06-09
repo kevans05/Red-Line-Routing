@@ -1825,17 +1825,15 @@ body{{font-family:-apple-system,"Helvetica Neue",Arial,sans-serif;
 .cover-tbl{{border-collapse:collapse;width:100%;margin-bottom:18px;font-size:9pt}}
 .cover-tbl th{{background:#1a252f;color:white;padding:4px 8px;text-align:left}}
 .cover-tbl td{{padding:4px 8px;border:1px solid #ccc}}
-h3{{font-size:10pt;margin:14px 0 4px;color:#1a252f}}
-/* Dividers */
-.divider-name{{font-size:36pt;font-weight:bold;margin:.3in 0 .1in;line-height:1.1}}
-.divider-proj{{font-size:12pt;color:#555}}
-.divider-date{{font-size:9pt;color:#888;margin-top:4px}}
-.divider-tab{{
-  position:absolute;right:0;width:2.4cm;height:2cm;
-  color:white;font-weight:bold;font-size:7.5pt;
-  display:flex;align-items:center;justify-content:center;
-  writing-mode:vertical-rl;transform:rotate(180deg);
-  text-transform:uppercase;letter-spacing:.05em}}
+h3{{font-size:10pt;margin:14px 0 4px;color:#1a252f;text-transform:uppercase;
+    letter-spacing:.06em;border-bottom:1px solid #ccc;padding-bottom:3px}}
+/* Table of Contents */
+.toc-tbl{{border-collapse:collapse;width:100%;margin-bottom:18px}}
+.toc-tbl td{{padding:7px 8px;border:none;border-bottom:1px solid #eee;font-size:10pt}}
+.toc-num{{color:#1a252f;font-weight:bold;width:32px;text-align:right;
+          padding-right:14px !important;font-size:11pt}}
+.toc-tbl a{{color:#1a252f;text-decoration:none;font-weight:500}}
+.toc-tbl tr:hover td{{background:#f0f4f8}}
 /* General */
 h2.sec-hdr{{font-size:13pt;color:#1a252f;border-bottom:2px solid #1a252f;
            padding-bottom:3px;margin:0 0 10px}}
@@ -1873,6 +1871,13 @@ document.querySelectorAll('input[type=checkbox]').forEach(function(cb){{
 }});
 </script>
 </body></html>"""
+
+
+def _ew_with_id(html: str, section_id: str) -> str:
+    """Inject id attribute into the first <section tag in html."""
+    if not section_id or not html:
+        return html
+    return html.replace("<section ", f'<section id="{section_id}" ', 1)
 
 
 def _ew_cover(project, crows, date, toc_items, mode, css_class="page-cover",
@@ -1917,10 +1922,14 @@ def _ew_cover(project, crows, date, toc_items, mode, css_class="page-cover",
         f"<th>URL</th>{file_th}</tr></thead>"
         f"<tbody>{outage_rows}</tbody></table>"
     ) if crows else ""
-    toc_rows = "".join(f"<tr><td>{_esc(n)}</td></tr>" for n in toc_items)
+    toc_rows = "".join(
+        f"<tr><td class='toc-num'>{i + 1}</td>"
+        f"<td><a href='#{_esc(anch)}'>{_esc(label)}</a></td></tr>"
+        for i, (label, anch) in enumerate(toc_items)
+    ) if toc_items else ""
     toc_html = (
-        "<h3>Contents</h3>"
-        f"<table class='cover-tbl'><tbody>{toc_rows}</tbody></table>"
+        "<h3>Table of Contents</h3>"
+        f"<table class='toc-tbl'><tbody>{toc_rows}</tbody></table>"
     ) if toc_items else ""
     return (
         f'<section class="{css_class}">'
@@ -2255,6 +2264,707 @@ def _ew_embedded_files(project_folder, subfolder, mode, css_class="page-content"
     return f'<section class="{css_class}">{"".join(items)}</section>\n'
 
 
+# ══════════════════════════════════════════════════════════════════
+# PDF Package generation
+# ══════════════════════════════════════════════════════════════════
+
+# ──────────────────────────────────────────────────────────────────
+# PDF Package generation
+# Requires pypdf/ folder next to this script (copy from release).
+# Falls back gracefully if not present.
+# ──────────────────────────────────────────────────────────────────
+
+_PYPDF_AVAILABLE = False
+try:
+    _pypdf_pkg_dir = os.path.dirname(os.path.abspath(__file__))
+    if _pypdf_pkg_dir not in sys.path:
+        sys.path.insert(0, _pypdf_pkg_dir)
+    from pypdf import PdfWriter as _PdfWriter, PdfReader as _PdfReader
+    _PYPDF_AVAILABLE = True
+except Exception:
+    _PdfWriter = _PdfReader = None
+
+# Helvetica AFM character widths (units = 1/1000 em)
+_HELV_W = {
+    ' ':278,'!':278,'"':355,'#':556,'$':556,'%':889,'&':667,"'":222,
+    '(':333,')':333,'*':389,'+':584,',':278,'-':333,'.':278,'/':278,
+    '0':556,'1':556,'2':556,'3':556,'4':556,'5':556,'6':556,'7':556,
+    '8':556,'9':556,':':278,';':278,'<':584,'=':584,'>':584,'?':556,
+    '@':1015,'A':667,'B':667,'C':722,'D':722,'E':667,'F':611,'G':778,
+    'H':722,'I':278,'J':500,'K':667,'L':556,'M':833,'N':722,'O':778,
+    'P':667,'Q':778,'R':722,'S':667,'T':611,'U':722,'V':667,'W':944,
+    'X':667,'Y':667,'Z':611,'[':278,'\\':278,']':278,'^':469,'_':556,
+    '`':333,'a':556,'b':556,'c':500,'d':556,'e':556,'f':278,'g':556,
+    'h':556,'i':222,'j':222,'k':500,'l':222,'m':833,'n':556,'o':556,
+    'p':556,'q':556,'r':333,'s':500,'t':278,'u':556,'v':500,'w':722,
+    'x':500,'y':500,'z':500,'{':334,'|':260,'}':334,'~':584,
+}
+
+
+def _ptw(text, size, bold=False):
+    """Width of a text string in Helvetica at given point size."""
+    f = 1.05 if bold else 1.0
+    return sum(_HELV_W.get(c, 556) for c in str(text)) * size * f / 1000.0
+
+
+def _ptrunc(text, max_pts, size, bold=False):
+    """Truncate text to fit within max_pts width; append '...' if cut."""
+    text = str(text)
+    if _ptw(text, size, bold) <= max_pts:
+        return text
+    ew = _ptw('...', size, bold)
+    lo, hi = 0, len(text)
+    while lo < hi - 1:
+        mid = (lo + hi) // 2
+        if _ptw(text[:mid], size, bold) + ew <= max_pts:
+            lo = mid
+        else:
+            hi = mid
+    return (text[:lo] + '...') if lo > 0 else ''
+
+
+def _penc(text):
+    """Encode a string for a PDF string literal (WinAnsi, octal for non-ASCII)."""
+    out = []
+    for ch in str(text).replace('\r', '').replace('\n', ' '):
+        if ch == '\\': out.append('\\\\')
+        elif ch == '(': out.append('\\(')
+        elif ch == ')': out.append('\\)')
+        elif 32 <= ord(ch) <= 126: out.append(ch)
+        else:
+            try: out.append(f'\\{ch.encode("cp1252")[0]:03o}')
+            except (UnicodeEncodeError, LookupError): out.append('?')
+    return ''.join(out)
+
+
+class _PDFPage:
+    """Mutable PDF page. All coords: x,y from TOP-LEFT, y increases downward."""
+
+    DARK  = (26,  37,  47)    # #1a252f header/column-header bg
+    WHITE = (255, 255, 255)
+    LIGHT = (247, 249, 252)   # #f7f9fc alternating row bg
+    GREY  = (102, 102, 102)   # muted text
+    RULE  = (200, 200, 200)   # table gridlines
+
+    ROW_BG = {
+        "REMOVE":      (253, 232, 230),
+        "ADD":         (232, 248, 238),
+        "MOVE-REMOVE": (254, 240, 230),
+        "MOVE-ADD":    (254, 251, 230),
+        "BLOCK":       (254, 243, 230),
+        "UNBLOCK":     (230, 246, 243),
+        "TESTING":     (245, 238, 248),
+    }
+    ROW_ACC = {
+        "REMOVE":      (192,  57,  43),
+        "ADD":         ( 39, 174,  96),
+        "MOVE-REMOVE": (230, 126,  34),
+        "MOVE-ADD":    (212, 172,  13),
+        "BLOCK":       (202, 111,  30),
+        "UNBLOCK":     ( 20, 143, 119),
+        "TESTING":     (125,  60, 152),
+    }
+    TYPE_LBL = {
+        "REMOVE":      "Remove Wire",
+        "ADD":         "Add Wire",
+        "MOVE-REMOVE": "Move — Remove",
+        "MOVE-ADD":    "Move — Add",
+        "BLOCK":       "Block",
+        "UNBLOCK":     "Unblock",
+        "TESTING":     "Testing",
+    }
+    # Font indices: F1=Helvetica, F2=Helvetica-Bold, F3=Courier
+    FR = 1; FB = 2; FM = 3
+
+    def __init__(self, w, h):
+        self.w = w; self.h = h; self._ops = []
+
+    def _rgb(self, c):
+        return f"{c[0]/255:.3f} {c[1]/255:.3f} {c[2]/255:.3f}"
+
+    def _by(self, y, rh=0):
+        """Top-down y -> PDF bottom-up y. rh = rect height for fill_rect."""
+        return self.h - y - rh
+
+    def _bl(self, y, sz):
+        """Top of text box (top-down) -> PDF baseline."""
+        return self.h - y - sz * 0.78
+
+    def frect(self, x, y, w, h, color):
+        self._ops += [f"{self._rgb(color)} rg",
+                      f"{x:.2f} {self._by(y,h):.2f} {w:.2f} {h:.2f} re f"]
+
+    def srect(self, x, y, w, h, color=RULE, lw=0.3):
+        self._ops += [f"{lw:.2f} w {self._rgb(color)} RG",
+                      f"{x:.2f} {self._by(y,h):.2f} {w:.2f} {h:.2f} re S"]
+
+    def hline(self, x, y, length, color=RULE, lw=0.3):
+        py = self._by(y)
+        self._ops += [f"{lw:.2f} w {self._rgb(color)} RG",
+                      f"{x:.2f} {py:.2f} m {x+length:.2f} {py:.2f} l S"]
+
+    def text(self, x, y, s, fi=1, sz=9, color=DARK):
+        if not s: return
+        self._ops += ["BT", f"{self._rgb(color)} rg",
+                      f"/F{fi} {sz:.1f} Tf",
+                      f"{x:.2f} {self._bl(y,sz):.2f} Td",
+                      f"({_penc(s)}) Tj", "ET"]
+
+    def ctext(self, x, y, w, h, s, fi=1, sz=8, color=DARK,
+              align="left", pad=3):
+        """Vertically-centered, truncated, aligned text in a cell rect."""
+        s = _ptrunc(str(s), w - 2*pad, sz, fi == self.FB)
+        ty = y + (h - sz) * 0.5
+        if align == "center":
+            tx = x + (w - _ptw(s, sz, fi == self.FB)) / 2
+        elif align == "right":
+            tx = x + w - _ptw(s, sz, fi == self.FB) - pad
+        else:
+            tx = x + pad
+        self.text(tx, ty, s, fi=fi, sz=sz, color=color)
+
+    def stream(self):
+        return "\n".join(self._ops)
+
+
+class _SimplePDFBuilder:
+    """Minimal self-contained PDF generator using standard Type1 fonts."""
+    SIZES = {
+        "Letter Portrait":  (612.0,  792.0),
+        "Letter Landscape": (792.0,  612.0),
+        "11x17 Landscape":  (1224.0, 792.0),
+        "11x17 Portrait":   (792.0, 1224.0),
+        "11x17 Landscape":  (1224.0, 792.0),
+        "11x17 Portrait":   (792.0, 1224.0),
+    }
+    _FNMS = ["Helvetica", "Helvetica-Bold", "Courier"]
+
+    def __init__(self):
+        self._pages = []
+
+    def new_page(self, size="Letter Portrait") -> _PDFPage:
+        w, h = self.SIZES.get(size, (612.0, 792.0))
+        p = _PDFPage(w, h)
+        self._pages.append(p)
+        return p
+
+    def build(self) -> bytes:
+        NF = len(self._FNMS); NP = len(self._pages)
+        total = 2 + NF + 2 * NP
+        buf = bytearray(); offsets = {}
+
+        def emit(d):
+            buf.extend(d.encode('ascii') if isinstance(d, str) else d)
+
+        def begin(oid):
+            offsets[oid] = len(buf); emit(f"{oid} 0 obj\n")
+
+        def end():
+            emit("endobj\n")
+
+        emit(b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n")
+
+        begin(1); emit("<< /Type /Catalog /Pages 2 0 R >>\n"); end()
+
+        kids = " ".join(f"{3+NF+2*i} 0 R" for i in range(NP))
+        begin(2); emit(f"<< /Type /Pages /Kids [{kids}] /Count {NP} >>\n"); end()
+
+        for i, fn in enumerate(self._FNMS):
+            begin(3+i)
+            emit(f"<< /Type /Font /Subtype /Type1 /BaseFont /{fn}"
+                 f" /Encoding /WinAnsiEncoding >>\n")
+            end()
+
+        fdict = " ".join(f"/F{i+1} {3+i} 0 R" for i in range(NF))
+        res = f"<< /Font << {fdict} >> >>"
+
+        for i, page in enumerate(self._pages):
+            pid = 3 + NF + 2*i; cid = pid + 1
+            stream = page.stream().encode('ascii')
+            begin(cid)
+            emit(f"<< /Length {len(stream)} >>\nstream\n")
+            emit(stream); emit(b"\nendstream\n"); end()
+            begin(pid)
+            emit(f"<< /Type /Page /Parent 2 0 R"
+                 f" /MediaBox [0 0 {page.w:.2f} {page.h:.2f}]"
+                 f" /Contents {cid} 0 R /Resources {res} >>\n")
+            end()
+
+        xpos = len(buf)
+        emit(f"xref\n0 {total+1}\n")
+        emit(b"0000000000 65535 f \r\n")
+        for oid in range(1, total+1):
+            emit(f"{offsets.get(oid,0):010d} 00000 n \r\n")
+        emit(f"trailer\n<< /Size {total+1} /Root 1 0 R >>\n"
+             f"startxref\n{xpos}\n%%EOF\n")
+        return bytes(buf)
+
+
+def _ep_flat(ep) -> str:
+    parts = []
+    if ep.get("device"):   parts.append(ep["device"])
+    if ep.get("pin"):      parts.append(f"Pin {ep['pin']}")
+    if ep.get("location"): parts.append(ep["location"])
+    if ep.get("panel"):    parts.append(f"Panel {ep['panel']}")
+    if ep.get("drawing"):
+        d = ep["drawing"]
+        if ep.get("drawing_rev"):  d += f" Rev{ep['drawing_rev']}"
+        if ep.get("drawing_cell"): d += f" [{ep['drawing_cell']}]"
+        parts.append(d)
+    return "  /  ".join(parts)
+
+
+def _prot_flat(prot) -> str:
+    parts = []
+    if prot.get("equipment"): parts.append(prot["equipment"])
+    if prot.get("location"):  parts.append(prot["location"])
+    if prot.get("panel"):     parts.append(f"Panel {prot['panel']}")
+    if prot.get("notes"):     parts.append(prot["notes"])
+    for d in _get_prot_drawings(prot):
+        name = d.get("drawing","")
+        if d.get("drawing_rev"): name += f" Rev{d['drawing_rev']}"
+        parts.append(f"Dwg:{name}")
+    for pt in prot.get("iso_points",[]):
+        parts.append(f"{pt.get('iso_type','ISO')} {pt.get('reference','')}".strip())
+    if prot.get("mb_enabled"): parts.append("MB INPUT")
+    return "  /  ".join(parts)
+
+
+def _pdf_cover(bld, project, crows, date, toc_items, size="Letter Portrait"):
+    margin = 43
+    p = bld.new_page(size)
+    w, h = p.w, p.h
+    cw = w - 2*margin
+    HDR = max(85.0, h * 0.11)
+
+    # ── Header band ──────────────────────────────────────────────
+    p.frect(0, 0, w, HDR, _PDFPage.DARK)
+    # accent stripe
+    p.frect(0, HDR - 4, w, 4, (39, 174, 96))
+    proj = _ptrunc(project or "Red-Line Routing", cw - 12, 20, True)
+    p.text(margin, 16, proj, fi=_PDFPage.FB, sz=20, color=_PDFPage.WHITE)
+    p.text(margin, 46, "Red-Line Routing — Work Package", fi=_PDFPage.FR,
+           sz=10, color=(160, 175, 190))
+
+    y = HDR + 18
+    # Generated date row
+    p.text(margin, y, "Generated:", fi=_PDFPage.FB, sz=9, color=_PDFPage.GREY)
+    p.text(margin + 72, y, date, fi=_PDFPage.FR, sz=9, color=_PDFPage.DARK)
+    y += 22
+
+    # ── CROW / outage numbers ─────────────────────────────────────
+    if crows:
+        y += 4
+        p.text(margin, y, "CROW / OUTAGE NUMBERS", fi=_PDFPage.FB, sz=8,
+               color=_PDFPage.GREY)
+        y += 13
+        col_url = cw - 130
+        # header row
+        p.frect(margin, y, cw, 18, _PDFPage.DARK)
+        p.ctext(margin,       y, 130,     18, "Outage #",
+                fi=_PDFPage.FB, sz=8, color=_PDFPage.WHITE)
+        p.ctext(margin+130,   y, col_url, 18, "URL",
+                fi=_PDFPage.FB, sz=8, color=_PDFPage.WHITE)
+        y += 18
+        for ci, crow in enumerate(crows):
+            bg = _PDFPage.LIGHT if ci % 2 == 0 else _PDFPage.WHITE
+            p.frect(margin, y, cw, 16, bg)
+            p.ctext(margin,     y, 130,     16, crow.get("outage_number",""),
+                    fi=_PDFPage.FB, sz=8)
+            p.ctext(margin+130, y, col_url, 16, crow.get("url",""),
+                    fi=_PDFPage.FR, sz=7, color=(50,100,170))
+            p.hline(margin, y+16, cw)
+            y += 16
+        p.srect(margin, y - len(crows)*16 - 18, cw, len(crows)*16 + 18)
+        y += 16
+
+    # ── Table of contents ─────────────────────────────────────────
+    if toc_items:
+        y += 4
+        p.text(margin, y, "TABLE OF CONTENTS", fi=_PDFPage.FB, sz=8,
+               color=_PDFPage.GREY)
+        y += 13
+        for i, (label, _anch) in enumerate(toc_items):
+            bg = _PDFPage.LIGHT if i % 2 == 0 else _PDFPage.WHITE
+            p.frect(margin, y, cw, 20, bg)
+            p.ctext(margin,    y, 30,    20, str(i+1), fi=_PDFPage.FB, sz=10,
+                    color=_PDFPage.DARK, align="center")
+            p.ctext(margin+30, y, cw-30, 20, label,   fi=_PDFPage.FR, sz=10,
+                    color=_PDFPage.DARK)
+            p.hline(margin, y+20, cw)
+            y += 20
+        p.srect(margin, y - len(toc_items)*20, cw, len(toc_items)*20)
+
+
+def _pdf_section_table(bld, title, col_specs, rows_iter, size="Letter Portrait"):
+    """Render a multi-page table section.
+
+    col_specs : list of (header_str, width_pts, align_str) -- widths must sum to content width.
+    rows_iter : iterable of (row_key, [cell_value,...]) -- row_key None = plain alternating rows,
+                string key from _PDFPage.ROW_BG = colored job row.
+    """
+    margin = 43 if "Letter" in size else 36
+    HDR_H = 30; COL_H = 20; ROW_H = 17
+
+    pw, ph = _SimplePDFBuilder.SIZES.get(size, (612.0, 792.0))
+    cw = pw - 2*margin
+
+    col_names  = [c[0] for c in col_specs]
+    col_widths = [c[1] for c in col_specs]
+    col_aligns = [c[2] for c in col_specs]
+
+    state = {"p": None, "y": 0, "ri": 0}
+
+    def new_pg(cont=False):
+        p = bld.new_page(size)
+        p.frect(0, 0, pw, HDR_H, _PDFPage.DARK)
+        p.frect(0, HDR_H - 3, pw, 3, (39, 174, 96))
+        lbl = title + (" (cont.)" if cont else "")
+        p.text(margin, 8, lbl, fi=_PDFPage.FB, sz=13, color=_PDFPage.WHITE)
+        y = HDR_H
+        p.frect(margin, y, cw, COL_H, (40, 52, 65))
+        x = margin
+        for name, cwidth, align in zip(col_names, col_widths, col_aligns):
+            p.ctext(x, y, cwidth, COL_H, name, fi=_PDFPage.FB, sz=8,
+                   color=_PDFPage.WHITE, align=align)
+            x += cwidth
+        state["p"] = p
+        state["y"] = y + COL_H
+
+    new_pg()
+
+    for row_key, cells in rows_iter:
+        if state["y"] + ROW_H > ph - margin:
+            new_pg(cont=True)
+        p = state["p"]; y = state["y"]; ri = state["ri"]
+
+        if row_key and row_key in _PDFPage.ROW_BG:
+            bg  = _PDFPage.ROW_BG[row_key]
+            acc = _PDFPage.ROW_ACC.get(row_key)
+        else:
+            bg  = _PDFPage.LIGHT if ri % 2 == 0 else _PDFPage.WHITE
+            acc = None
+
+        p.frect(margin, y, cw, ROW_H, bg)
+        if acc:
+            p.frect(margin, y, 4, ROW_H, acc)
+
+        x = margin
+        for ci, (val, cwidth, align) in enumerate(zip(cells, col_widths, col_aligns)):
+            fi = _PDFPage.FB if (ci == 0 and not row_key) else _PDFPage.FR
+            p.ctext(x, y, cwidth, ROW_H, str(val), fi=fi, sz=8, align=align)
+            x += cwidth
+
+        p.hline(margin, y + ROW_H, cw)
+        state["y"] += ROW_H; state["ri"] += 1
+
+
+def _pdf_work_orders(bld, jobs, drw_reg, size="11x17 Landscape"):
+    # Normalise "x" vs "x" variants
+    size = size.replace("×", "x")
+    margin = 36 if "17" in size else 43
+    HDR_H = 30; COL_H = 20; ROW_H = 18
+
+    pw, ph = _SimplePDFBuilder.SIZES.get(size, (1224.0, 792.0))
+    cw = pw - 2*margin
+
+    # Column widths that sum to cw
+    fixed_w = 20 + 28 + 95 + 75  # chk + seq + type + wire
+    rem = cw - fixed_w
+    desc_w = int(rem * 0.21)
+    ep_w   = (rem - desc_w) // 2
+    # Final adjustment to fill cw exactly
+    total = 20 + 28 + 95 + desc_w + ep_w + 75 + ep_w
+    desc_w += cw - total  # give remainder to description
+    col_ws = [20, 28, 95, desc_w, ep_w, 75, ep_w]
+
+    state = {"p": None, "y": 0}
+
+    def new_pg(cont=False):
+        p = bld.new_page(size)
+        p.frect(0, 0, pw, HDR_H, _PDFPage.DARK)
+        p.frect(0, HDR_H-3, pw, 3, (39, 174, 96))
+        p.text(margin, 8, "Work Orders" + (" (cont.)" if cont else ""),
+               fi=_PDFPage.FB, sz=13, color=_PDFPage.WHITE)
+        y = HDR_H
+        # Column headers
+        p.frect(margin, y, cw, COL_H, (40, 52, 65))
+        x = margin
+        for name, cwidth, align in zip(
+            ["", "#", "Type", "Description",
+             "Start Point / Device", "Wire", "End Point / Device"],
+            col_ws,
+            ["c","c","l","l","l","c","l"]):
+            al = {"c":"center","l":"left"}.get(align,"left")
+            p.ctext(x, y, cwidth, COL_H, name, fi=_PDFPage.FB, sz=8,
+                   color=_PDFPage.WHITE, align=al)
+            x += cwidth
+        state["p"] = p; state["y"] = y + COL_H
+
+    new_pg()
+
+    reg = drw_reg or {}
+    seq = 1
+
+    def draw_row(jkey, desc, start_s, wire, end_s):
+        nonlocal seq
+        if state["y"] + ROW_H > ph - margin:
+            new_pg(cont=True)
+        p = state["p"]; y = state["y"]
+        bg  = _PDFPage.ROW_BG.get(jkey, _PDFPage.WHITE)
+        acc = _PDFPage.ROW_ACC.get(jkey, _PDFPage.RULE)
+        p.frect(margin, y, cw, ROW_H, bg)
+        p.frect(margin, y, 4, ROW_H, acc)
+        # Checkbox square
+        cbx = margin + 5; cby = y + 4
+        p.srect(cbx, cby, 9, 9, color=(120,120,120), lw=0.7)
+        x = margin + col_ws[0]
+        p.ctext(x, y, col_ws[1], ROW_H, str(seq), fi=_PDFPage.FB,
+                sz=8, align="center")
+        x += col_ws[1]
+        lbl = _PDFPage.TYPE_LBL.get(jkey, jkey)
+        col = _PDFPage.ROW_ACC.get(jkey, _PDFPage.DARK)
+        p.ctext(x, y, col_ws[2], ROW_H, lbl, fi=_PDFPage.FB, sz=8, color=col)
+        x += col_ws[2]
+        p.ctext(x, y, col_ws[3], ROW_H, desc, fi=_PDFPage.FR, sz=7)
+        x += col_ws[3]
+        p.ctext(x, y, col_ws[4], ROW_H, start_s, fi=_PDFPage.FR, sz=7)
+        x += col_ws[4]
+        p.ctext(x, y, col_ws[5], ROW_H, wire, fi=_PDFPage.FM, sz=7, align="center")
+        x += col_ws[5]
+        p.ctext(x, y, col_ws[6], ROW_H, end_s, fi=_PDFPage.FR, sz=7)
+        p.hline(margin, y+ROW_H, cw)
+        state["y"] += ROW_H; seq += 1
+
+    for job in jobs:
+        jt   = job["type"]
+        desc = job.get("description","")
+        ms   = _std_list(job,"maintenance_standards")
+        es   = _std_list(job,"engineering_standards")
+        stds = []
+        if ms: stds.append("Maint:" + ",".join(ms))
+        if es: stds.append("Eng:" + ",".join(es))
+        if stds: desc += (" | " if desc else "") + " | ".join(stds)
+
+        if jt in ("REMOVE","ADD"):
+            draw_row(jt, desc, _ep_flat(job.get("start",{})),
+                     job.get("wire",""), _ep_flat(job.get("end",{})))
+        elif jt == "MOVE":
+            draw_row("MOVE-REMOVE", desc,
+                     _ep_flat(job.get("start",{})), job.get("wire",""),
+                     _ep_flat(job.get("end",{})))
+            draw_row("MOVE-ADD", "",
+                     _ep_flat(job.get("add_start",{})), job.get("add_wire",""),
+                     _ep_flat(job.get("add_end",{})))
+        elif jt in ("BLOCK","UNBLOCK"):
+            draw_row(jt, desc, _prot_flat(job.get("protection",{})), "", "")
+        elif jt == "TESTING":
+            draw_row("TESTING", desc, job.get("notes",""), "", "")
+
+
+def _pdf_drawings_reg(bld, reg, size="Letter Portrait"):
+    if not reg: return
+    margin = 43 if "Letter" in size else 36
+    pw = _SimplePDFBuilder.SIZES.get(size, (612.0, 792.0))[0]
+    cw = pw - 2*margin
+    notes_w = min(160, int(cw * 0.20))
+    rev_w   = 42
+    num_w   = min(160, int(cw * 0.22))
+    title_w = cw - num_w - rev_w - notes_w
+    specs = [
+        ("Drawing #", num_w, "left"),
+        ("Title",     title_w, "left"),
+        ("Rev",       rev_w,  "center"),
+        ("Notes",     notes_w,"left"),
+    ]
+    def rows():
+        for name, info in sorted(reg.items()):
+            yield None, [name, info.get("title",""), info.get("rev",""),
+                         info.get("notes","")]
+    _pdf_section_table(bld, "Drawings Register", specs, rows(), size)
+
+
+def _pdf_relay_reg(bld, reg, size="Letter Portrait"):
+    if not reg: return
+    margin = 43 if "Letter" in size else 36
+    pw = _SimplePDFBuilder.SIZES.get(size, (612.0, 792.0))[0]
+    cw = pw - 2*margin
+    rev_w  = 42; eng_w = 130
+    dev_w  = min(130, int(cw * 0.18))
+    title_w = cw - dev_w - rev_w - eng_w
+    specs = [
+        ("Device ID", dev_w,   "left"),
+        ("Title",     title_w, "left"),
+        ("Rev",       rev_w,   "center"),
+        ("Engineer",  eng_w,   "left"),
+    ]
+    def rows():
+        for did, info in sorted(reg.items()):
+            yield None, [did, info.get("title",""), info.get("revision",""),
+                         info.get("engineer","")]
+    _pdf_section_table(bld, "Relay Settings", specs, rows(), size)
+
+
+def _pdf_standards(bld, maint_reg, eng_reg, size="Letter Portrait"):
+    margin = 43 if "Letter" in size else 36
+    pw = _SimplePDFBuilder.SIZES.get(size, (612.0, 792.0))[0]
+    cw = pw - 2*margin
+    rev_w = 42; sid_w = min(130, int(cw * 0.20))
+    title_w = cw - sid_w - rev_w
+    specs = [
+        ("Standard ID", sid_w,   "left"),
+        ("Title",       title_w, "left"),
+        ("Rev",         rev_w,   "center"),
+    ]
+    if maint_reg:
+        def mrows():
+            for sid, info in sorted(maint_reg.items()):
+                yield None, [sid, info.get("title",""), info.get("revision","")]
+        _pdf_section_table(bld, "Maintenance Standards", specs, mrows(), size)
+    if eng_reg:
+        def erows():
+            for sid, info in sorted(eng_reg.items()):
+                yield None, [sid, info.get("title",""), info.get("revision","")]
+        _pdf_section_table(bld, "Engineering Standards", specs, erows(), size)
+
+
+def _merge_pdfs_bytes(pdf_bytes_list: list) -> bytes:
+    """Merge list of PDF byte strings into one PDF using pypdf."""
+    if not _PYPDF_AVAILABLE:
+        return pdf_bytes_list[0] if pdf_bytes_list else b""
+    import io
+    writer = _PdfWriter()
+    for data in pdf_bytes_list:
+        if not data:
+            continue
+        try:
+            reader = _PdfReader(io.BytesIO(data))
+            for page in reader.pages:
+                writer.add_page(page)
+        except Exception:
+            pass
+    buf = io.BytesIO()
+    writer.write(buf)
+    return buf.getvalue()
+
+
+def _collect_pdfs(folder: str, subfolder: str, recurse: bool = False) -> list:
+    """Return list of PDF bytes from a project subfolder, sorted by filename."""
+    result = []
+    full = os.path.join(folder, subfolder)
+    if not os.path.isdir(full):
+        return result
+    if recurse:
+        for root, dirs, files in os.walk(full):
+            dirs[:] = sorted(d for d in dirs if d.lower() != "archive")
+            for f in sorted(files):
+                if f.lower().endswith(".pdf"):
+                    try:
+                        with open(os.path.join(root, f), "rb") as fh:
+                            result.append(fh.read())
+                    except OSError:
+                        pass
+    else:
+        for f in sorted(os.listdir(full)):
+            if f.lower().endswith(".pdf"):
+                fpath = os.path.join(full, f)
+                if os.path.isfile(fpath):
+                    try:
+                        with open(fpath, "rb") as fh:
+                            result.append(fh.read())
+                    except OSError:
+                        pass
+    return result
+
+
+def _build_print_pdf(app, inc: dict, sizes: dict, crows: list,
+                     folder: str) -> tuple:
+    """Assemble a complete PDF print package.
+
+    Returns (pdf_bytes, non_pdf_files_list).
+    pdf_bytes is the merged PDF; non_pdf_files_list contains filenames that
+    could not be included (e.g. .doc attachments).
+    """
+    bld   = _SimplePDFBuilder()
+    parts = []     # list of PDF bytes to merge
+    nopdf = []     # filenames of files that couldn't be merged
+
+    # ── 1. Cover page ─────────────────────────────────────────────
+    _pdf_cover(
+        bld,
+        app.project_var.get().strip(),
+        crows,
+        datetime.now().strftime("%Y-%m-%d %H:%M"),
+        toc_items=[("Work Orders", "")] + [
+            (lbl, "") for k, lbl in [
+                ("drawings",    "Drawings Register"),
+                ("relay",       "Relay Settings"),
+                ("maintenance", "Maintenance Standards"),
+                ("engineering", "Engineering Standards"),
+            ] if inc.get(k)
+        ],
+        size=sizes.get("cover", "Letter Portrait"),
+    )
+
+    # ── 2. Work Orders ────────────────────────────────────────────
+    wo_size = sizes.get("work_orders", "11x17 Landscape").replace("×","x")
+    _pdf_work_orders(bld, app.jobs, app.drawing_registry, wo_size)
+
+    # ── 3. Drawings ───────────────────────────────────────────────
+    if inc.get("drawings"):
+        _pdf_drawings_reg(bld, app.drawing_registry,
+                          sizes.get("drawings","Letter Portrait"))
+        if folder:
+            parts.extend(_collect_pdfs(folder, "Drawings", recurse=True))
+
+    # ── 4. Relay Settings ─────────────────────────────────────────
+    if inc.get("relay"):
+        _pdf_relay_reg(bld, app.relay_registry,
+                       sizes.get("relay","Letter Portrait"))
+        if folder:
+            parts.extend(_collect_pdfs(folder, "Relay Settings"))
+
+    # ── 5. Maintenance Standards ──────────────────────────────────
+    if inc.get("maintenance"):
+        _pdf_standards(bld, app.maintenance_standards_registry, {},
+                       sizes.get("maintenance","Letter Portrait"))
+        if folder:
+            parts.extend(_collect_pdfs(folder, "Maintenance Standards"))
+
+    # ── 6. Engineering Standards ──────────────────────────────────
+    if inc.get("engineering"):
+        _pdf_standards(bld, {}, app.engineering_standards_registry,
+                       sizes.get("engineering","Letter Portrait"))
+        if folder:
+            parts.extend(_collect_pdfs(folder, "Engineering Standards"))
+
+    # ── 7. CROW attached files ────────────────────────────────────
+    if folder:
+        crow_dir = os.path.join(folder, "CROW Outage")
+        for crow in crows:
+            for fname in crow.get("files", []):
+                fpath = os.path.join(crow_dir, fname)
+                if os.path.isfile(fpath):
+                    ext = os.path.splitext(fname)[1].lower()
+                    if ext == ".pdf":
+                        try:
+                            with open(fpath, "rb") as fh:
+                                parts.append(fh.read())
+                        except OSError:
+                            nopdf.append(fname)
+                    else:
+                        nopdf.append(fname)
+
+    # ── Build + merge ─────────────────────────────────────────────
+    doc_pdf = bld.build()
+    if parts and _PYPDF_AVAILABLE:
+        final = _merge_pdfs_bytes([doc_pdf] + parts)
+    else:
+        final = doc_pdf
+
+    return final, nopdf
+
+
 class ExportWizard(tk.Toplevel):
     """Three-step wizard generating Paper, HTML/PDF, and Tablet export packages."""
 
@@ -2284,7 +2994,6 @@ class ExportWizard(tk.Toplevel):
         self._v_digital = tk.BooleanVar(value=True)
         self._v_tablet  = tk.BooleanVar(value=False)
         self._v_sec     = {k: tk.BooleanVar(value=False) for k, _ in self._SECTIONS}
-        self._v_dividers = tk.BooleanVar(value=True)
         self._v_qr      = tk.BooleanVar(value=True)
         self._v_sizes   = {k: tk.StringVar(value=v) for k, v in self._DEFAULTS.items()}
 
@@ -2327,9 +3036,9 @@ class ExportWizard(tk.Toplevel):
         ttk.Label(f, text="Choose which formats to generate:",
                   font=("", 9, "bold")).pack(anchor="w", pady=(0, 12))
         cards = [
-            (self._v_paper,   "📄  Paper",
-             "Print-ready layouts with binder dividers and a QR code URL sheet.\n"
-             "Open in browser → Ctrl+P → Save as PDF."),
+            (self._v_paper,   "📄  PDF Package",
+             "Merged PDF: cover, work orders, registry tables + all downloaded\n"
+             "PDFs (drawings, relay settings, standards) in one printable file."),
             (self._v_digital, "💻  HTML / PDF",
              "Screen-optimised with live hyperlinks.\n"
              "Open in browser → Ctrl+P → Save as PDF."),
@@ -2374,10 +3083,6 @@ class ExportWizard(tk.Toplevel):
 
         ext = ttk.LabelFrame(f, text="Extras", padding=(12, 6))
         ext.pack(fill="x")
-        r1 = ttk.Frame(ext); r1.pack(fill="x", pady=2)
-        ttk.Checkbutton(r1, variable=self._v_dividers).pack(side="left")
-        ttk.Label(r1, text="Binder Dividers  (Avery-style tab pages, paper & digital only)"
-                  ).pack(side="left", padx=(4, 0))
         r2 = ttk.Frame(ext); r2.pack(fill="x", pady=2)
         ttk.Checkbutton(r2, variable=self._v_qr).pack(side="left")
         ttk.Label(r2, text="QR Code Sheet  (paper only — all document URLs as scannable codes)"
@@ -2456,11 +3161,16 @@ class ExportWizard(tk.Toplevel):
         crows  = app.title_page.get("crows", [])
         inc    = {k: self._v_sec[k].get() for k, _ in self._SECTIONS}
         sizes  = {k: v.get() for k, v in self._v_sizes.items()}
-        dividers = self._v_dividers.get()
-        qr_flag  = self._v_qr.get()
+        qr_flag = self._v_qr.get()
 
-        toc = ["Work Orders"] + [
-            lbl for k, lbl in self._SECTIONS if inc.get(k)]
+        _sec_anchor = {
+            "drawings":    "sec-drawings",
+            "relay":       "sec-relay",
+            "maintenance": "sec-maintenance",
+            "engineering": "sec-engineering",
+        }
+        toc = [("Work Orders", "sec-work-orders")] + [
+            (lbl, _sec_anchor[k]) for k, lbl in self._SECTIONS if inc.get(k)]
 
         # Collect all document URLs for the QR sheet
         qr_items = []
@@ -2477,19 +3187,48 @@ class ExportWizard(tk.Toplevel):
         errors    = []
         for mode in modes:
             try:
-                html = self._assemble(
-                    mode, project, date, crows, toc, inc, dividers, qr_flag,
-                    sizes, qr_items, folder,
-                    app.jobs, app.drawing_registry,
-                    app.relay_registry,
-                    app.maintenance_standards_registry,
-                    app.engineering_standards_registry,
-                )
-                suffix = {"paper": "Paper", "digital": "Digital", "tablet": "Tablet"}[mode]
-                fpath  = os.path.join(folder, f"{suffix}_{date_s}.html")
-                with open(fpath, "w", encoding="utf-8") as fh:
-                    fh.write(html)
-                generated.append(fpath)
+                if mode == "paper":
+                    if _PYPDF_AVAILABLE:
+                        pdf_bytes, nopdf = _build_print_pdf(
+                            app, inc, sizes, crows, folder)
+                        fpath = os.path.join(folder, f"Package_{date_s}.pdf")
+                        with open(fpath, "wb") as fh:
+                            fh.write(pdf_bytes)
+                        generated.append(fpath)
+                        if nopdf:
+                            messagebox.showinfo(
+                                "Non-PDF Attachments",
+                                "The following files could not be included in the PDF "
+                                "(open them separately):\n\n" + "\n".join(nopdf),
+                                parent=self)
+                    else:
+                        # pypdf not available — fall back to print-ready HTML
+                        html = self._assemble(
+                            mode, project, date, crows, toc, inc, qr_flag,
+                            sizes, qr_items, folder,
+                            app.jobs, app.drawing_registry,
+                            app.relay_registry,
+                            app.maintenance_standards_registry,
+                            app.engineering_standards_registry,
+                        )
+                        fpath = os.path.join(folder, f"Paper_{date_s}.html")
+                        with open(fpath, "w", encoding="utf-8") as fh:
+                            fh.write(html)
+                        generated.append(fpath)
+                else:
+                    html = self._assemble(
+                        mode, project, date, crows, toc, inc, qr_flag,
+                        sizes, qr_items, folder,
+                        app.jobs, app.drawing_registry,
+                        app.relay_registry,
+                        app.maintenance_standards_registry,
+                        app.engineering_standards_registry,
+                    )
+                    suffix = {"digital": "Digital", "tablet": "Tablet"}[mode]
+                    fpath  = os.path.join(folder, f"{suffix}_{date_s}.html")
+                    with open(fpath, "w", encoding="utf-8") as fh:
+                        fh.write(html)
+                    generated.append(fpath)
             except Exception as exc:
                 errors.append(f"{mode}: {exc}")
 
@@ -2503,7 +3242,7 @@ class ExportWizard(tk.Toplevel):
                 _open_file(path)
 
     def _assemble(self, mode, project, date, crows, toc, inc,
-                  dividers, qr_flag, sizes, qr_items, folder,
+                  qr_flag, sizes, qr_items, folder,
                   jobs, drw_reg, relay_reg, maint_reg, eng_reg):
         """Build the complete HTML for one output mode."""
 
@@ -2521,8 +3260,7 @@ class ExportWizard(tk.Toplevel):
                 "ew-relay":       sizes.get("relay",       "Letter Portrait"),
                 "ew-maintenance": sizes.get("maintenance", "Letter Portrait"),
                 "ew-engineering": sizes.get("engineering", "Letter Portrait"),
-                "ew-divider":     "Letter Portrait",
-                "ew-qr":         "Letter Portrait",
+                "ew-qr":          "Letter Portrait",
             }
             lines = []
             for cls, size_name in mapping.items():
@@ -2534,11 +3272,7 @@ class ExportWizard(tk.Toplevel):
 
         pf = folder  # always pass project folder for local-file resolution
 
-        # Sections and dividers
-        div_sections = ["Work Orders"] + [lbl for k, lbl in self._SECTIONS if inc.get(k)]
-        n_divs  = len(div_sections)
-        div_idx = 0
-        body    = ""
+        body = ""
 
         # Cover (+ CROW attached documents for paper/tablet)
         body += _ew_cover(project, crows, date, toc, mode,
@@ -2553,52 +3287,59 @@ class ExportWizard(tk.Toplevel):
             )
 
         # Work Orders
-        if dividers and mode != "tablet":
-            color = _EW_DIVIDER_COLORS[div_idx % len(_EW_DIVIDER_COLORS)]
-            body += _ew_divider("Work Orders", project, date, div_idx, n_divs, color,
-                                 css_class="ew-divider" if mode == "paper" else "page-divider")
-        div_idx += 1
-        body += _ew_work_orders(jobs, drw_reg, mode,
-                                 css_class="ew-work-orders" if mode == "paper" else "page-content")
+        body += _ew_with_id(
+            _ew_work_orders(jobs, drw_reg, mode,
+                            css_class="ew-work-orders" if mode == "paper" else "page-content"),
+            "sec-work-orders",
+        )
 
         # Optional sections — table + embedded local files
         _emb_cls = "page-content"  # embedded files always use generic class
+        _sec_id = {
+            "drawings":    "sec-drawings",
+            "relay":       "sec-relay",
+            "maintenance": "sec-maintenance",
+            "engineering": "sec-engineering",
+        }
         sec_funcs = {
             "drawings": lambda: (
-                _ew_drawings_reg(
-                    drw_reg, mode, pf,
-                    css_class="ew-drawings" if mode == "paper" else "page-content") +
+                _ew_with_id(
+                    _ew_drawings_reg(
+                        drw_reg, mode, pf,
+                        css_class="ew-drawings" if mode == "paper" else "page-content"),
+                    "sec-drawings") +
                 _ew_embedded_files(pf, "Drawings", mode, css_class=_emb_cls, recurse=True)
             ),
             "relay": lambda: (
-                _ew_relay_reg(
-                    relay_reg, mode, pf,
-                    css_class="ew-relay" if mode == "paper" else "page-content") +
+                _ew_with_id(
+                    _ew_relay_reg(
+                        relay_reg, mode, pf,
+                        css_class="ew-relay" if mode == "paper" else "page-content"),
+                    "sec-relay") +
                 _ew_embedded_files(pf, "Relay Settings", mode, css_class=_emb_cls)
             ),
             "maintenance": lambda: (
-                _ew_standards(
-                    maint_reg, {}, mode, pf,
-                    maint_css="ew-maintenance" if mode == "paper" else "page-content",
-                    eng_css="page-content") +
+                _ew_with_id(
+                    _ew_standards(
+                        maint_reg, {}, mode, pf,
+                        maint_css="ew-maintenance" if mode == "paper" else "page-content",
+                        eng_css="page-content"),
+                    "sec-maintenance") +
                 _ew_embedded_files(pf, "Maintenance Standards", mode, css_class=_emb_cls)
             ),
             "engineering": lambda: (
-                _ew_standards(
-                    {}, eng_reg, mode, pf,
-                    maint_css="page-content",
-                    eng_css="ew-engineering" if mode == "paper" else "page-content") +
+                _ew_with_id(
+                    _ew_standards(
+                        {}, eng_reg, mode, pf,
+                        maint_css="page-content",
+                        eng_css="ew-engineering" if mode == "paper" else "page-content"),
+                    "sec-engineering") +
                 _ew_embedded_files(pf, "Engineering Standards", mode, css_class=_emb_cls)
             ),
         }
-        for key, label in self._SECTIONS:
+        for key, _ in self._SECTIONS:
             if not inc.get(key):
                 continue
-            if dividers and mode != "tablet":
-                color = _EW_DIVIDER_COLORS[div_idx % len(_EW_DIVIDER_COLORS)]
-                body += _ew_divider(label, project, date, div_idx, n_divs, color,
-                                     css_class="ew-divider" if mode == "paper" else "page-divider")
-            div_idx += 1
             body += sec_funcs[key]()
 
         # QR sheet (paper only)
