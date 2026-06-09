@@ -2275,13 +2275,15 @@ def _ew_embedded_files(project_folder, subfolder, mode, css_class="page-content"
 # ──────────────────────────────────────────────────────────────────
 
 _PYPDF_AVAILABLE = False
+_PYPDF_ERROR = ""
 try:
     _pypdf_pkg_dir = os.path.dirname(os.path.abspath(__file__))
     if _pypdf_pkg_dir not in sys.path:
         sys.path.insert(0, _pypdf_pkg_dir)
     from pypdf import PdfWriter as _PdfWriter, PdfReader as _PdfReader
     _PYPDF_AVAILABLE = True
-except Exception:
+except BaseException as _e:
+    _PYPDF_ERROR = str(_e)
     _PdfWriter = _PdfReader = None
 
 # Helvetica AFM character widths (units = 1/1000 em)
@@ -3203,6 +3205,13 @@ class ExportWizard(tk.Toplevel):
                                 parent=self)
                     else:
                         # pypdf not available — fall back to print-ready HTML
+                        messagebox.showwarning(
+                            "PDF Library Not Available",
+                            "The pypdf library could not be loaded so the export will\n"
+                            "be a print-ready HTML file instead of a PDF.\n\n"
+                            "Make sure the pypdf/ folder is in the same directory as\n"
+                            f"wire_planner.py.\n\nDetail: {_PYPDF_ERROR or 'unknown'}",
+                            parent=self)
                         html = self._assemble(
                             mode, project, date, crows, toc, inc, qr_flag,
                             sizes, qr_items, folder,
