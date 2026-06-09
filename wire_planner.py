@@ -2360,7 +2360,7 @@ def _parse_cookies_from_headers(raw_headers: str) -> dict:
     return cookies
 
 
-def _show_fetch_options_dialog(parent, url: str, headers: dict, skip_ssl: bool = False) -> None:
+def _show_fetch_options_dialog(parent, url: str, headers: dict) -> None:
     """Open a pop-out dialog that fetches and displays drawing form options."""
     if not _DRAWING_SEARCH_AVAILABLE:
         messagebox.showerror("Unavailable",
@@ -2407,12 +2407,9 @@ def _show_fetch_options_dialog(parent, url: str, headers: dict, skip_ssl: bool =
         log.configure(state="disabled")
 
     def _run():
-        import ssl as _ssl
-        ssl_ctx = _ssl._create_unverified_context() if skip_ssl else None
-        dlg.after(0, lambda: _log(
-            f"Connecting to {url} …{'  [SSL verify OFF]' if skip_ssl else ''}\n", "head"))
+        dlg.after(0, lambda: _log(f"Connecting to {url} …\n", "head"))
         try:
-            opts = fetch_form_options(url, extra_headers=headers, ssl_context=ssl_ctx)
+            opts = fetch_form_options(url, extra_headers=headers)
 
             fac   = opts.get("facilities",       {})
             typs  = opts.get("drawing_types",    {})
@@ -2529,7 +2526,7 @@ class SoftwareSetupDialog(tk.Toplevel):
         tk.Label(ds_hdr_row, text="Drawing Search", bg="white", fg="#1c2833",
                  font=("", 9, "bold"), padx=8, pady=2).pack(side="left", anchor="w")
 
-        fetch_row = tk.Frame(body, bg="white"); fetch_row.pack(fill="x", pady=(2, 2))
+        fetch_row = tk.Frame(body, bg="white"); fetch_row.pack(fill="x", pady=(2, 6))
         self._fetch_btn = tk.Button(
             fetch_row, text="🔄 Fetch Drawing Options",
             command=self._fetch_drawing_options,
@@ -2540,16 +2537,6 @@ class SoftwareSetupDialog(tk.Toplevel):
         tk.Label(fetch_row,
                  text="Pulls live facility / type / subject lists from the search server.",
                  bg="white", fg="#7f8c8d", font=("", 8)).pack(side="left", padx=8)
-
-        ssl_row = tk.Frame(body, bg="white"); ssl_row.pack(fill="x", pady=(0, 6))
-        self._skip_ssl_var = tk.BooleanVar(value=bool(cfg.get("skip_ssl", False)))
-        tk.Checkbutton(ssl_row, text="Skip SSL certificate verification",
-                       variable=self._skip_ssl_var,
-                       bg="white", fg="#7f8c8d", font=("", 8),
-                       activebackground="white").pack(side="left")
-        tk.Label(ssl_row,
-                 text="(use for internal sites with self-signed / corporate-CA certs)",
-                 bg="white", fg="#aab7b8", font=("", 8)).pack(side="left", padx=4)
 
         sep = tk.Frame(self, bg="#d5d8dc", height=1); sep.pack(fill="x", side="bottom")
         bf = tk.Frame(self, bg="#eaecee"); bf.pack(fill="x", side="bottom")
@@ -2588,8 +2575,7 @@ class SoftwareSetupDialog(tk.Toplevel):
         url = self._cfg_vars.get("drawing_search_url", tk.StringVar()).get().strip()
         raw = self._headers_txt.get("1.0", "end") if self._headers_txt else ""
         headers = _parse_request_headers_raw(raw)
-        skip_ssl = self._skip_ssl_var.get() if hasattr(self, "_skip_ssl_var") else False
-        _show_fetch_options_dialog(self, url, headers, skip_ssl=skip_ssl)
+        _show_fetch_options_dialog(self, url, headers)
 
     def _skip(self):
         self.result = {}; self.destroy()
@@ -2598,8 +2584,6 @@ class SoftwareSetupDialog(tk.Toplevel):
         self.result = {k: v.get().strip() for k, v in self._cfg_vars.items()}
         if self._headers_txt:
             self.result["request_headers"] = self._headers_txt.get("1.0", "end").strip()
-        if hasattr(self, "_skip_ssl_var"):
-            self.result["skip_ssl"] = self._skip_ssl_var.get()
         self.destroy()
 
 
@@ -4113,20 +4097,6 @@ class RedLineApp(tk.Tk):
                        ".tif", ".tiff", ".svg", ".dwg", ".dxf"}
 
         def _run():
-            import ssl as _ssl
-            ssl_ctx = _ssl._create_unverified_context() if self.app_config.get("skip_ssl") else None
-
-            # Show auth diagnostics once before the first download
-            all_hdrs = {"User-Agent": "RedLineRouting/1.0", **self._parse_request_headers()}
-            cookie = all_hdrs.get("Cookie", "")
-            if cookie:
-                preview = cookie[:70] + ("…" if len(cookie) > 70 else "")
-                q.put(("log", f"Cookie ({len(cookie)} chars): {preview}", "info"))
-            else:
-                q.put(("log", "No Cookie header — check File → Software Settings", "info"))
-            if ssl_ctx:
-                q.put(("log", "SSL verification disabled", "info"))
-
             ok = 0
             for i, (name, url) in enumerate(targets):
                 if cancel_flag[0]:
@@ -4146,7 +4116,7 @@ class RedLineApp(tk.Tk):
                     if extra_headers:
                         hdrs.update(extra_headers)
                     req = urllib.request.Request(url, headers=hdrs)
-                    with urllib.request.urlopen(req, timeout=30, context=ssl_ctx) as resp:
+                    with urllib.request.urlopen(req, timeout=30) as resp:
                         data = resp.read()
                     archived = _archive_existing(sub_dir, name) if organize else 0
                     with open(dest, "wb") as fh:
@@ -4322,17 +4292,10 @@ class RedLineApp(tk.Tk):
                        "search server.\nAuthentication uses the master Cookie header set above.",
                   foreground="grey", font=("", 8), justify="left").pack(anchor="w", pady=(0, 4))
 
-        skip_ssl_var = tk.BooleanVar(value=bool(self.app_config.get("skip_ssl", False)))
-        ssl_chk = ttk.Checkbutton(drw_search_lf,
-                                   text="Skip SSL certificate verification  "
-                                        "(use for corporate / self-signed certs)",
-                                   variable=skip_ssl_var)
-        ssl_chk.pack(anchor="w", pady=(0, 4))
-
         def _do_fetch_options():
             url  = cfg_vars.get("drawing_search_url", tk.StringVar()).get().strip()
             headers = _parse_request_headers_raw(headers_txt.get("1.0", "end"))
-            _show_fetch_options_dialog(dlg, url, headers, skip_ssl=skip_ssl_var.get())
+            _show_fetch_options_dialog(dlg, url, headers)
 
         ttk.Button(drw_search_lf, text="🔄 Fetch Drawing Options",
                    command=_do_fetch_options).pack(anchor="w")
@@ -4343,7 +4306,6 @@ class RedLineApp(tk.Tk):
         def _save():
             self.app_config.update({k: v.get().strip() for k, v in cfg_vars.items()})
             self.app_config["request_headers"] = headers_txt.get("1.0", "end").strip()
-            self.app_config["skip_ssl"] = skip_ssl_var.get()
             self._save_app_config()
             dlg.destroy()
 
