@@ -40,12 +40,24 @@ class DrawingSearchClient:
             "Chrome/148.0.0.0 Safari/537.36 Edg/148.0.0.0"
         ),
         cache=None,
+        search_path: Optional[str] = None,
     ):
-        self.base_url   = base_url.rstrip("/")
-        self.cookies    = cookies or {}
-        self.timeout    = timeout
-        self.user_agent = user_agent
-        self.cache      = cache  # DrawingSearchCache | None
+        _base = base_url.rstrip("/")
+        if search_path is not None:
+            self.base_url    = _base
+            self.search_path = search_path
+        else:
+            _parsed = urllib.parse.urlparse(_base)
+            if _parsed.path and _parsed.path not in ("", "/"):
+                self.base_url    = _parsed.scheme + "://" + _parsed.netloc
+                self.search_path = _parsed.path
+            else:
+                self.base_url    = _base
+                self.search_path = _SEARCH_PATH
+        self.cookies     = cookies or {}
+        self.timeout     = timeout
+        self.user_agent  = user_agent
+        self.cache       = cache  # DrawingSearchCache | None
 
     # ── public API ────────────────────────────────────────────────
 
@@ -118,7 +130,7 @@ class DrawingSearchClient:
     # ── internals ─────────────────────────────────────────────────
 
     def _post(self, form_data: dict[str, str]) -> str:
-        url      = self.base_url + _SEARCH_PATH
+        url      = self.base_url + self.search_path
         body     = urllib.parse.urlencode(form_data).encode("utf-8")
         cookie_h = "; ".join(f"{k}={v}" for k, v in self.cookies.items())
 
@@ -132,7 +144,7 @@ class DrawingSearchClient:
                 "Accept-Language": "en-US,en;q=0.9",
                 "Cache-Control": "max-age=0",
                 "Origin":        self.base_url,
-                "Referer":       self.base_url + _SEARCH_PATH,
+                "Referer":       self.base_url + self.search_path,
                 "User-Agent":    self.user_agent,
                 **({"Cookie": cookie_h} if cookie_h else {}),
             },

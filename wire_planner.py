@@ -2236,10 +2236,12 @@ class DrawingSearchDialog(tk.Toplevel):
         base_url = self.app_config.get("drawing_search_url", "").strip()
         if not base_url:
             return None
+        path = self.app_config.get("drawing_search_path", "").strip() or None
         cookies = _parse_cookies_from_headers(
             self.app_config.get("request_headers", ""))
         cache = DrawingSearchCache() if _DRAWING_SEARCH_AVAILABLE else None
-        return DrawingSearchClient(base_url=base_url, cookies=cookies, cache=cache)
+        return DrawingSearchClient(base_url=base_url, cookies=cookies, cache=cache,
+                                   search_path=path)
 
     def _get_params(self, page=0):
         # Parse code from "CODE — Label" or raw code
@@ -2360,7 +2362,7 @@ def _parse_cookies_from_headers(raw_headers: str) -> dict:
     return cookies
 
 
-def _show_fetch_options_dialog(parent, url: str, headers: dict) -> None:
+def _show_fetch_options_dialog(parent, url: str, headers: dict, search_path: str = None) -> None:
     """Open a pop-out dialog that fetches and displays drawing form options."""
     if not _DRAWING_SEARCH_AVAILABLE:
         messagebox.showerror("Unavailable",
@@ -2409,7 +2411,7 @@ def _show_fetch_options_dialog(parent, url: str, headers: dict) -> None:
     def _run():
         dlg.after(0, lambda: _log(f"Connecting to {url} …\n", "head"))
         try:
-            opts = fetch_form_options(url, extra_headers=headers)
+            opts = fetch_form_options(url, extra_headers=headers, form_path=search_path)
 
             fac   = opts.get("facilities",       {})
             typs  = opts.get("drawing_types",    {})
@@ -2457,7 +2459,8 @@ class SoftwareSetupDialog(tk.Toplevel):
         self.resizable(False, False)
         self.result = None
         self._cfg_vars = {}
-        self._headers_txt  = None   # ScrolledText for request headers, set in _build
+        self._headers_txt      = None   # ScrolledText for request headers, set in _build
+        self._eng_headers_txt  = None   # ScrolledText for engineering-specific headers
         self._build(dict(app_config))
         self.resizable(True, True)
         _center_window(self)          # auto-size to content
@@ -2475,8 +2478,9 @@ class SoftwareSetupDialog(tk.Toplevel):
                  bg="white", justify="left", fg="#566573", font=("", 9)).pack(anchor="w", pady=(0, 14))
 
         sections = [
-            ("Drawings",       [("base_drawing_url",   "Base Drawing URL"),
-                                 ("drawing_search_url", "Drawing Search URL")]),
+            ("Drawings",       [("base_drawing_url",    "Base Drawing URL"),
+                                 ("drawing_search_url",  "Drawing Search URL"),
+                                 ("drawing_search_path", "Drawing Search Path")]),
             ("Aspen",          [("aspen_url",           "Aspen URL (future)")]),
             ("CROWs",          [("base_crow_url",       "Base CROW URL")]),
             ("Relay Settings", [("base_relay_url",      "Base Relay URL")]),
@@ -2520,6 +2524,19 @@ class SoftwareSetupDialog(tk.Toplevel):
         self._headers_txt = scrolledtext.ScrolledText(auth_body, height=3, font=("Courier", 9), wrap="none")
         self._headers_txt.pack(fill="x", padx=4, pady=(2, 0))
         self._headers_txt.insert("1.0", cfg.get("request_headers", ""))
+        # Engineering Standards Headers (optional per-server override)
+        eng_hdr_row = tk.Frame(body, bg="white"); eng_hdr_row.pack(fill="x", pady=(6, 4))
+        tk.Frame(eng_hdr_row, bg="#2980b9", width=3).pack(side="left", fill="y")
+        tk.Label(eng_hdr_row, text="Engineering Standards Headers (optional override)", bg="white", fg="#1c2833",
+                 font=("", 9, "bold"), padx=8, pady=2).pack(side="left", anchor="w")
+        eng_body = tk.Frame(body, bg="white"); eng_body.pack(fill="x", pady=(0, 4))
+        tk.Label(eng_body,
+                 text="Leave blank to use the master headers above. Fill in only if engineering\n"
+                      "standards are served from a different server with different auth credentials.",
+                 bg="white", fg="#7f8c8d", font=("", 8), justify="left").pack(anchor="w", padx=4)
+        self._eng_headers_txt = scrolledtext.ScrolledText(eng_body, height=3, font=("Courier", 9), wrap="none")
+        self._eng_headers_txt.pack(fill="x", padx=4, pady=(2, 0))
+        self._eng_headers_txt.insert("1.0", cfg.get("engineering_request_headers", ""))
         # Drawing Search — Fetch Options button (uses master auth from above)
         ds_hdr_row = tk.Frame(body, bg="white"); ds_hdr_row.pack(fill="x", pady=(6, 4))
         tk.Frame(ds_hdr_row, bg="#2980b9", width=3).pack(side="left", fill="y")
@@ -2572,10 +2589,11 @@ class SoftwareSetupDialog(tk.Toplevel):
                   if e.widget is self else None)
 
     def _fetch_drawing_options(self):
-        url = self._cfg_vars.get("drawing_search_url", tk.StringVar()).get().strip()
-        raw = self._headers_txt.get("1.0", "end") if self._headers_txt else ""
+        url  = self._cfg_vars.get("drawing_search_url", tk.StringVar()).get().strip()
+        path = self._cfg_vars.get("drawing_search_path", tk.StringVar()).get().strip() or None
+        raw  = self._headers_txt.get("1.0", "end") if self._headers_txt else ""
         headers = _parse_request_headers_raw(raw)
-        _show_fetch_options_dialog(self, url, headers)
+        _show_fetch_options_dialog(self, url, headers, search_path=path)
 
     def _skip(self):
         self.result = {}; self.destroy()
@@ -2584,6 +2602,8 @@ class SoftwareSetupDialog(tk.Toplevel):
         self.result = {k: v.get().strip() for k, v in self._cfg_vars.items()}
         if self._headers_txt:
             self.result["request_headers"] = self._headers_txt.get("1.0", "end").strip()
+        if self._eng_headers_txt:
+            self.result["engineering_request_headers"] = self._eng_headers_txt.get("1.0", "end").strip()
         self.destroy()
 
 
@@ -4232,8 +4252,9 @@ class RedLineApp(tk.Tk):
 
         sections = [
             ("Drawings", [
-                ("base_drawing_url",  "Base Drawing URL:",  "Used to pre-fill URLs when adding drawings"),
-                ("drawing_search_url","Drawing Search URL:","Base URL for the corporate drawing search"),
+                ("base_drawing_url",    "Base Drawing URL:",    "Used to pre-fill URLs when adding drawings"),
+                ("drawing_search_url",  "Drawing Search URL:",  "Base URL for the corporate drawing search server"),
+                ("drawing_search_path", "Drawing Search Path:", "Path appended to base URL for the search form (default: /search/searchGT.html)"),
             ]),
             ("Aspen", [
                 ("aspen_url",         "Aspen URL:",         "Base URL for Aspen (future use)"),
@@ -4285,6 +4306,16 @@ class RedLineApp(tk.Tk):
         headers_txt.pack(fill="x")
         headers_txt.insert("1.0", self.app_config.get("request_headers", ""))
 
+        eng_hdrs_lf = ttk.LabelFrame(f, text="Engineering Standards Headers (optional override)", padding=8)
+        eng_hdrs_lf.pack(fill="x", pady=(0, 8))
+        ttk.Label(eng_hdrs_lf,
+                  text="Leave blank to use the master headers above. Fill in only if engineering\n"
+                       "standards are served from a different server with different auth credentials.",
+                  foreground="grey", font=("", 8), justify="left").pack(anchor="w", pady=(0, 4))
+        eng_headers_txt = scrolledtext.ScrolledText(eng_hdrs_lf, height=3, font=("Courier", 9), wrap="none")
+        eng_headers_txt.pack(fill="x")
+        eng_headers_txt.insert("1.0", self.app_config.get("engineering_request_headers", ""))
+
         drw_search_lf = ttk.LabelFrame(f, text="Drawing Search", padding=8)
         drw_search_lf.pack(fill="x", pady=(0, 8))
         ttk.Label(drw_search_lf,
@@ -4294,8 +4325,9 @@ class RedLineApp(tk.Tk):
 
         def _do_fetch_options():
             url  = cfg_vars.get("drawing_search_url", tk.StringVar()).get().strip()
+            path = cfg_vars.get("drawing_search_path", tk.StringVar()).get().strip() or None
             headers = _parse_request_headers_raw(headers_txt.get("1.0", "end"))
-            _show_fetch_options_dialog(dlg, url, headers)
+            _show_fetch_options_dialog(dlg, url, headers, search_path=path)
 
         ttk.Button(drw_search_lf, text="🔄 Fetch Drawing Options",
                    command=_do_fetch_options).pack(anchor="w")
@@ -4306,6 +4338,7 @@ class RedLineApp(tk.Tk):
         def _save():
             self.app_config.update({k: v.get().strip() for k, v in cfg_vars.items()})
             self.app_config["request_headers"] = headers_txt.get("1.0", "end").strip()
+            self.app_config["engineering_request_headers"] = eng_headers_txt.get("1.0", "end").strip()
             self._save_app_config()
             dlg.destroy()
 
@@ -4667,7 +4700,13 @@ class RedLineApp(tk.Tk):
         )
 
     def _build_engineering_headers(self):
-        """Return extra HTTP headers for engineering downloads (from master auth)."""
+        """Return extra HTTP headers for engineering downloads.
+
+        Uses engineering_request_headers if set; falls back to the master headers.
+        """
+        eng_raw = self.app_config.get("engineering_request_headers", "").strip()
+        if eng_raw:
+            return _parse_request_headers_raw(eng_raw)
         return self._parse_request_headers()
 
     # ── Print helpers ─────────────────────────────────────────────
