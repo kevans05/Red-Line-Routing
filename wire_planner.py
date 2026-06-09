@@ -2236,12 +2236,16 @@ class DrawingSearchDialog(tk.Toplevel):
         base_url = self.app_config.get("drawing_search_url", "").strip()
         if not base_url:
             return None
-        path = self.app_config.get("drawing_search_path", "").strip() or None
-        cookies = _parse_cookies_from_headers(
-            self.app_config.get("request_headers", ""))
-        cache = DrawingSearchCache() if _DRAWING_SEARCH_AVAILABLE else None
+        path    = self.app_config.get("drawing_search_path", "").strip() or None
+        raw_hdrs = self.app_config.get("request_headers", "")
+        cookies  = _parse_cookies_from_headers(raw_hdrs)
+        # Pass non-Cookie headers (e.g. Authorization) as extra_headers so the
+        # POST request sends them too — form_fetcher already does this via extra_headers.
+        extra = _parse_request_headers_raw(raw_hdrs)
+        extra.pop("Cookie", None)
+        cache   = DrawingSearchCache() if _DRAWING_SEARCH_AVAILABLE else None
         return DrawingSearchClient(base_url=base_url, cookies=cookies, cache=cache,
-                                   search_path=path)
+                                   search_path=path, extra_headers=extra or None)
 
     def _get_params(self, page=0):
         # Parse code from "CODE — Label" or raw code
@@ -2328,6 +2332,27 @@ class DrawingSearchDialog(tk.Toplevel):
 # ──────────────────────────────────────────────────────────────────
 # Drawing-options fetch helpers  (used by both settings dialogs)
 # ──────────────────────────────────────────────────────────────────
+
+class _StickyRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Re-attach auth headers when urllib follows a redirect.
+
+    Python's urllib strips Cookie/Authorization on cross-domain redirects
+    (security default).  Corporate SSO systems (e.g. SharePoint) redirect
+    to a different host to authenticate, so we need to carry the headers.
+    Host, Content-Length and Content-Type are intentionally excluded.
+    """
+    _SKIP = {"host", "content-length", "content-type"}
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        new_req = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if new_req is None:
+            return None
+        all_hdrs = {**req.headers, **req.unredirected_hdrs}
+        for k, v in all_hdrs.items():
+            if k.lower() not in self._SKIP:
+                new_req.add_unredirected_header(k, v)
+        return new_req
+
 
 def _parse_request_headers_raw(raw_headers: str) -> dict:
     """Parse a raw 'Header-Name: value' block into a dict (module-level helper)."""
@@ -4139,14 +4164,16 @@ class RedLineApp(tk.Tk):
                             "AppleWebKit/537.36 (KHTML, like Gecko) "
                             "Chrome/148.0.0.0 Safari/537.36 Edg/148.0.0.0"
                         ),
-                        "Accept":   "*/*",
-                        "Referer":  f"{_p.scheme}://{_p.netloc}",
+                        "Accept":  "*/*",
+                        "Referer": f"{_p.scheme}://{_p.netloc}",
                         **self._parse_request_headers(),
                     }
                     if extra_headers:
                         hdrs.update(extra_headers)
                     req = urllib.request.Request(url, headers=hdrs)
-                    with urllib.request.urlopen(req, timeout=30) as resp:
+                    # Preserve auth headers across redirects (e.g. SharePoint SSO)
+                    _opener = urllib.request.build_opener(_StickyRedirectHandler())
+                    with _opener.open(req, timeout=30) as resp:
                         data = resp.read()
                     archived = _archive_existing(sub_dir, name) if organize else 0
                     with open(dest, "wb") as fh:
@@ -4161,7 +4188,7 @@ class RedLineApp(tk.Tk):
                     if exc.code == 401:
                         msg += "\n  → Tip: add a Cookie or Authorization header in File → Software Settings"
                     elif exc.code == 403:
-                        msg += "\n  → Tip: server recognized your credentials but denied access — verify the Cookie value is current and matches this server (File → Software Settings)"
+                        msg += "\n  → Tip: server recognised the request but denied access — confirm the Cookie is current and correct for this server (File → Software Settings → Engineering Standards Headers)"
                     q.put(("log", msg, "err"))
                 except urllib.error.URLError as exc:
                     q.put(("log",
@@ -4714,7 +4741,7 @@ class RedLineApp(tk.Tk):
     def _build_engineering_headers(self):
         """Return extra HTTP headers for engineering downloads.
 
-        Uses engineering_request_headers if set; falls back to the master headers.
+        Uses engineering_request_headers if set; falls back to master headers.
         """
         eng_raw = self.app_config.get("engineering_request_headers", "").strip()
         if eng_raw:
