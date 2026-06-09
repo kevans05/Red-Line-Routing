@@ -2208,7 +2208,9 @@ class DrawingSearchDialog(tk.Toplevel):
         # ── Status / pagination bar ───────────────────────────────────
         status_bar = ttk.Frame(self); status_bar.pack(fill="x", padx=10, pady=(0, 2))
         self._status_var = tk.StringVar(value="Enter search criteria and click Search.")
-        ttk.Label(status_bar, textvariable=self._status_var, foreground="grey").pack(side="left")
+        self._status_lbl = tk.Label(status_bar, textvariable=self._status_var,
+                                    fg="grey", bg=self.cget("bg"), font=("", 9))
+        self._status_lbl.pack(side="left")
 
         pag_frame = ttk.Frame(status_bar); pag_frame.pack(side="right")
         self._prev_btn = ttk.Button(pag_frame, text="◄ Prev",
@@ -2263,7 +2265,7 @@ class DrawingSearchDialog(tk.Toplevel):
             title=self._v_title.get().strip(),
             serial_from=self._v_serial_from.get().strip(),
             serial_to=self._v_serial_to.get().strip(),
-            facility=self._v_facility.get().strip(),
+            facility=_code(self._v_facility.get()),
             drawing_type=_code(self._v_type.get()),
             drawing_subject=_code(self._v_subject.get()),
             state=self._v_state.get().strip(),
@@ -2308,15 +2310,17 @@ class DrawingSearchDialog(tk.Toplevel):
         self._prev_btn.configure(state="normal" if paged.page > 0 else "disabled")
         self._next_btn.configure(state="normal" if paged.has_next else "disabled")
         self._search_btn.configure(state="normal")
+        self._show_response_btn.configure(state="normal")
         if count == 0:
-            self._status_var.set("0 results — auth issue or no matches (click 'Show Response' to inspect)")
-            self._show_response_btn.configure(state="normal")
+            self._status_var.set("0 results — possible auth issue. Click 'Show Response' to inspect the server reply.")
+            self._status_lbl.configure(fg="#c0392b")
         else:
             self._status_var.set(f"{count} result(s)   Page {paged.page + 1}")
-            self._show_response_btn.configure(state="normal")
+            self._status_lbl.configure(fg="grey")
 
     def _on_error(self, exc):
         self._status_var.set(f"Error: {exc}")
+        self._status_lbl.configure(fg="#c0392b")
         self._search_btn.configure(state="normal")
         self._show_response_btn.configure(state="normal")
         url = ""
