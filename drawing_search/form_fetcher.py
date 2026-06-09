@@ -81,6 +81,7 @@ def fetch_form_options(
     timeout: int = 30,
     user_agent: str = _DEFAULT_UA,
     extra_headers: Optional[dict[str, str]] = None,
+    form_path: Optional[str] = None,
 ) -> dict[str, dict[str, str]]:
     """GET the search form page and return parsed dropdown options.
 
@@ -91,9 +92,12 @@ def fetch_form_options(
     so callers can pass the full set of request headers (including Cookie)
     without going through the cookies dict.
 
+    ``form_path`` overrides the default ``_FORM_PATH`` (``/search/searchGT.html``).
+    Set it to the actual path on your server if the default does not apply.
+
     Raises ``urllib.error.URLError`` / ``urllib.error.HTTPError`` on failure.
     """
-    url = base_url.rstrip("/") + _FORM_PATH
+    url = base_url.rstrip("/") + (form_path if form_path is not None else _FORM_PATH)
     cookie_h = "; ".join(f"{k}={v}" for k, v in (cookies or {}).items())
 
     headers = {

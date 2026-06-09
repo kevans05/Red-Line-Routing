@@ -2236,10 +2236,12 @@ class DrawingSearchDialog(tk.Toplevel):
         base_url = self.app_config.get("drawing_search_url", "").strip()
         if not base_url:
             return None
+        path = self.app_config.get("drawing_search_path", "").strip() or None
         cookies = _parse_cookies_from_headers(
             self.app_config.get("request_headers", ""))
         cache = DrawingSearchCache() if _DRAWING_SEARCH_AVAILABLE else None
-        return DrawingSearchClient(base_url=base_url, cookies=cookies, cache=cache)
+        return DrawingSearchClient(base_url=base_url, cookies=cookies, cache=cache,
+                                   search_path=path)
 
     def _get_params(self, page=0):
         # Parse code from "CODE — Label" or raw code
@@ -2360,7 +2362,7 @@ def _parse_cookies_from_headers(raw_headers: str) -> dict:
     return cookies
 
 
-def _show_fetch_options_dialog(parent, url: str, headers: dict) -> None:
+def _show_fetch_options_dialog(parent, url: str, headers: dict, search_path: str = None) -> None:
     """Open a pop-out dialog that fetches and displays drawing form options."""
     if not _DRAWING_SEARCH_AVAILABLE:
         messagebox.showerror("Unavailable",
@@ -2409,7 +2411,7 @@ def _show_fetch_options_dialog(parent, url: str, headers: dict) -> None:
     def _run():
         dlg.after(0, lambda: _log(f"Connecting to {url} …\n", "head"))
         try:
-            opts = fetch_form_options(url, extra_headers=headers)
+            opts = fetch_form_options(url, extra_headers=headers, form_path=search_path)
 
             fac   = opts.get("facilities",       {})
             typs  = opts.get("drawing_types",    {})
@@ -2475,8 +2477,9 @@ class SoftwareSetupDialog(tk.Toplevel):
                  bg="white", justify="left", fg="#566573", font=("", 9)).pack(anchor="w", pady=(0, 14))
 
         sections = [
-            ("Drawings",       [("base_drawing_url",   "Base Drawing URL"),
-                                 ("drawing_search_url", "Drawing Search URL")]),
+            ("Drawings",       [("base_drawing_url",    "Base Drawing URL"),
+                                 ("drawing_search_url",  "Drawing Search URL"),
+                                 ("drawing_search_path", "Drawing Search Path")]),
             ("Aspen",          [("aspen_url",           "Aspen URL (future)")]),
             ("CROWs",          [("base_crow_url",       "Base CROW URL")]),
             ("Relay Settings", [("base_relay_url",      "Base Relay URL")]),
@@ -2572,10 +2575,11 @@ class SoftwareSetupDialog(tk.Toplevel):
                   if e.widget is self else None)
 
     def _fetch_drawing_options(self):
-        url = self._cfg_vars.get("drawing_search_url", tk.StringVar()).get().strip()
-        raw = self._headers_txt.get("1.0", "end") if self._headers_txt else ""
+        url  = self._cfg_vars.get("drawing_search_url", tk.StringVar()).get().strip()
+        path = self._cfg_vars.get("drawing_search_path", tk.StringVar()).get().strip() or None
+        raw  = self._headers_txt.get("1.0", "end") if self._headers_txt else ""
         headers = _parse_request_headers_raw(raw)
-        _show_fetch_options_dialog(self, url, headers)
+        _show_fetch_options_dialog(self, url, headers, search_path=path)
 
     def _skip(self):
         self.result = {}; self.destroy()
@@ -4232,8 +4236,9 @@ class RedLineApp(tk.Tk):
 
         sections = [
             ("Drawings", [
-                ("base_drawing_url",  "Base Drawing URL:",  "Used to pre-fill URLs when adding drawings"),
-                ("drawing_search_url","Drawing Search URL:","Base URL for the corporate drawing search"),
+                ("base_drawing_url",    "Base Drawing URL:",    "Used to pre-fill URLs when adding drawings"),
+                ("drawing_search_url",  "Drawing Search URL:",  "Base URL for the corporate drawing search server"),
+                ("drawing_search_path", "Drawing Search Path:", "Path appended to base URL for the search form (default: /search/searchGT.html)"),
             ]),
             ("Aspen", [
                 ("aspen_url",         "Aspen URL:",         "Base URL for Aspen (future use)"),
@@ -4294,8 +4299,9 @@ class RedLineApp(tk.Tk):
 
         def _do_fetch_options():
             url  = cfg_vars.get("drawing_search_url", tk.StringVar()).get().strip()
+            path = cfg_vars.get("drawing_search_path", tk.StringVar()).get().strip() or None
             headers = _parse_request_headers_raw(headers_txt.get("1.0", "end"))
-            _show_fetch_options_dialog(dlg, url, headers)
+            _show_fetch_options_dialog(dlg, url, headers, search_path=path)
 
         ttk.Button(drw_search_lf, text="🔄 Fetch Drawing Options",
                    command=_do_fetch_options).pack(anchor="w")
