@@ -55,11 +55,12 @@ class DrawingSearchClient:
             else:
                 self.base_url    = _base
                 self.search_path = _SEARCH_PATH
-        self.cookies       = cookies or {}
-        self.timeout       = timeout
-        self.user_agent    = user_agent
-        self.cache         = cache  # DrawingSearchCache | None
-        self.extra_headers = dict(extra_headers) if extra_headers else {}
+        self.cookies            = cookies or {}
+        self.timeout            = timeout
+        self.user_agent         = user_agent
+        self.cache              = cache  # DrawingSearchCache | None
+        self.extra_headers      = dict(extra_headers) if extra_headers else {}
+        self._last_response_html = ""   # stored for caller diagnostics
 
     # ── public API ────────────────────────────────────────────────
 
@@ -156,12 +157,15 @@ class DrawingSearchClient:
         try:
             with urllib.request.urlopen(req, timeout=self.timeout) as resp:
                 charset = _charset_from_headers(resp.headers)
-                return resp.read().decode(charset, errors="replace")
+                html = resp.read().decode(charset, errors="replace")
+            self._last_response_html = html
+            return html
         except urllib.error.HTTPError as exc:
             try:
                 exc._response_body = exc.read().decode("utf-8", errors="replace")
             except Exception:
                 exc._response_body = ""
+            self._last_response_html = exc._response_body
             raise
 
 

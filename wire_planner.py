@@ -2227,6 +2227,9 @@ class DrawingSearchDialog(tk.Toplevel):
         ttk.Button(bf, text="Cancel", command=self.destroy).pack(side="right", padx=4)
         self._import_btn = ttk.Button(bf, text="Import Selected", command=self._import)
         self._import_btn.pack(side="right", padx=4)
+        self._show_response_btn = ttk.Button(bf, text="Show Response",
+                                             command=self._show_last_response, state="disabled")
+        self._show_response_btn.pack(side="left", padx=4)
 
     def _clear_form(self):
         for v in (self._v_drawing_num, self._v_title, self._v_serial_from,
@@ -2292,7 +2295,7 @@ class DrawingSearchDialog(tk.Toplevel):
 
     def _on_results(self, paged):
         self._last_paged = paged
-        self._from_cache = False  # cache indicator is approximate via status
+        self._from_cache = False
         for iid in self.tree.get_children():
             self.tree.delete(iid)
         for r in paged.results:
@@ -2301,19 +2304,52 @@ class DrawingSearchDialog(tk.Toplevel):
                 r.drawing_type, r.drawing_subject, r.revision, r.state,
             ), tags=(r.document_url,))
         count = paged.total_count if paged.total_count else len(paged.results)
-        self._status_var.set(f"{count} result(s)   Page {paged.page + 1}")
         self._page_lbl.configure(text=f"Page {paged.page + 1}")
         self._prev_btn.configure(state="normal" if paged.page > 0 else "disabled")
         self._next_btn.configure(state="normal" if paged.has_next else "disabled")
         self._search_btn.configure(state="normal")
+        if count == 0:
+            self._status_var.set("0 results — auth issue or no matches (click 'Show Response' to inspect)")
+            self._show_response_btn.configure(state="normal")
+        else:
+            self._status_var.set(f"{count} result(s)   Page {paged.page + 1}")
+            self._show_response_btn.configure(state="normal")
 
     def _on_error(self, exc):
         self._status_var.set(f"Error: {exc}")
         self._search_btn.configure(state="normal")
+        self._show_response_btn.configure(state="normal")
         url = ""
         if self._client:
             url = self._client.base_url + self._client.search_path
         _show_search_error_dialog(self, exc, url=url, context="Drawing search request failed.")
+
+    def _show_last_response(self):
+        """Show the raw server response from the last search — useful for diagnosing auth issues."""
+        html = getattr(self._client, "_last_response_html", "") if self._client else ""
+        win = tk.Toplevel(self)
+        win.title("Raw Server Response")
+        win.resizable(True, True)
+        hdr = tk.Frame(win, bg="#1c3a5a"); hdr.pack(fill="x")
+        tk.Label(hdr, text="Raw Server Response", bg="#1c3a5a", fg="white",
+                 font=("", 10, "bold"), padx=12, pady=7).pack(side="left")
+        f = ttk.Frame(win, padding=10); f.pack(fill="both", expand=True)
+        ttk.Label(f, text="This is what the server returned. If it looks like a login page your "
+                           "Cookie has expired or is for the wrong server.",
+                  foreground="grey", font=("", 8), wraplength=560).pack(anchor="w", pady=(0, 6))
+        txt = scrolledtext.ScrolledText(f, height=22, font=("Courier", 8), wrap="word")
+        txt.pack(fill="both", expand=True)
+        if html:
+            plain = re.sub(r"<[^>]+>", " ", html)
+            plain = re.sub(r"\s+", " ", plain).strip()
+            txt.insert("1.0", plain[:8000])
+        else:
+            txt.insert("1.0", "No response stored yet — run a search first, then click this button.")
+        txt.configure(state="disabled")
+        bf = ttk.Frame(win, padding=(10, 0, 10, 8)); bf.pack(fill="x")
+        ttk.Button(bf, text="Close", command=win.destroy).pack(side="right")
+        win.geometry("620x460")
+        _center_window(win)
 
     def _import(self):
         if self._last_paged is None:
@@ -2360,35 +2396,130 @@ class _StickyRedirectHandler(urllib.request.HTTPRedirectHandler):
         return new_req
 
 
-def _bind_filter_combobox(combo: ttk.Combobox, all_choices: list) -> None:
-    """Bind case-insensitive substring filtering to a ttk.Combobox.
+class _ComboFilterHelper:
+    """Floating autocomplete popup for a ttk.Combobox that keeps focus in the entry.
 
-    As the user types, the dropdown narrows to entries containing the typed
-    text anywhere in the string.  On focus-out the full list is restored.
+    A frameless Toplevel listbox appears below the combobox as the user types,
+    filtered to entries containing the typed text anywhere (case-insensitive).
+    Focus stays in the entry widget so typing is uninterrupted.
+    ↓ moves focus into the popup; click or Enter selects; Escape closes.
     """
+
     _NAV = frozenset({
-        "Return", "Escape", "Tab", "Up", "Down", "Prior", "Next",
-        "Left", "Right", "Home", "End",
-        "Shift_L", "Shift_R", "Control_L", "Control_R", "Alt_L", "Alt_R",
+        "Shift_L", "Shift_R", "Control_L", "Control_R",
+        "Alt_L", "Alt_R", "Win_L", "Win_R",
     })
 
-    def _do_filter():
-        typed = combo.get().lower().strip()
-        combo["values"] = (
-            [c for c in all_choices if typed in c.lower()] or all_choices
-            if typed else all_choices
-        )
+    def __init__(self, combo: ttk.Combobox, all_choices: list):
+        self.combo       = combo
+        self.all_choices = all_choices
+        self._popup: tk.Toplevel | None = None
+        self._lb:    tk.Listbox  | None = None
 
-    def _on_key(event):
-        if event.keysym not in _NAV:
-            combo.after_idle(_do_filter)
+        combo.configure(state="normal")
+        combo.bind("<KeyRelease>",  self._on_key)
+        combo.bind("<FocusOut>",    self._on_focus_out)
+        combo.bind("<Down>",        self._on_down)
+        combo.bind("<Escape>",      lambda _e: self._hide())
+        combo.bind("<Destroy>",     lambda _e: self._destroy())
 
-    def _on_focus_out(_event):
-        combo.after_idle(lambda: combo.configure(values=all_choices))
+    # ── popup lifecycle ───────────────────────────────────────────
 
-    combo.configure(state="normal")
-    combo.bind("<KeyRelease>", _on_key)
-    combo.bind("<FocusOut>", _on_focus_out)
+    def _build(self):
+        p = tk.Toplevel(self.combo)
+        p.wm_overrideredirect(True)
+        p.wm_attributes("-topmost", True)
+        outer = tk.Frame(p, bd=1, relief="solid", bg="#888888")
+        outer.pack(fill="both", expand=True)
+        vsb = tk.Scrollbar(outer, orient="vertical")
+        lb  = tk.Listbox(outer, yscrollcommand=vsb.set, height=8,
+                         font=("", 9), activestyle="dotbox",
+                         selectmode="single", bd=0, highlightthickness=0)
+        vsb.configure(command=lb.yview)
+        lb.pack(side="left", fill="both", expand=True)
+        vsb.pack(side="right", fill="y")
+        lb.bind("<ButtonRelease-1>", lambda _e: self._select())
+        lb.bind("<Return>",          lambda _e: self._select())
+        lb.bind("<Escape>",          lambda _e: (self._hide(),
+                                                  self.combo.focus_set()))
+        lb.bind("<FocusOut>",        self._on_lb_focus_out)
+        p.withdraw()
+        self._popup, self._lb = p, lb
+
+    def _show(self, choices):
+        if self._popup is None:
+            self._build()
+        self._lb.delete(0, "end")
+        for c in choices[:100]:
+            self._lb.insert("end", c)
+        n = min(len(choices), 8)
+        self._lb.configure(height=n)
+        x = self.combo.winfo_rootx()
+        y = self.combo.winfo_rooty() + self.combo.winfo_height()
+        w = max(self.combo.winfo_width(), 180)
+        self._popup.geometry(f"{w}x{n * 20 + 6}+{x}+{y}")
+        self._popup.deiconify()
+        self._popup.lift()
+
+    def _hide(self):
+        if self._popup:
+            self._popup.withdraw()
+
+    def _destroy(self):
+        if self._popup:
+            self._popup.destroy()
+            self._popup = self._lb = None
+
+    # ── entry key handlers ────────────────────────────────────────
+
+    def _on_key(self, event):
+        if event.keysym not in self._NAV:
+            self.combo.after_idle(self._do_filter)
+
+    def _do_filter(self):
+        typed = self.combo.get().lower().strip()
+        if not typed:
+            self._hide()
+            return
+        filtered = [c for c in self.all_choices if typed in c.lower()]
+        if filtered:
+            self._show(filtered)
+        else:
+            self._hide()
+
+    def _on_down(self, event):
+        if self._popup and self._popup.winfo_viewable() and self._lb:
+            self._lb.focus_set()
+            if not self._lb.curselection():
+                self._lb.selection_set(0)
+            self._lb.activate(0)
+            return "break"
+
+    def _on_focus_out(self, event):
+        self.combo.after(200, self._maybe_hide)
+
+    def _on_lb_focus_out(self, event):
+        self.combo.after(200, self._maybe_hide)
+
+    def _maybe_hide(self):
+        try:
+            if self.combo.focus_get() is not self._lb:
+                self._hide()
+        except Exception:
+            self._hide()
+
+    # ── selection ─────────────────────────────────────────────────
+
+    def _select(self):
+        if self._lb and self._lb.curselection():
+            self.combo.set(self._lb.get(self._lb.curselection()[0]))
+        self._hide()
+        self.combo.focus_set()
+
+
+def _bind_filter_combobox(combo: ttk.Combobox, all_choices: list) -> None:
+    """Attach a floating autocomplete popup to a ttk.Combobox (no focus stealing)."""
+    _ComboFilterHelper(combo, all_choices)
 
 
 def _show_search_error_dialog(parent, exc: Exception, url: str = "", context: str = "") -> None:
@@ -2526,7 +2657,14 @@ def _show_fetch_options_dialog(parent, url: str, headers: dict, search_path: str
         log.configure(state="disabled")
 
     def _run():
-        dlg.after(0, lambda: _log(f"Connecting to {url} …\n", "head"))
+        _pb = urllib.parse.urlparse(url.rstrip("/"))
+        if search_path:
+            _actual = url.rstrip("/") + search_path
+        elif _pb.path and _pb.path not in ("", "/"):
+            _actual = url
+        else:
+            _actual = url.rstrip("/") + "/search/searchGT.html"
+        dlg.after(0, lambda a=_actual: _log(f"Connecting to {a} …\n", "head"))
         try:
             opts = fetch_form_options(url, extra_headers=headers, form_path=search_path)
 
@@ -2569,7 +2707,7 @@ def _show_fetch_options_dialog(parent, url: str, headers: dict, search_path: str
                     body_info = f"\n  Server: {_b}"
             except Exception:
                 pass
-            dlg.after(0, lambda bi=body_info: _log(f"\n✗  Error: {exc}{bi}\n", "err"))
+            dlg.after(0, lambda e=exc, bi=body_info: _log(f"\n✗  Error: {e}{bi}\n", "err"))
         finally:
             dlg.after(0, lambda: close_btn.configure(state="normal"))
 
