@@ -90,7 +90,10 @@ from ._utils import read_hex_string_from_stream, read_string_from_stream
 if sys.version_info >= (3, 11):
     from typing import Self
 else:
-    from typing_extensions import Self
+    try:
+        from typing_extensions import Self
+    except ImportError:
+        from typing import Any as Self  # type: ignore[assignment]
 
 logger = logging.getLogger(__name__)
 

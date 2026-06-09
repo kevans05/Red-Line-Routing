@@ -37,12 +37,18 @@ from typing import Any, Callable, ClassVar, Optional, Union, cast
 if sys.version_info[:2] >= (3, 10):
     from typing import TypeGuard
 else:
-    from typing_extensions import TypeGuard  # PEP 647
+    try:
+        from typing_extensions import TypeGuard  # PEP 647
+    except ImportError:
+        from typing import Any as TypeGuard  # type: ignore[assignment]
 
 if sys.version_info >= (3, 11):
     from typing import Self
 else:
-    from typing_extensions import Self
+    try:
+        from typing_extensions import Self
+    except ImportError:
+        from typing import Any as Self  # type: ignore[assignment]
 
 from .._codecs import _pdfdoc_encoding_rev
 from .._protocols import PdfObjectProtocol, PdfWriterProtocol

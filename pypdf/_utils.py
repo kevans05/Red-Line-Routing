@@ -51,12 +51,18 @@ if sys.version_info[:2] >= (3, 10):
     # Python 3.10+: https://www.python.org/dev/peps/pep-0484/
     from typing import TypeAlias
 else:
-    from typing_extensions import TypeAlias
+    try:
+        from typing_extensions import TypeAlias
+    except ImportError:
+        from typing import Any as TypeAlias  # type: ignore[assignment]
 
 if sys.version_info >= (3, 11):
     from typing import Self
 else:
-    from typing_extensions import Self
+    try:
+        from typing_extensions import Self
+    except ImportError:
+        from typing import Any as Self  # type: ignore[assignment]
 
 from .errors import (
     STREAM_TRUNCATED_PREMATURELY,

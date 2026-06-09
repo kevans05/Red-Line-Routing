@@ -21,7 +21,10 @@ from ..generic import (
 if sys.version_info[:2] >= (3, 10):
     from typing import TypeAlias
 else:
-    from typing_extensions import TypeAlias
+    try:
+        from typing_extensions import TypeAlias
+    except ImportError:
+        from typing import Any as TypeAlias  # type: ignore[assignment]
 
 
 try:
