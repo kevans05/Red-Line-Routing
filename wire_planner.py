@@ -4132,7 +4132,17 @@ class RedLineApp(tk.Tk):
                 q.put(("progress", i, name, dest))
 
                 try:
-                    hdrs = {"User-Agent": "RedLineRouting/1.0", **self._parse_request_headers()}
+                    _p = urllib.parse.urlparse(url)
+                    hdrs = {
+                        "User-Agent": (
+                            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                            "AppleWebKit/537.36 (KHTML, like Gecko) "
+                            "Chrome/148.0.0.0 Safari/537.36 Edg/148.0.0.0"
+                        ),
+                        "Accept":   "*/*",
+                        "Referer":  f"{_p.scheme}://{_p.netloc}",
+                        **self._parse_request_headers(),
+                    }
                     if extra_headers:
                         hdrs.update(extra_headers)
                     req = urllib.request.Request(url, headers=hdrs)
@@ -4148,8 +4158,10 @@ class RedLineApp(tk.Tk):
                     ok += 1
                 except urllib.error.HTTPError as exc:
                     msg = f"✗  {name}: HTTP {exc.code} {exc.reason}  [{url}]"
-                    if exc.code in (401, 403):
+                    if exc.code == 401:
                         msg += "\n  → Tip: add a Cookie or Authorization header in File → Software Settings"
+                    elif exc.code == 403:
+                        msg += "\n  → Tip: server recognized your credentials but denied access — verify the Cookie value is current and matches this server (File → Software Settings)"
                     q.put(("log", msg, "err"))
                 except urllib.error.URLError as exc:
                     q.put(("log",
