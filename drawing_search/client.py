@@ -41,6 +41,7 @@ class DrawingSearchClient:
         ),
         cache=None,
         search_path: Optional[str] = None,
+        extra_headers: Optional[dict] = None,
     ):
         _base = base_url.rstrip("/")
         if search_path is not None:
@@ -54,10 +55,11 @@ class DrawingSearchClient:
             else:
                 self.base_url    = _base
                 self.search_path = _SEARCH_PATH
-        self.cookies     = cookies or {}
-        self.timeout     = timeout
-        self.user_agent  = user_agent
-        self.cache       = cache  # DrawingSearchCache | None
+        self.cookies       = cookies or {}
+        self.timeout       = timeout
+        self.user_agent    = user_agent
+        self.cache         = cache  # DrawingSearchCache | None
+        self.extra_headers = dict(extra_headers) if extra_headers else {}
 
     # ── public API ────────────────────────────────────────────────
 
@@ -147,6 +149,7 @@ class DrawingSearchClient:
                 "Referer":       self.base_url + self.search_path,
                 "User-Agent":    self.user_agent,
                 **({"Cookie": cookie_h} if cookie_h else {}),
+                **self.extra_headers,  # caller-supplied headers override defaults
             },
         )
 
