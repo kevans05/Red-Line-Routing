@@ -184,26 +184,12 @@ def _get_prot_drawings(prot):
 
 def _bind_search_combobox(combo, get_values_fn):
     """Attach live search filtering to a ttk.Combobox.
-    Filters values containing the typed text and opens the dropdown."""
-    def _do_filter():
-        typed = combo.get()
-        all_vals = get_values_fn()
-        if typed.strip():
-            lo = typed.lower()
-            filtered = [v for v in all_vals if lo in v.lower()]
-        else:
-            filtered = all_vals
-        combo["values"] = filtered
-        if filtered and typed.strip():
-            try:
-                combo.tk.call("ttk::combobox::Post", str(combo))
-            except tk.TclError:
-                pass
-    def _on_key(event):
-        if event.keysym in ("Return","Tab","Escape","Up","Down","Left","Right","Home","End"):
-            return
-        combo.after(1, _do_filter)
-    combo.bind("<KeyRelease>", _on_key)
+
+    Uses the same non-focus-stealing custom popup as _ComboFilterHelper so
+    that typing does not dismiss the suggestion list on each keystroke.
+    get_values_fn is a zero-argument callable returning the current candidate list.
+    """
+    _ComboFilterHelper(combo, get_values_fn)
 
 
 def _bind_url_open(entry_widget, url_var):
@@ -4234,6 +4220,9 @@ class _ComboFilterHelper:
     filtered to entries containing the typed text anywhere (case-insensitive).
     Focus stays in the entry widget so typing is uninterrupted.
     ↓ moves focus into the popup; click or Enter selects; Escape closes.
+
+    all_choices may be a plain list or a zero-argument callable that returns
+    a list (used when the candidate values change dynamically).
     """
 
     _NAV = frozenset({
@@ -4241,9 +4230,9 @@ class _ComboFilterHelper:
         "Alt_L", "Alt_R", "Win_L", "Win_R",
     })
 
-    def __init__(self, combo: ttk.Combobox, all_choices: list):
-        self.combo       = combo
-        self.all_choices = all_choices
+    def __init__(self, combo: ttk.Combobox, all_choices):
+        self.combo        = combo
+        self._get_choices = all_choices if callable(all_choices) else (lambda: all_choices)
         self._popup: tk.Toplevel | None = None
         self._lb:    tk.Listbox  | None = None
 
@@ -4312,7 +4301,7 @@ class _ComboFilterHelper:
         if not typed:
             self._hide()
             return
-        filtered = [c for c in self.all_choices if typed in c.lower()]
+        filtered = [c for c in self._get_choices() if typed in c.lower()]
         if filtered:
             self._show(filtered)
         else:
