@@ -67,7 +67,7 @@ self.history                        # {device/location/pin/panel/wire: [str, …
 self.drawing_search_cache           # per-project drawing search result cache
 ```
 
-Global (not per-project) settings live in `~/.redlinerouting.json` and are loaded into `self.app_config`.
+Global (not per-project) settings live in `~/.redlinerouting.json` and are loaded into `self.app_config`. That file also holds the **cross-project standards library** (`app_config["standards_library"]["maintenance"|"engineering"]`): `_remember_standard()` captures entries as they're added/edited, `_remember_all_standards()` sweeps both registries on project open/save, and `StandardsLibraryDialog` ("📚 From Library" buttons) adds remembered standards to the current project.
 
 Job types: `REMOVE`, `ADD`, `MOVE`, `BLOCK`, `UNBLOCK`, `TESTING`.  
 `BLOCK`/`UNBLOCK` carry a `protection` sub-dict; `MOVE` carries both `start/end` and `add_start/add_end` endpoint pairs.

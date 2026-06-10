@@ -59,6 +59,10 @@ Open an existing project with **File → Open** and browse to the `.redline` fil
 | **Relay Settings** | Per-device relay records (Device ID, revision, engineer, contact, URL, Aspen model). Ctrl-click to open URL. |
 | **Maintenance Standards** | Maintenance standard registry with telecom/transmission URLs and downloads. |
 | **Engineering Standards** | Engineering standard registry with downloads. |
+
+### Standards library
+
+Every maintenance or engineering standard you add to any project is remembered globally (in `~/.redlinerouting.json`). In a new project, click **📚 From Library** on either standards tab to multi-select remembered standards and add them in one click — no re-typing. Standards from older projects are picked up automatically when you open them.
 | **CROW** | Outage records (number + URL + attached documents) and project-level notes. |
 
 ## Job types

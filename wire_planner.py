@@ -1955,6 +1955,42 @@ def _ptrunc(text, max_pts, size, bold=False):
     return (text[:lo] + '...') if lo > 0 else ''
 
 
+def _pwrap(text, max_pts, size, bold=False, max_lines=10):
+    """Word-wrap text to fit max_pts wide; returns a list of lines.
+
+    Overly long single words are hard-broken; output is capped at
+    max_lines with an ellipsis on the final line.
+    """
+    text = " ".join(str(text).split())
+    if not text:
+        return [""]
+    lines, cur = [], ""
+    for word in text.split(" "):
+        test = (cur + " " + word) if cur else word
+        if _ptw(test, size, bold) <= max_pts:
+            cur = test
+            continue
+        if cur:
+            lines.append(cur)
+        while _ptw(word, size, bold) > max_pts and len(word) > 1:
+            lo, hi = 1, len(word)
+            while lo < hi - 1:
+                mid = (lo + hi) // 2
+                if _ptw(word[:mid], size, bold) <= max_pts:
+                    lo = mid
+                else:
+                    hi = mid
+            lines.append(word[:lo])
+            word = word[lo:]
+        cur = word
+    if cur:
+        lines.append(cur)
+    if len(lines) > max_lines:
+        lines = lines[:max_lines]
+        lines[-1] = _ptrunc(lines[-1] + "...", max_pts, size, bold)
+    return lines or [""]
+
+
 def _penc(text):
     """Encode a string for a PDF string literal (WinAnsi, octal for non-ASCII)."""
     out = []
@@ -2265,8 +2301,19 @@ def _pdf_section_table(bld, title, col_specs, rows_iter, size="Letter Portrait")
 
     new_pg()
 
+    LH = 10.0   # line height for 8pt wrapped text
+    PAD = 3.5   # top/bottom cell padding
+
     for row_key, cells in rows_iter:
-        if state["y"] + ROW_H > ph - margin:
+        # Wrap every cell, row height fits the tallest one
+        wrapped = []
+        for ci, (val, cwidth) in enumerate(zip(cells, col_widths)):
+            bold = (ci == 0 and not row_key)
+            wrapped.append(_pwrap(val, cwidth - 6, 8, bold=bold))
+        n_lines = max(len(w) for w in wrapped) if wrapped else 1
+        rh = max(ROW_H, n_lines * LH + 2 * PAD)
+
+        if state["y"] + rh > ph - margin:
             new_pg(cont=True)
         p = state["p"]; y = state["y"]; ri = state["ri"]
 
@@ -2277,18 +2324,25 @@ def _pdf_section_table(bld, title, col_specs, rows_iter, size="Letter Portrait")
             bg  = _PDFPage.LIGHT if ri % 2 == 0 else _PDFPage.WHITE
             acc = None
 
-        p.frect(margin, y, cw, ROW_H, bg)
+        p.frect(margin, y, cw, rh, bg)
         if acc:
-            p.frect(margin, y, 4, ROW_H, acc)
+            p.frect(margin, y, 4, rh, acc)
 
         x = margin
-        for ci, (val, cwidth, align) in enumerate(zip(cells, col_widths, col_aligns)):
+        for ci, (lines, cwidth, align) in enumerate(zip(wrapped, col_widths, col_aligns)):
             fi = _PDFPage.FB if (ci == 0 and not row_key) else _PDFPage.FR
-            p.ctext(x, y, cwidth, ROW_H, str(val), fi=fi, sz=8, align=align)
+            for li, line in enumerate(lines):
+                if align == "center":
+                    tx = x + (cwidth - _ptw(line, 8, fi == _PDFPage.FB)) / 2
+                elif align == "right":
+                    tx = x + cwidth - _ptw(line, 8, fi == _PDFPage.FB) - 3
+                else:
+                    tx = x + 3
+                p.text(tx, y + PAD + li * LH, line, fi=fi, sz=8)
             x += cwidth
 
-        p.hline(margin, y + ROW_H, cw)
-        state["y"] += ROW_H; state["ri"] += 1
+        p.hline(margin, y + rh, cw)
+        state["y"] += rh; state["ri"] += 1
 
 
 def _pdf_work_orders(bld, jobs, drw_reg, size="11x17 Landscape"):
@@ -2338,35 +2392,48 @@ def _pdf_work_orders(bld, jobs, drw_reg, size="11x17 Landscape"):
     reg = drw_reg or {}
     seq = 1
 
+    LH = 9.0    # line height for 7pt wrapped text
+    PAD = 4.0   # top/bottom cell padding
+
     def draw_row(jkey, desc, start_s, wire, end_s):
         nonlocal seq
-        if state["y"] + ROW_H > ph - margin:
+        # Wrap the three long-text columns; row grows to fit
+        desc_lines  = _pwrap(desc,    col_ws[3] - 6, 7)
+        start_lines = _pwrap(start_s, col_ws[4] - 6, 7)
+        end_lines   = _pwrap(end_s,   col_ws[6] - 6, 7)
+        n_lines = max(len(desc_lines), len(start_lines), len(end_lines), 1)
+        rh = max(ROW_H, n_lines * LH + 2 * PAD)
+
+        if state["y"] + rh > ph - margin:
             new_pg(cont=True)
         p = state["p"]; y = state["y"]
         bg  = _PDFPage.ROW_BG.get(jkey, _PDFPage.WHITE)
         acc = _PDFPage.ROW_ACC.get(jkey, _PDFPage.RULE)
-        p.frect(margin, y, cw, ROW_H, bg)
-        p.frect(margin, y, 4, ROW_H, acc)
-        # Checkbox square
+        p.frect(margin, y, cw, rh, bg)
+        p.frect(margin, y, 4, rh, acc)
+        # Checkbox square — stays at the top of tall rows
         cbx = margin + 5; cby = y + 4
         p.srect(cbx, cby, 9, 9, color=(120,120,120), lw=0.7)
         x = margin + col_ws[0]
-        p.ctext(x, y, col_ws[1], ROW_H, str(seq), fi=_PDFPage.FB,
+        p.ctext(x, y, col_ws[1], rh, str(seq), fi=_PDFPage.FB,
                 sz=8, align="center")
         x += col_ws[1]
         lbl = _PDFPage.TYPE_LBL.get(jkey, jkey)
         col = _PDFPage.ROW_ACC.get(jkey, _PDFPage.DARK)
-        p.ctext(x, y, col_ws[2], ROW_H, lbl, fi=_PDFPage.FB, sz=8, color=col)
+        p.ctext(x, y, col_ws[2], rh, lbl, fi=_PDFPage.FB, sz=8, color=col)
         x += col_ws[2]
-        p.ctext(x, y, col_ws[3], ROW_H, desc, fi=_PDFPage.FR, sz=7)
+        for li, line in enumerate(desc_lines):
+            p.text(x + 3, y + PAD + li * LH, line, fi=_PDFPage.FR, sz=7)
         x += col_ws[3]
-        p.ctext(x, y, col_ws[4], ROW_H, start_s, fi=_PDFPage.FR, sz=7)
+        for li, line in enumerate(start_lines):
+            p.text(x + 3, y + PAD + li * LH, line, fi=_PDFPage.FR, sz=7)
         x += col_ws[4]
-        p.ctext(x, y, col_ws[5], ROW_H, wire, fi=_PDFPage.FM, sz=7, align="center")
+        p.ctext(x, y, col_ws[5], rh, wire, fi=_PDFPage.FM, sz=7, align="center")
         x += col_ws[5]
-        p.ctext(x, y, col_ws[6], ROW_H, end_s, fi=_PDFPage.FR, sz=7)
-        p.hline(margin, y+ROW_H, cw)
-        state["y"] += ROW_H; seq += 1
+        for li, line in enumerate(end_lines):
+            p.text(x + 3, y + PAD + li * LH, line, fi=_PDFPage.FR, sz=7)
+        p.hline(margin, y + rh, cw)
+        state["y"] += rh; seq += 1
 
     for job in jobs:
         jt   = job["type"]
@@ -3529,6 +3596,100 @@ class EngineeringStandardDialog(tk.Toplevel):
             messagebox.showwarning("Required", "Standard ID is required.", parent=self); return
         self.result = {k: v.get().strip() for k, v in self.vars.items() if k != "document_code"}
         self.result["notes"] = self._notes_widget.get("1.0", "end").strip()
+        self.destroy()
+
+
+class StandardsLibraryDialog(tk.Toplevel):
+    """Pick standards from the cross-project library to add to this project.
+
+    library      : {sid: info} — the global library bucket for one kind
+    existing_ids : iterable of IDs already in the project (shown greyed, not addable)
+    result       : {sid: info} of the chosen entries, or None on cancel
+    """
+
+    def __init__(self, parent, kind_label, library, existing_ids):
+        super().__init__(parent)
+        self.title(f"{kind_label} Library")
+        self.resizable(True, True)
+        self.grab_set()
+        self.result = None
+        self._library = library
+
+        ttk.Label(self, text=f"Standards remembered from previous projects."
+                             f"  Select the ones to add:",
+                  padding=(10, 8, 10, 0)).pack(anchor="w")
+
+        frame = ttk.Frame(self, padding=10); frame.pack(fill="both", expand=True)
+        cols = ("Standard ID", "Title", "Rev")
+        self._tree = ttk.Treeview(frame, columns=cols, show="headings",
+                                  selectmode="extended", height=14)
+        for c, w in zip(cols, (140, 320, 60)):
+            self._tree.heading(c, text=c)
+            self._tree.column(c, width=w, stretch=(c == "Title"))
+        vsb = ttk.Scrollbar(frame, orient="vertical", command=self._tree.yview)
+        self._tree.configure(yscrollcommand=vsb.set)
+        self._tree.pack(side="left", fill="both", expand=True)
+        vsb.pack(side="right", fill="y")
+        self._tree.tag_configure("inproj", foreground="#aaaaaa")
+
+        existing = set(existing_ids)
+        for sid, info in sorted(library.items()):
+            in_proj = sid in existing
+            self._tree.insert(
+                "", "end", iid=sid,
+                values=(sid + ("   (already in project)" if in_proj else ""),
+                        info.get("title", ""), info.get("revision", "")),
+                tags=("inproj",) if in_proj else ())
+        self._existing = existing
+
+        bf = ttk.Frame(self, padding=(10, 0, 10, 10)); bf.pack(fill="x")
+        ttk.Button(bf, text="Cancel", command=self.destroy).pack(side="right", padx=4)
+        ttk.Button(bf, text="Add Selected", command=self._add).pack(side="right")
+        ttk.Button(bf, text="Select All New",
+                   command=self._select_all_new).pack(side="left")
+        ttk.Button(bf, text="Remove from Library",
+                   command=self._remove_from_library).pack(side="left", padx=6)
+
+        self.geometry("640x420")
+        self.wait_window()
+
+    def _select_all_new(self):
+        new = [iid for iid in self._tree.get_children()
+               if iid not in self._existing]
+        self._tree.selection_set(new)
+
+    def _remove_from_library(self):
+        sel = [iid for iid in self._tree.selection()]
+        if not sel:
+            messagebox.showinfo("Select", "Select entries to remove from the library.",
+                                parent=self)
+            return
+        if not messagebox.askyesno(
+                "Remove", f"Forget {len(sel)} entr{'y' if len(sel)==1 else 'ies'} "
+                          "from the library?\n(Projects that already contain them "
+                          "are not affected.)", parent=self):
+            return
+        for iid in sel:
+            self._library.pop(iid, None)
+            self._tree.delete(iid)
+        # Persist via parent app
+        app = self.master
+        if hasattr(app, "_save_app_config"):
+            app._save_app_config()
+
+    def _add(self):
+        chosen = {}
+        for iid in self._tree.selection():
+            if iid in self._existing:
+                continue
+            if iid in self._library:
+                chosen[iid] = dict(self._library[iid])
+        if not chosen:
+            messagebox.showinfo("Nothing Selected",
+                                "Select at least one standard that is not already "
+                                "in the project.", parent=self)
+            return
+        self.result = chosen
         self.destroy()
 
 
@@ -6102,6 +6263,38 @@ class RedLineApp(tk.Tk):
         except Exception as exc:
             messagebox.showerror("Settings Error", f"Could not save software settings:\n{exc}")
 
+    # ── Cross-project standards library ───────────────────────────
+    # Every standard added to any project is remembered globally in
+    # ~/.redlinerouting.json so new projects can pull it from the
+    # library instead of re-entering it.
+
+    def _remember_standard(self, kind, sid, info):
+        """Merge one standard into the global library and persist."""
+        if not sid:
+            return
+        bucket = self.app_config.setdefault(
+            "standards_library", {}).setdefault(kind, {})
+        if bucket.get(sid) != info:
+            bucket[sid] = dict(info)
+            self._save_app_config()
+
+    def _remember_all_standards(self):
+        """Sweep both project registries into the global library."""
+        lib = self.app_config.setdefault("standards_library", {})
+        changed = False
+        for kind, reg in (("maintenance", self.maintenance_standards_registry),
+                          ("engineering", self.engineering_standards_registry)):
+            bucket = lib.setdefault(kind, {})
+            for sid, info in reg.items():
+                if sid and bucket.get(sid) != info:
+                    bucket[sid] = dict(info)
+                    changed = True
+        if changed:
+            self._save_app_config()
+
+    def _standards_library(self, kind):
+        return self.app_config.get("standards_library", {}).get(kind, {})
+
     def _open_software_settings(self):
         dlg = tk.Toplevel(self)
         dlg.title("Software Settings")
@@ -6359,6 +6552,7 @@ class RedLineApp(tk.Tk):
     def _build_maintenance_tab(self, parent):
         tb = ttk.Frame(parent, padding=(4, 4)); tb.pack(fill="x")
         ttk.Button(tb, text="+ Add",           command=self._add_maintenance).pack(side="left", padx=2)
+        ttk.Button(tb, text="📚 From Library",  command=self._add_maintenance_from_library).pack(side="left", padx=2)
         ttk.Button(tb, text="Edit",            command=self._edit_maintenance).pack(side="left", padx=2)
         ttk.Button(tb, text="Delete",          command=self._delete_maintenance).pack(side="left", padx=2)
         ttk.Button(tb, text="⬇ Download All",  command=self._download_maintenance).pack(side="left", padx=(10, 2))
@@ -6412,7 +6606,25 @@ class RedLineApp(tk.Tk):
             sid = dlg.result["standard_id"]
             self.maintenance_standards_registry[sid] = {
                 k: v for k, v in dlg.result.items() if k != "standard_id"}
+            self._remember_standard("maintenance", sid,
+                                    self.maintenance_standards_registry[sid])
             self._refresh_maintenance_list()
+
+    def _add_maintenance_from_library(self):
+        lib = self._standards_library("maintenance")
+        if not lib:
+            messagebox.showinfo(
+                "Library Empty",
+                "No maintenance standards remembered yet.\n"
+                "Standards are added to the library automatically as you "
+                "add them to projects.")
+            return
+        dlg = StandardsLibraryDialog(self, "Maintenance Standards", lib,
+                                     self.maintenance_standards_registry.keys())
+        if dlg.result:
+            self.maintenance_standards_registry.update(dlg.result)
+            self._refresh_maintenance_list()
+            self.status_var.set(f"Added {len(dlg.result)} standard(s) from library")
 
     def _edit_maintenance(self):
         sel = self.maint_tree.selection()
@@ -6430,6 +6642,8 @@ class RedLineApp(tk.Tk):
                 del self.maintenance_standards_registry[old_id]
             self.maintenance_standards_registry[new_id] = {
                 k: v for k, v in dlg.result.items() if k != "standard_id"}
+            self._remember_standard("maintenance", new_id,
+                                    self.maintenance_standards_registry[new_id])
             self._refresh_maintenance_list()
 
     def _delete_maintenance(self):
@@ -6469,6 +6683,7 @@ class RedLineApp(tk.Tk):
     def _build_engineering_tab(self, parent):
         tb = ttk.Frame(parent, padding=(4, 4)); tb.pack(fill="x")
         ttk.Button(tb, text="+ Add",           command=self._add_engineering).pack(side="left", padx=2)
+        ttk.Button(tb, text="📚 From Library",  command=self._add_engineering_from_library).pack(side="left", padx=2)
         ttk.Button(tb, text="Edit",            command=self._edit_engineering).pack(side="left", padx=2)
         ttk.Button(tb, text="Delete",          command=self._delete_engineering).pack(side="left", padx=2)
         ttk.Button(tb, text="⬇ Download All",  command=self._download_engineering).pack(side="left", padx=(10, 2))
@@ -6527,7 +6742,25 @@ class RedLineApp(tk.Tk):
                 "url":           dlg.result.get("url", ""),
                 "notes":         dlg.result.get("notes", ""),
             }
+            self._remember_standard("engineering", sid,
+                                    self.engineering_standards_registry[sid])
             self._refresh_engineering_list()
+
+    def _add_engineering_from_library(self):
+        lib = self._standards_library("engineering")
+        if not lib:
+            messagebox.showinfo(
+                "Library Empty",
+                "No engineering standards remembered yet.\n"
+                "Standards are added to the library automatically as you "
+                "add them to projects.")
+            return
+        dlg = StandardsLibraryDialog(self, "Engineering Standards", lib,
+                                     self.engineering_standards_registry.keys())
+        if dlg.result:
+            self.engineering_standards_registry.update(dlg.result)
+            self._refresh_engineering_list()
+            self.status_var.set(f"Added {len(dlg.result)} standard(s) from library")
 
     def _edit_engineering(self):
         sel = self.eng_tree.selection()
@@ -6550,6 +6783,8 @@ class RedLineApp(tk.Tk):
                 "url":           dlg.result.get("url", ""),
                 "notes":         dlg.result.get("notes", ""),
             }
+            self._remember_standard("engineering", new_id,
+                                    self.engineering_standards_registry[new_id])
             self._refresh_engineering_list()
 
     def _delete_engineering(self):
@@ -8224,6 +8459,7 @@ class RedLineApp(tk.Tk):
             proj = data.get("project","") or os.path.splitext(os.path.basename(path))[0]
             self.title(f"Red-Line-Routing — {proj}")
             self.after_idle(self._refresh_drawing_cache_bg)
+            self._remember_all_standards()
         except Exception as exc: messagebox.showerror("Open Error",str(exc))
 
     def _save(self):
@@ -8269,6 +8505,7 @@ class RedLineApp(tk.Tk):
             proj = self.project_var.get().strip() or os.path.splitext(os.path.basename(path))[0]
             self.title(f"Red-Line-Routing — {proj}")
             self._update_status()
+            self._remember_all_standards()
         except Exception as exc: messagebox.showerror("Save Error",str(exc))
 
     def _refresh_drawing_cache_bg(self):
