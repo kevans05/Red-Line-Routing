@@ -64,10 +64,23 @@ self.maintenance_standards_registry # {standard_id: {title, revision, url_teleco
 self.engineering_standards_registry # {standard_id: {title, revision, standard_type, url, notes}}
 self.title_page                     # {notes: str, crows: [{outage_number, url, files: [str]}]}
 self.history                        # {device/location/pin/panel/wire: [str, …]}  – autocomplete pool
-self.drawing_search_cache           # per-project drawing search result cache
 ```
 
-Global (not per-project) settings live in `~/.redlinerouting.json` and are loaded into `self.app_config`.
+### Global database (`~/.redlinerouting.db`)
+
+Everything global (not per-project) lives in a SQLite database wrapped by `_AppDB`. Connections are opened per call, so the one instance (`self._app_db`) is safe from background threads. Three tables:
+
+| Table | Contents |
+|---|---|
+| `config` | App settings as JSON-encoded key/value rows — loaded into the in-memory dict `self.app_config`; `_save_app_config()` writes the whole dict back |
+| `standards_library` | Cross-project standards library, keyed `(kind, standard_id)` where kind is `maintenance` or `engineering` |
+| `drawing_cache` | Drawing search results shared by all projects, keyed `facility\|type\|subject\|state` |
+
+Migration is automatic and one-way: on first run `_AppDB._migrate_legacy_json()` imports `~/.redlinerouting.json` (settings + standards library) if the config table is empty; opening an old `.redline` that contains a `drawing_search_cache` key folds it into the DB via `cache_merge_legacy()` (newer timestamps win). The cache is no longer written into `.redline` files.
+
+Standards library flow: `_remember_standard()` captures entries as they're added/edited, `_remember_all_standards()` sweeps both registries on project open/save, and `StandardsLibraryDialog` ("📚 From Library" buttons) adds remembered standards to the current project. `_GlobalDrawingCache` keeps the old `_ProjectDrawingCache` interface (`get`/`put`/`is_cacheable`/`iter_keys`) but reads/writes the DB.
+
+Drawing cache freshness: `_schedule_drawing_cache_refresh()` starts a timer in `__init__` that checks every 15 minutes (`_CACHE_CHECK_INTERVAL_MS`) and re-fetches entries older than 4 hours (`drawing_cache_refresh_hours` app setting overrides the default). Project open triggers the same stale-only refresh; the search dialog additionally revalidates in the background on every cache hit. A `_cache_refresh_running` flag prevents overlapping refresh runs.
 
 Job types: `REMOVE`, `ADD`, `MOVE`, `BLOCK`, `UNBLOCK`, `TESTING`.  
 `BLOCK`/`UNBLOCK` carry a `protection` sub-dict; `MOVE` carries both `start/end` and `add_start/add_end` endpoint pairs.
@@ -145,7 +158,7 @@ Walks the full widget tree under `frame` and binds `<Enter>`/`<Leave>` to swap b
 ```
 RedLineApp.__init__
   └── after_idle(_startup_flow)
-        ├── SoftwareSetupDialog  (first run only — writes ~/.redlinerouting.json)
+        ├── SoftwareSetupDialog  (first run only — settings stored in ~/.redlinerouting.db)
         ├── LandingDialog        (open existing / new quick / wizard)
         └── ProjectWizard        (optional 5-step wizard → _apply_wizard_result)
 ```

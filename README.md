@@ -15,7 +15,7 @@ No pip packages required — a patched copy of [pypdf](https://github.com/py-pdf
 python3 wire_planner.py
 ```
 
-On first launch you will be prompted to configure your organisation's base URLs (drawing server, CROW system, Aspen, relay settings). These settings are global and stored in `~/.redlinerouting.json`. You can skip and update them later via **File → Software Settings**.
+On first launch you will be prompted to configure your organisation's base URLs (drawing server, CROW system, Aspen, relay settings). These settings are global and stored in `~/.redlinerouting.db` (SQLite; settings from an older `~/.redlinerouting.json` are migrated automatically). You can skip and update them later via **File → Software Settings**.
 
 ## First-time setup flow
 
@@ -60,6 +60,10 @@ Open an existing project with **File → Open** and browse to the `.redline` fil
 | **Maintenance Standards** | Maintenance standard registry with telecom/transmission URLs and downloads. |
 | **Engineering Standards** | Engineering standard registry with downloads. |
 | **CROW** | Outage records (number + URL + attached documents) and project-level notes. |
+
+### Standards library
+
+Every maintenance or engineering standard you add to any project is remembered globally (in `~/.redlinerouting.db`). In a new project, click **📚 From Library** on either standards tab to multi-select remembered standards and add them in one click — no re-typing. Standards from older projects are picked up automatically when you open them.
 
 ## Job types
 
@@ -132,7 +136,7 @@ A green border on a combobox indicates context data is available and the suggest
 
 ## Software settings (global)
 
-Stored in `~/.redlinerouting.json`. Accessible via **File → Software Settings**.
+Stored in `~/.redlinerouting.db` alongside the standards library and the shared drawing-search cache. Accessible via **File → Software Settings**.
 
 | Key | Used for |
 |---|---|

@@ -26,6 +26,7 @@ import urllib.parse
 import queue
 import glob
 import shutil
+import sqlite3
 import tempfile
 
 # Ensure the directory containing wire_planner.py is on sys.path so that
@@ -1955,6 +1956,42 @@ def _ptrunc(text, max_pts, size, bold=False):
     return (text[:lo] + '...') if lo > 0 else ''
 
 
+def _pwrap(text, max_pts, size, bold=False, max_lines=10):
+    """Word-wrap text to fit max_pts wide; returns a list of lines.
+
+    Overly long single words are hard-broken; output is capped at
+    max_lines with an ellipsis on the final line.
+    """
+    text = " ".join(str(text).split())
+    if not text:
+        return [""]
+    lines, cur = [], ""
+    for word in text.split(" "):
+        test = (cur + " " + word) if cur else word
+        if _ptw(test, size, bold) <= max_pts:
+            cur = test
+            continue
+        if cur:
+            lines.append(cur)
+        while _ptw(word, size, bold) > max_pts and len(word) > 1:
+            lo, hi = 1, len(word)
+            while lo < hi - 1:
+                mid = (lo + hi) // 2
+                if _ptw(word[:mid], size, bold) <= max_pts:
+                    lo = mid
+                else:
+                    hi = mid
+            lines.append(word[:lo])
+            word = word[lo:]
+        cur = word
+    if cur:
+        lines.append(cur)
+    if len(lines) > max_lines:
+        lines = lines[:max_lines]
+        lines[-1] = _ptrunc(lines[-1] + "...", max_pts, size, bold)
+    return lines or [""]
+
+
 def _penc(text):
     """Encode a string for a PDF string literal (WinAnsi, octal for non-ASCII)."""
     out = []
@@ -2265,8 +2302,19 @@ def _pdf_section_table(bld, title, col_specs, rows_iter, size="Letter Portrait")
 
     new_pg()
 
+    LH = 10.0   # line height for 8pt wrapped text
+    PAD = 3.5   # top/bottom cell padding
+
     for row_key, cells in rows_iter:
-        if state["y"] + ROW_H > ph - margin:
+        # Wrap every cell, row height fits the tallest one
+        wrapped = []
+        for ci, (val, cwidth) in enumerate(zip(cells, col_widths)):
+            bold = (ci == 0 and not row_key)
+            wrapped.append(_pwrap(val, cwidth - 6, 8, bold=bold))
+        n_lines = max(len(w) for w in wrapped) if wrapped else 1
+        rh = max(ROW_H, n_lines * LH + 2 * PAD)
+
+        if state["y"] + rh > ph - margin:
             new_pg(cont=True)
         p = state["p"]; y = state["y"]; ri = state["ri"]
 
@@ -2277,18 +2325,25 @@ def _pdf_section_table(bld, title, col_specs, rows_iter, size="Letter Portrait")
             bg  = _PDFPage.LIGHT if ri % 2 == 0 else _PDFPage.WHITE
             acc = None
 
-        p.frect(margin, y, cw, ROW_H, bg)
+        p.frect(margin, y, cw, rh, bg)
         if acc:
-            p.frect(margin, y, 4, ROW_H, acc)
+            p.frect(margin, y, 4, rh, acc)
 
         x = margin
-        for ci, (val, cwidth, align) in enumerate(zip(cells, col_widths, col_aligns)):
+        for ci, (lines, cwidth, align) in enumerate(zip(wrapped, col_widths, col_aligns)):
             fi = _PDFPage.FB if (ci == 0 and not row_key) else _PDFPage.FR
-            p.ctext(x, y, cwidth, ROW_H, str(val), fi=fi, sz=8, align=align)
+            for li, line in enumerate(lines):
+                if align == "center":
+                    tx = x + (cwidth - _ptw(line, 8, fi == _PDFPage.FB)) / 2
+                elif align == "right":
+                    tx = x + cwidth - _ptw(line, 8, fi == _PDFPage.FB) - 3
+                else:
+                    tx = x + 3
+                p.text(tx, y + PAD + li * LH, line, fi=fi, sz=8)
             x += cwidth
 
-        p.hline(margin, y + ROW_H, cw)
-        state["y"] += ROW_H; state["ri"] += 1
+        p.hline(margin, y + rh, cw)
+        state["y"] += rh; state["ri"] += 1
 
 
 def _pdf_work_orders(bld, jobs, drw_reg, size="11x17 Landscape"):
@@ -2338,35 +2393,48 @@ def _pdf_work_orders(bld, jobs, drw_reg, size="11x17 Landscape"):
     reg = drw_reg or {}
     seq = 1
 
+    LH = 9.0    # line height for 7pt wrapped text
+    PAD = 4.0   # top/bottom cell padding
+
     def draw_row(jkey, desc, start_s, wire, end_s):
         nonlocal seq
-        if state["y"] + ROW_H > ph - margin:
+        # Wrap the three long-text columns; row grows to fit
+        desc_lines  = _pwrap(desc,    col_ws[3] - 6, 7)
+        start_lines = _pwrap(start_s, col_ws[4] - 6, 7)
+        end_lines   = _pwrap(end_s,   col_ws[6] - 6, 7)
+        n_lines = max(len(desc_lines), len(start_lines), len(end_lines), 1)
+        rh = max(ROW_H, n_lines * LH + 2 * PAD)
+
+        if state["y"] + rh > ph - margin:
             new_pg(cont=True)
         p = state["p"]; y = state["y"]
         bg  = _PDFPage.ROW_BG.get(jkey, _PDFPage.WHITE)
         acc = _PDFPage.ROW_ACC.get(jkey, _PDFPage.RULE)
-        p.frect(margin, y, cw, ROW_H, bg)
-        p.frect(margin, y, 4, ROW_H, acc)
-        # Checkbox square
+        p.frect(margin, y, cw, rh, bg)
+        p.frect(margin, y, 4, rh, acc)
+        # Checkbox square — stays at the top of tall rows
         cbx = margin + 5; cby = y + 4
         p.srect(cbx, cby, 9, 9, color=(120,120,120), lw=0.7)
         x = margin + col_ws[0]
-        p.ctext(x, y, col_ws[1], ROW_H, str(seq), fi=_PDFPage.FB,
+        p.ctext(x, y, col_ws[1], rh, str(seq), fi=_PDFPage.FB,
                 sz=8, align="center")
         x += col_ws[1]
         lbl = _PDFPage.TYPE_LBL.get(jkey, jkey)
         col = _PDFPage.ROW_ACC.get(jkey, _PDFPage.DARK)
-        p.ctext(x, y, col_ws[2], ROW_H, lbl, fi=_PDFPage.FB, sz=8, color=col)
+        p.ctext(x, y, col_ws[2], rh, lbl, fi=_PDFPage.FB, sz=8, color=col)
         x += col_ws[2]
-        p.ctext(x, y, col_ws[3], ROW_H, desc, fi=_PDFPage.FR, sz=7)
+        for li, line in enumerate(desc_lines):
+            p.text(x + 3, y + PAD + li * LH, line, fi=_PDFPage.FR, sz=7)
         x += col_ws[3]
-        p.ctext(x, y, col_ws[4], ROW_H, start_s, fi=_PDFPage.FR, sz=7)
+        for li, line in enumerate(start_lines):
+            p.text(x + 3, y + PAD + li * LH, line, fi=_PDFPage.FR, sz=7)
         x += col_ws[4]
-        p.ctext(x, y, col_ws[5], ROW_H, wire, fi=_PDFPage.FM, sz=7, align="center")
+        p.ctext(x, y, col_ws[5], rh, wire, fi=_PDFPage.FM, sz=7, align="center")
         x += col_ws[5]
-        p.ctext(x, y, col_ws[6], ROW_H, end_s, fi=_PDFPage.FR, sz=7)
-        p.hline(margin, y+ROW_H, cw)
-        state["y"] += ROW_H; seq += 1
+        for li, line in enumerate(end_lines):
+            p.text(x + 3, y + PAD + li * LH, line, fi=_PDFPage.FR, sz=7)
+        p.hline(margin, y + rh, cw)
+        state["y"] += rh; seq += 1
 
     for job in jobs:
         jt   = job["type"]
@@ -3532,6 +3600,101 @@ class EngineeringStandardDialog(tk.Toplevel):
         self.destroy()
 
 
+class StandardsLibraryDialog(tk.Toplevel):
+    """Pick standards from the cross-project library to add to this project.
+
+    kind         : "maintenance" | "engineering" — library bucket name
+    library      : {sid: info} — the global library bucket for that kind
+    existing_ids : iterable of IDs already in the project (shown greyed, not addable)
+    result       : {sid: info} of the chosen entries, or None on cancel
+    """
+
+    def __init__(self, parent, kind, kind_label, library, existing_ids):
+        super().__init__(parent)
+        self.title(f"{kind_label} Library")
+        self.resizable(True, True)
+        self.grab_set()
+        self.result = None
+        self._kind = kind
+        self._library = library
+
+        ttk.Label(self, text=f"Standards remembered from previous projects."
+                             f"  Select the ones to add:",
+                  padding=(10, 8, 10, 0)).pack(anchor="w")
+
+        frame = ttk.Frame(self, padding=10); frame.pack(fill="both", expand=True)
+        cols = ("Standard ID", "Title", "Rev")
+        self._tree = ttk.Treeview(frame, columns=cols, show="headings",
+                                  selectmode="extended", height=14)
+        for c, w in zip(cols, (140, 320, 60)):
+            self._tree.heading(c, text=c)
+            self._tree.column(c, width=w, stretch=(c == "Title"))
+        vsb = ttk.Scrollbar(frame, orient="vertical", command=self._tree.yview)
+        self._tree.configure(yscrollcommand=vsb.set)
+        self._tree.pack(side="left", fill="both", expand=True)
+        vsb.pack(side="right", fill="y")
+        self._tree.tag_configure("inproj", foreground="#aaaaaa")
+
+        existing = set(existing_ids)
+        for sid, info in sorted(library.items()):
+            in_proj = sid in existing
+            self._tree.insert(
+                "", "end", iid=sid,
+                values=(sid + ("   (already in project)" if in_proj else ""),
+                        info.get("title", ""), info.get("revision", "")),
+                tags=("inproj",) if in_proj else ())
+        self._existing = existing
+
+        bf = ttk.Frame(self, padding=(10, 0, 10, 10)); bf.pack(fill="x")
+        ttk.Button(bf, text="Cancel", command=self.destroy).pack(side="right", padx=4)
+        ttk.Button(bf, text="Add Selected", command=self._add).pack(side="right")
+        ttk.Button(bf, text="Select All New",
+                   command=self._select_all_new).pack(side="left")
+        ttk.Button(bf, text="Remove from Library",
+                   command=self._remove_from_library).pack(side="left", padx=6)
+
+        self.geometry("640x420")
+        self.wait_window()
+
+    def _select_all_new(self):
+        new = [iid for iid in self._tree.get_children()
+               if iid not in self._existing]
+        self._tree.selection_set(new)
+
+    def _remove_from_library(self):
+        sel = [iid for iid in self._tree.selection()]
+        if not sel:
+            messagebox.showinfo("Select", "Select entries to remove from the library.",
+                                parent=self)
+            return
+        if not messagebox.askyesno(
+                "Remove", f"Forget {len(sel)} entr{'y' if len(sel)==1 else 'ies'} "
+                          "from the library?\n(Projects that already contain them "
+                          "are not affected.)", parent=self):
+            return
+        app = self.master
+        for iid in sel:
+            self._library.pop(iid, None)
+            self._tree.delete(iid)
+            if hasattr(app, "_forget_standard"):
+                app._forget_standard(self._kind, iid)
+
+    def _add(self):
+        chosen = {}
+        for iid in self._tree.selection():
+            if iid in self._existing:
+                continue
+            if iid in self._library:
+                chosen[iid] = dict(self._library[iid])
+        if not chosen:
+            messagebox.showinfo("Nothing Selected",
+                                "Select at least one standard that is not already "
+                                "in the project.", parent=self)
+            return
+        self.result = chosen
+        self.destroy()
+
+
 # ──────────────────────────────────────────────────────────────────
 # Startup / wizard dialogs  —  shared UI helpers
 # ──────────────────────────────────────────────────────────────────
@@ -3608,7 +3771,7 @@ class DrawingSearchDialog(tk.Toplevel):
         self._last_paged = None   # most recent PagedResults
         self._from_cache = False
         self._client = None
-        self._proj_cache: "_ProjectDrawingCache | None" = proj_cache
+        self._proj_cache: "_GlobalDrawingCache | None" = proj_cache
         self._build()
         self.geometry("900x580")
         _center_window(self)
@@ -3808,7 +3971,7 @@ class DrawingSearchDialog(tk.Toplevel):
 
         # ── Live search path ──────────────────────────────────────────────
         if (self._proj_cache is not None
-                and _ProjectDrawingCache.is_cacheable(params)
+                and _GlobalDrawingCache.is_cacheable(params)
                 and page == 0):
             # Fetch all pages so the cache is useful for future searches
             def _run_all():
@@ -4063,17 +4226,177 @@ def _bind_filter_combobox(combo: ttk.Combobox, all_choices: list) -> None:
     _ComboFilterHelper(combo, all_choices)
 
 
-class _ProjectDrawingCache:
-    """Per-project drawing search cache stored inside the .redline JSON.
+class _AppDB:
+    """Global application database (~/.redlinerouting.db).
 
-    Only categorical searches (facility / drawing_type / drawing_subject / state,
-    no free-text filters) are cached and auto-refreshed.  The caller owns the
-    backing dict (``RedLineApp.drawing_search_cache``) so it is persisted when
-    the project is saved.
+    Holds the app settings, the cross-project standards library, and the
+    drawing-search cache shared by all projects. A new connection is
+    opened per call so the same instance is safe from any thread
+    (background cache refreshes write here too).
+
+    On first run, settings and the standards library are migrated from
+    the legacy ~/.redlinerouting.json (the file is left in place).
     """
 
-    def __init__(self, store: dict):
-        self._store = store   # mutable ref — changes are visible to the caller
+    PATH = os.path.expanduser("~/.redlinerouting.db")
+    _LEGACY_JSON = os.path.expanduser("~/.redlinerouting.json")
+
+    def __init__(self, path=None):
+        self.path = path or self.PATH
+        with self._conn() as c:
+            c.executescript("""
+                CREATE TABLE IF NOT EXISTS config(
+                    key   TEXT PRIMARY KEY,
+                    value TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS standards_library(
+                    kind        TEXT NOT NULL,
+                    standard_id TEXT NOT NULL,
+                    info        TEXT NOT NULL,
+                    updated_at  REAL NOT NULL,
+                    PRIMARY KEY (kind, standard_id));
+                CREATE TABLE IF NOT EXISTS drawing_cache(
+                    cache_key TEXT PRIMARY KEY,
+                    results   TEXT NOT NULL,
+                    cached_at REAL NOT NULL);
+            """)
+        self._migrate_legacy_json()
+
+    def _conn(self):
+        conn = sqlite3.connect(self.path, timeout=10)
+        conn.isolation_level = None   # autocommit
+        return conn
+
+    def _migrate_legacy_json(self):
+        try:
+            with self._conn() as c:
+                if c.execute("SELECT COUNT(*) FROM config").fetchone()[0]:
+                    return   # already migrated / in use
+            with open(self._LEGACY_JSON, encoding="utf-8") as fh:
+                legacy = json.load(fh)
+        except (FileNotFoundError, json.JSONDecodeError, sqlite3.Error):
+            return
+        lib = legacy.pop("standards_library", {})
+        self.save_config(legacy)
+        for kind, bucket in lib.items():
+            for sid, info in bucket.items():
+                self.put_standard(kind, sid, info)
+
+    # ── config ────────────────────────────────────────────────────
+
+    def load_config(self) -> dict:
+        try:
+            with self._conn() as c:
+                rows = c.execute("SELECT key, value FROM config").fetchall()
+            return {k: json.loads(v) for k, v in rows}
+        except (sqlite3.Error, json.JSONDecodeError):
+            return {}
+
+    def save_config(self, cfg: dict):
+        with self._conn() as c:
+            c.execute("BEGIN")
+            c.execute("DELETE FROM config")
+            c.executemany(
+                "INSERT INTO config(key, value) VALUES (?, ?)",
+                [(k, json.dumps(v)) for k, v in cfg.items()])
+            c.execute("COMMIT")
+
+    # ── standards library ─────────────────────────────────────────
+
+    def get_standards(self, kind) -> dict:
+        try:
+            with self._conn() as c:
+                rows = c.execute(
+                    "SELECT standard_id, info FROM standards_library "
+                    "WHERE kind = ?", (kind,)).fetchall()
+            return {sid: json.loads(info) for sid, info in rows}
+        except (sqlite3.Error, json.JSONDecodeError):
+            return {}
+
+    def put_standard(self, kind, sid, info):
+        with self._conn() as c:
+            c.execute(
+                "INSERT INTO standards_library(kind, standard_id, info, updated_at) "
+                "VALUES (?, ?, ?, ?) "
+                "ON CONFLICT(kind, standard_id) DO UPDATE SET "
+                "info = excluded.info, updated_at = excluded.updated_at",
+                (kind, sid, json.dumps(info), datetime.now().timestamp()))
+
+    def delete_standard(self, kind, sid):
+        with self._conn() as c:
+            c.execute("DELETE FROM standards_library "
+                      "WHERE kind = ? AND standard_id = ?", (kind, sid))
+
+    # ── drawing search cache ──────────────────────────────────────
+
+    def cache_get(self, key):
+        """Return the cached list of result dicts for key, or None."""
+        try:
+            with self._conn() as c:
+                row = c.execute(
+                    "SELECT results FROM drawing_cache WHERE cache_key = ?",
+                    (key,)).fetchone()
+            return json.loads(row[0]) if row else None
+        except (sqlite3.Error, json.JSONDecodeError):
+            return None
+
+    def cache_put(self, key, results, cached_at=None):
+        with self._conn() as c:
+            c.execute(
+                "INSERT INTO drawing_cache(cache_key, results, cached_at) "
+                "VALUES (?, ?, ?) "
+                "ON CONFLICT(cache_key) DO UPDATE SET "
+                "results = excluded.results, cached_at = excluded.cached_at",
+                (key, json.dumps(results),
+                 cached_at if cached_at is not None
+                 else datetime.now().timestamp()))
+
+    def cache_keys(self):
+        try:
+            with self._conn() as c:
+                return [r[0] for r in
+                        c.execute("SELECT cache_key FROM drawing_cache")]
+        except sqlite3.Error:
+            return []
+
+    def cache_stale_keys(self, max_age_seconds):
+        """Return cache keys whose entry is older than max_age_seconds."""
+        cutoff = datetime.now().timestamp() - max_age_seconds
+        try:
+            with self._conn() as c:
+                return [r[0] for r in c.execute(
+                    "SELECT cache_key FROM drawing_cache WHERE cached_at < ?",
+                    (cutoff,))]
+        except sqlite3.Error:
+            return []
+
+    def cache_merge_legacy(self, store: dict):
+        """Import a per-project drawing_search_cache dict from an old .redline.
+
+        Entries newer than what the DB already holds win.
+        """
+        for key, entry in store.items():
+            try:
+                ts = float(entry.get("cached_at", 0))
+                results = entry.get("results", [])
+            except (AttributeError, TypeError, ValueError):
+                continue
+            with self._conn() as c:
+                row = c.execute(
+                    "SELECT cached_at FROM drawing_cache WHERE cache_key = ?",
+                    (key,)).fetchone()
+            if row is None or row[0] < ts:
+                self.cache_put(key, results, cached_at=ts)
+
+
+class _GlobalDrawingCache:
+    """Drawing search cache shared across all projects (SQLite-backed).
+
+    Only categorical searches (facility / drawing_type / drawing_subject / state,
+    no free-text filters) are cached and auto-refreshed.
+    """
+
+    def __init__(self, db: "_AppDB"):
+        self._db = db
 
     # ── helpers ───────────────────────────────────────────────────
 
@@ -4095,23 +4418,22 @@ class _ProjectDrawingCache:
     def get(self, params) -> "list | None":
         if not self.is_cacheable(params):
             return None
-        entry = self._store.get(self._key(params))
-        if entry is None:
+        raw = self._db.cache_get(self._key(params))
+        if raw is None:
             return None
         try:
-            return [DrawingResult(**d) for d in entry["results"]]
+            return [DrawingResult(**d) for d in raw]
         except Exception:
             return None
 
     def put(self, params, results: list) -> None:
-        self._store[self._key(params)] = {
-            "results": [vars(r) for r in results],
-            "cached_at": datetime.now().timestamp(),
-        }
+        if not self.is_cacheable(params):
+            return
+        self._db.cache_put(self._key(params), [vars(r) for r in results])
 
     def iter_keys(self):
         """Yield (facility, drawing_type, drawing_subject, state) for every cached entry."""
-        for k in list(self._store.keys()):
+        for k in self._db.cache_keys():
             parts = k.split("|")
             if len(parts) == 4:
                 yield tuple(parts)
@@ -5281,11 +5603,13 @@ class RedLineApp(tk.Tk):
         self.relay_registry = {}          # keyed by device_id
         self.maintenance_standards_registry = {}  # keyed by standard_id
         self.engineering_standards_registry = {}  # keyed by standard_id
-        self.drawing_search_cache = {}    # keyed by "facility|type|subject|state"
-        self.app_config = self._load_app_config()   # global prefs (~/.redlinerouting.json)
+        self._app_db = _AppDB()           # ~/.redlinerouting.db — settings, standards library, drawing cache
+        self._drawing_cache = _GlobalDrawingCache(self._app_db)
+        self.app_config = self._load_app_config()
         self._build_menu()
         self._build_ui()
         self.after_idle(self._startup_flow)
+        self._schedule_drawing_cache_refresh()
 
     # ── Startup flow ─────────────────────────────────────────────
 
@@ -5642,7 +5966,7 @@ class RedLineApp(tk.Tk):
 
     def _search_drawings(self):
         dlg = DrawingSearchDialog(self, self.app_config, multi_select=True,
-                                  proj_cache=_ProjectDrawingCache(self.drawing_search_cache))
+                                  proj_cache=self._drawing_cache)
         for r in dlg.selected:
             if r.drawing_number not in self.drawing_registry:
                 self.drawing_registry[r.drawing_number] = {
@@ -5664,7 +5988,7 @@ class RedLineApp(tk.Tk):
     def _add_drawing(self):
         dlg = DrawingEditDialog(self, base_url=self.app_config.get("base_drawing_url",""),
                                 app_config=self.app_config,
-                                proj_cache=_ProjectDrawingCache(self.drawing_search_cache))
+                                proj_cache=self._drawing_cache)
         if dlg.result:
             name = dlg.result["name"]
             self.drawing_registry[name] = {"title":dlg.result["title"],"rev":dlg.result["rev"],"url":dlg.result["url"],"notes":dlg.result["notes"]}
@@ -5677,7 +6001,7 @@ class RedLineApp(tk.Tk):
         dlg = DrawingEditDialog(self, existing={"name":name,**info},
                                 base_url=self.app_config.get("base_drawing_url",""),
                                 app_config=self.app_config,
-                                proj_cache=_ProjectDrawingCache(self.drawing_search_cache))
+                                proj_cache=self._drawing_cache)
         if dlg.result:
             old = dlg.result.get("old_name"); new_name = dlg.result["name"]
             if old and old != new_name and old in self.drawing_registry: del self.drawing_registry[old]
@@ -6086,21 +6410,44 @@ class RedLineApp(tk.Tk):
 
     # ── Software / Global Settings ────────────────────────────────
 
-    _APP_CONFIG_PATH = os.path.expanduser("~/.redlinerouting.json")
-
     def _load_app_config(self):
-        try:
-            with open(self._APP_CONFIG_PATH, encoding="utf-8") as fh:
-                return json.load(fh)
-        except (FileNotFoundError, json.JSONDecodeError):
-            return {}
+        return self._app_db.load_config()
 
     def _save_app_config(self):
         try:
-            with open(self._APP_CONFIG_PATH, "w", encoding="utf-8") as fh:
-                json.dump(self.app_config, fh, indent=2)
+            self._app_db.save_config(self.app_config)
         except Exception as exc:
             messagebox.showerror("Settings Error", f"Could not save software settings:\n{exc}")
+
+    # ── Cross-project standards library ───────────────────────────
+    # Every standard added to any project is remembered globally in
+    # ~/.redlinerouting.db so new projects can pull it from the
+    # library instead of re-entering it.
+
+    def _remember_standard(self, kind, sid, info):
+        """Merge one standard into the global library."""
+        if not sid:
+            return
+        try:
+            self._app_db.put_standard(kind, sid, info)
+        except sqlite3.Error:
+            pass
+
+    def _remember_all_standards(self):
+        """Sweep both project registries into the global library."""
+        for kind, reg in (("maintenance", self.maintenance_standards_registry),
+                          ("engineering", self.engineering_standards_registry)):
+            for sid, info in reg.items():
+                self._remember_standard(kind, sid, info)
+
+    def _forget_standard(self, kind, sid):
+        try:
+            self._app_db.delete_standard(kind, sid)
+        except sqlite3.Error:
+            pass
+
+    def _standards_library(self, kind):
+        return self._app_db.get_standards(kind)
 
     def _open_software_settings(self):
         dlg = tk.Toplevel(self)
@@ -6359,6 +6706,7 @@ class RedLineApp(tk.Tk):
     def _build_maintenance_tab(self, parent):
         tb = ttk.Frame(parent, padding=(4, 4)); tb.pack(fill="x")
         ttk.Button(tb, text="+ Add",           command=self._add_maintenance).pack(side="left", padx=2)
+        ttk.Button(tb, text="📚 From Library",  command=self._add_maintenance_from_library).pack(side="left", padx=2)
         ttk.Button(tb, text="Edit",            command=self._edit_maintenance).pack(side="left", padx=2)
         ttk.Button(tb, text="Delete",          command=self._delete_maintenance).pack(side="left", padx=2)
         ttk.Button(tb, text="⬇ Download All",  command=self._download_maintenance).pack(side="left", padx=(10, 2))
@@ -6412,7 +6760,25 @@ class RedLineApp(tk.Tk):
             sid = dlg.result["standard_id"]
             self.maintenance_standards_registry[sid] = {
                 k: v for k, v in dlg.result.items() if k != "standard_id"}
+            self._remember_standard("maintenance", sid,
+                                    self.maintenance_standards_registry[sid])
             self._refresh_maintenance_list()
+
+    def _add_maintenance_from_library(self):
+        lib = self._standards_library("maintenance")
+        if not lib:
+            messagebox.showinfo(
+                "Library Empty",
+                "No maintenance standards remembered yet.\n"
+                "Standards are added to the library automatically as you "
+                "add them to projects.")
+            return
+        dlg = StandardsLibraryDialog(self, "maintenance", "Maintenance Standards",
+                                     lib, self.maintenance_standards_registry.keys())
+        if dlg.result:
+            self.maintenance_standards_registry.update(dlg.result)
+            self._refresh_maintenance_list()
+            self.status_var.set(f"Added {len(dlg.result)} standard(s) from library")
 
     def _edit_maintenance(self):
         sel = self.maint_tree.selection()
@@ -6430,6 +6796,8 @@ class RedLineApp(tk.Tk):
                 del self.maintenance_standards_registry[old_id]
             self.maintenance_standards_registry[new_id] = {
                 k: v for k, v in dlg.result.items() if k != "standard_id"}
+            self._remember_standard("maintenance", new_id,
+                                    self.maintenance_standards_registry[new_id])
             self._refresh_maintenance_list()
 
     def _delete_maintenance(self):
@@ -6469,6 +6837,7 @@ class RedLineApp(tk.Tk):
     def _build_engineering_tab(self, parent):
         tb = ttk.Frame(parent, padding=(4, 4)); tb.pack(fill="x")
         ttk.Button(tb, text="+ Add",           command=self._add_engineering).pack(side="left", padx=2)
+        ttk.Button(tb, text="📚 From Library",  command=self._add_engineering_from_library).pack(side="left", padx=2)
         ttk.Button(tb, text="Edit",            command=self._edit_engineering).pack(side="left", padx=2)
         ttk.Button(tb, text="Delete",          command=self._delete_engineering).pack(side="left", padx=2)
         ttk.Button(tb, text="⬇ Download All",  command=self._download_engineering).pack(side="left", padx=(10, 2))
@@ -6527,7 +6896,25 @@ class RedLineApp(tk.Tk):
                 "url":           dlg.result.get("url", ""),
                 "notes":         dlg.result.get("notes", ""),
             }
+            self._remember_standard("engineering", sid,
+                                    self.engineering_standards_registry[sid])
             self._refresh_engineering_list()
+
+    def _add_engineering_from_library(self):
+        lib = self._standards_library("engineering")
+        if not lib:
+            messagebox.showinfo(
+                "Library Empty",
+                "No engineering standards remembered yet.\n"
+                "Standards are added to the library automatically as you "
+                "add them to projects.")
+            return
+        dlg = StandardsLibraryDialog(self, "engineering", "Engineering Standards",
+                                     lib, self.engineering_standards_registry.keys())
+        if dlg.result:
+            self.engineering_standards_registry.update(dlg.result)
+            self._refresh_engineering_list()
+            self.status_var.set(f"Added {len(dlg.result)} standard(s) from library")
 
     def _edit_engineering(self):
         sel = self.eng_tree.selection()
@@ -6550,6 +6937,8 @@ class RedLineApp(tk.Tk):
                 "url":           dlg.result.get("url", ""),
                 "notes":         dlg.result.get("notes", ""),
             }
+            self._remember_standard("engineering", new_id,
+                                    self.engineering_standards_registry[new_id])
             self._refresh_engineering_list()
 
     def _delete_engineering(self):
@@ -8176,7 +8565,6 @@ class RedLineApp(tk.Tk):
         if self.jobs and not messagebox.askyesno("New Plan","Discard current plan and start fresh?"): return
         self.jobs=[]; self.drawing_registry={}; self.relay_registry={}
         self.maintenance_standards_registry={}; self.engineering_standards_registry={}
-        self.drawing_search_cache={}
         self.current_file=None; self.project_folder=None
         self.project_var.set("")
         self.history = {"device": [], "location": [], "pin": [], "panel": [], "wire": []}
@@ -8208,7 +8596,12 @@ class RedLineApp(tk.Tk):
             self.maintenance_standards_registry = data.get("maintenance_standards", {})
             self.engineering_standards_registry = data.get("engineering_standards", {})
             self.history = data.get("history", {"device":[],"location":[],"pin":[],"panel":[],"wire":[]})
-            self.drawing_search_cache = data.get("drawing_search_cache", {})
+            # Older files carried a per-project drawing cache — fold it
+            # into the global DB so nothing is lost, then ignore it.
+            legacy_cache = data.get("drawing_search_cache", {})
+            if legacy_cache:
+                try: self._app_db.cache_merge_legacy(legacy_cache)
+                except sqlite3.Error: pass
             self.title_page = data.get("title_page", {"notes": "", "crows": []})
             self.current_file = path
             self.project_folder = os.path.dirname(path)
@@ -8223,7 +8616,8 @@ class RedLineApp(tk.Tk):
             if self.mode_var.get() == "impl": self._refresh_file_tabs()
             proj = data.get("project","") or os.path.splitext(os.path.basename(path))[0]
             self.title(f"Red-Line-Routing — {proj}")
-            self.after_idle(self._refresh_drawing_cache_bg)
+            self.after_idle(lambda: self._refresh_drawing_cache_bg(stale_only=True))
+            self._remember_all_standards()
         except Exception as exc: messagebox.showerror("Open Error",str(exc))
 
     def _save(self):
@@ -8263,25 +8657,54 @@ class RedLineApp(tk.Tk):
                            "relay_settings":self.relay_registry,           # key kept as "relay_settings" for file compatibility
                            "maintenance_standards":self.maintenance_standards_registry,
                            "engineering_standards":self.engineering_standards_registry,
-                           "drawing_search_cache":self.drawing_search_cache,
                            "history":self.history,
                            "jobs":self.jobs},fh,indent=2)
             proj = self.project_var.get().strip() or os.path.splitext(os.path.basename(path))[0]
             self.title(f"Red-Line-Routing — {proj}")
             self._update_status()
+            self._remember_all_standards()
         except Exception as exc: messagebox.showerror("Save Error",str(exc))
 
-    def _refresh_drawing_cache_bg(self):
-        """Silently refresh every cached drawing-search entry in the background.
+    # How often to look for stale cache entries, and how old an entry must
+    # be before it is re-fetched. The age is configurable via the
+    # drawing_cache_refresh_hours app setting.
+    _CACHE_CHECK_INTERVAL_MS = 15 * 60 * 1000   # check every 15 minutes
+    _CACHE_DEFAULT_MAX_AGE_H = 4.0              # refresh entries older than 4 h
 
-        Called after a project is loaded.  For each (facility, type, subject, state)
-        tuple stored in the project cache, re-runs search_all_pages and updates the
-        cached results so the next search in the session is up-to-date.
+    def _cache_max_age_seconds(self):
+        try:
+            hours = float(self.app_config.get(
+                "drawing_cache_refresh_hours", self._CACHE_DEFAULT_MAX_AGE_H))
+        except (TypeError, ValueError):
+            hours = self._CACHE_DEFAULT_MAX_AGE_H
+        return max(0.25, hours) * 3600.0
+
+    def _schedule_drawing_cache_refresh(self, first_delay_ms=30000):
+        """Start the periodic stale-entry refresh loop (runs for app lifetime)."""
+        def _tick():
+            self._refresh_drawing_cache_bg(stale_only=True)
+            self.after(self._CACHE_CHECK_INTERVAL_MS, _tick)
+        self.after(first_delay_ms, _tick)
+
+    def _refresh_drawing_cache_bg(self, stale_only=False):
+        """Refresh cached drawing-search entries in a background thread.
+
+        stale_only=True (periodic timer) re-fetches only entries older than
+        the configured max age; stale_only=False (project open) refreshes
+        everything. Skips silently when a refresh is already running or
+        drawing search is not configured.
         """
         if not _DRAWING_SEARCH_AVAILABLE:
             return
-        cache = _ProjectDrawingCache(self.drawing_search_cache)
-        keys = list(cache.iter_keys())
+        if getattr(self, "_cache_refresh_running", False):
+            return
+        cache = self._drawing_cache
+        if stale_only:
+            raw = self._app_db.cache_stale_keys(self._cache_max_age_seconds())
+            keys = [tuple(p) for p in (k.split("|") for k in raw)
+                    if len(p) == 4]
+        else:
+            keys = list(cache.iter_keys())
         if not keys:
             return
         base_url = self.app_config.get("drawing_search_url", "").strip()
@@ -8294,15 +8717,25 @@ class RedLineApp(tk.Tk):
         client   = DrawingSearchClient(base_url=base_url, cookies=cookies,
                                         extra_headers=extra or None)
 
+        self._cache_refresh_running = True
+
         def _run():
-            for fac, typ, subj, state in keys:
-                try:
-                    params = SearchParams(facility=fac, drawing_type=typ,
-                                          drawing_subject=subj, state=state)
-                    results = client.search_all_pages(params)
-                    cache.put(params, results)
-                except Exception:
-                    pass
+            done = 0
+            try:
+                for fac, typ, subj, state in keys:
+                    try:
+                        params = SearchParams(facility=fac, drawing_type=typ,
+                                              drawing_subject=subj, state=state)
+                        results = client.search_all_pages(params)
+                        cache.put(params, results)
+                        done += 1
+                    except Exception:
+                        pass
+            finally:
+                self._cache_refresh_running = False
+                if done:
+                    self.after(0, lambda: self.status_var.set(
+                        f"Drawing cache refreshed — {done} search(es) updated"))
 
         threading.Thread(target=_run, daemon=True).start()
 
