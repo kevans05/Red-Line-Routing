@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 python3 wire_planner.py
 ```
 
-No build step, no package install — the entire application is a single Python 3 file using only the standard library (`tkinter`, `json`, `os`, `threading`, `urllib`, `webbrowser`, `subprocess`).
+No build step, no package install — the application uses only the Python standard library (`tkinter`, `json`, `os`, `threading`, `urllib`, `webbrowser`, `subprocess`) plus a **vendored copy of pypdf** in `pypdf/` (no pip install needed).
 
 Syntax-check without launching the GUI:
 
@@ -19,24 +19,38 @@ python3 -c "import ast; ast.parse(open('wire_planner.py').read()); print('OK')"
 ## Repository layout
 
 ```
-wire_planner.py   # entire application (~6 400 lines)
+wire_planner.py   # main application (~8 300 lines)
+drawing_search/   # drawing search client package (parser, cache, HTTP client)
+pypdf/            # vendored pypdf 6.13.1 (patched — see below)
 .gitignore        # ignores __pycache__ and *.pyc
 ```
 
 No tests, no CI config, no requirements file.
 
-## Architecture — one file, six layers
+### Vendored pypdf patches
 
-All code lives in `wire_planner.py`. Reading top-to-bottom follows the dependency order:
+The `pypdf/` folder is pypdf 6.13.1 with two local patches that must be preserved if the vendored copy is ever upgraded:
+
+1. **`pypdf/_crypt_providers/__init__.py`** — `except ImportError` widened to `except BaseException` (a broken Rust `cryptography` extension raises `pyo3_runtime.PanicException`, which is a `BaseException`), plus stderr suppression around the import.
+2. **`typing_extensions` fallbacks** — eight files (`_utils.py`, `types.py`, `_writer.py`, `_reader.py`, `generic/_base.py`, `generic/_data_structures.py`, `generic/_image_xobject.py`, `annotations/_markup_annotations.py`) wrap `from typing_extensions import …` in `try/except ImportError` falling back to `typing.Any`, so pypdf works without the `typing_extensions` package on Python < 3.11.
+
+The same defensive pattern exists at the import site in `wire_planner.py`: the pypdf import is wrapped in `except BaseException`, stores the failure message in `_PYPDF_ERROR`, and sets `_PYPDF_AVAILABLE = False`. Export falls back to print-ready HTML with a warning dialog when pypdf can't load.
+
+## Architecture — wire_planner.py layers
+
+Reading top-to-bottom follows the dependency order:
 
 | Lines (approx) | Layer |
 |---|---|
-| 1 – 198 | Module-level data factories and UI helpers |
-| 200 – 696 | Reusable widget classes (`DrawingAwareFrame`, `EndpointFrame`, composite frames) |
-| 698 – 1237 | Job and protection dialogs (`JobDialog`, `DrawingEditDialog`, …) |
-| 1239 – 1706 | Plain-text / HTML / CSV export generators (no GUI) |
-| 1709 – 3353 | Startup flow dialogs and the project wizard |
-| 3355 – end | `RedLineApp` — the main `tk.Tk` window |
+| 1 – 215 | Module-level data factories and UI helpers |
+| 219 – 1250 | Reusable widget classes and job/protection dialogs (`DrawingAwareFrame`, `EndpointFrame`, `JobDialog`, …) |
+| 1250 – 1390 | Job-preview text formatting (`format_job`) and shared colour theme (`_ROW_STYLE`, `_ROW_BORDER`, `_esc`) |
+| 1395 – 1895 | Export Wizard HTML generators (`_ew_*` functions, no GUI) |
+| 1897 – 2740 | PDF package generation (`_SimplePDFBuilder`, `_PDFPage`, `_pdf_*` section builders, `_build_print_pdf`) |
+| 2741 – 3150 | `ExportWizard` dialog |
+| 3152 – 4310 | Registry dialogs, drawing search, download helpers |
+| 4313 – 5250 | Startup flow dialogs and the project wizard |
+| 5251 – end | `RedLineApp` — the main `tk.Tk` window |
 
 ## Key data model
 
@@ -48,8 +62,9 @@ self.drawing_registry               # {name: {title, rev, url, notes}}
 self.relay_registry                 # {device_id: {title, revision, engineer, contact, url, …}}
 self.maintenance_standards_registry # {standard_id: {title, revision, url_telecom, url_transmission, notes}}
 self.engineering_standards_registry # {standard_id: {title, revision, standard_type, url, notes}}
-self.title_page                     # {notes: str, crows: [{outage_number, url}]}
+self.title_page                     # {notes: str, crows: [{outage_number, url, files: [str]}]}
 self.history                        # {device/location/pin/panel/wire: [str, …]}  – autocomplete pool
+self.drawing_search_cache           # per-project drawing search result cache
 ```
 
 Global (not per-project) settings live in `~/.redlinerouting.json` and are loaded into `self.app_config`.
@@ -73,6 +88,32 @@ All other registries use the same name in both Python and JSON.
 
 `Y == 'H'` signals a horizontal drawing: the **Drawing Cell** field is enabled only for H-type drawings (`is_h_type_drawing()`). All other types disable that field automatically.
 
+## Export — the Export Wizard
+
+All exporting goes through `ExportWizard` (File → Export Wizard…, Ctrl+E, or the header-bar button). The old standalone report/table/CSV/HTML exports have been removed.
+
+Three output formats, selectable in step 1:
+
+| Format | Output |
+|---|---|
+| **PDF Package** | Single merged PDF (`Package_<date>.pdf`): cover page + TOC, colour-coded work-orders table, registry tables, then every downloaded PDF from the project subfolders appended via pypdf. Falls back to print-ready HTML when pypdf is unavailable. |
+| **HTML / PDF (digital)** | Screen-optimised HTML with live hyperlinks. |
+| **Tablet** | Large-text HTML for Safari/iPad; downloaded files linked by relative local path. |
+
+Step 2 picks sections; each optional section (Drawings, Relay Settings, Maintenance Standards, Engineering Standards) has a three-state mode:
+
+- **Skip** — not included
+- **Print** — section table + downloaded documents included
+- **TOC only** — listed on the cover page TOC as "printed separately" but no pages generated (for documents the user already has printed)
+
+Step 3 picks a paper size per section (Letter Portrait/Landscape, 11×17 Portrait/Landscape). The size names use the Unicode `×` in UI strings; `_SimplePDFBuilder.SIZES` carries both `x` and `×` key variants — keep both when editing.
+
+### PDF generation internals
+
+`_SimplePDFBuilder` writes complete PDF 1.4 bytes from scratch (standard Type1 fonts, no dependencies): used for the cover, work-orders, and registry-table pages. `_PDFPage` uses top-left coordinates (converted internally to PDF's bottom-up system). Text fitting uses the Helvetica AFM width table `_HELV_W` (`_ptw`/`_ptrunc`).
+
+`_build_print_pdf()` orchestrates: generated pages first, then `_collect_pdfs()` gathers documents from each project subfolder. `.txt` files are converted natively (`_txt_to_pdf_bytes`), `.docx`/`.doc` via LibreOffice headless or PowerShell + Word COM (`_docx_to_pdf_bytes`); files that can't be converted are reported in an info dialog after export. Everything is merged with `_merge_pdfs_bytes()` (pypdf).
+
 ## UI patterns to keep consistent
 
 ### `tk.Frame` vs `ttk.Frame`
@@ -95,6 +136,10 @@ Walks the full widget tree under `frame` and binds `<Enter>`/`<Leave>` to swap b
 
 `_print_selected(tree, subfolder, label)` and `_print_all(subfolder)` are the single implementation for all eight "Print Selected / Print All" toolbar buttons across the four registry tabs (Drawings, Relay Settings, Maintenance Standards, Engineering Standards). Each tab's named method is a one-line delegate.
 
+### Opening generated files
+
+`_open_file(path)` opens with the OS default handler; `_reveal_file(path)` opens the containing folder with the file selected (used for generated PDFs so they don't auto-open in a browser).
+
 ## Startup flow
 
 ```
@@ -105,18 +150,9 @@ RedLineApp.__init__
         └── ProjectWizard        (optional 5-step wizard → _apply_wizard_result)
 ```
 
-## Export functions (no GUI dependency)
+## Downloads
 
-These four functions are pure and can be called or tested independently:
-
-| Function | Output |
-|---|---|
-| `generate_report(jobs, …)` | Plain-text detailed report |
-| `generate_table(jobs, …)` | Fixed-width ASCII table |
-| `generate_csv(jobs, …)` | RFC 4180 CSV |
-| `generate_html_table(jobs, …)` | Self-contained HTML with print/checkbox JS |
-
-`generate_html_table` uses two local closures (`ep_html_r`, `prot_html_r`) that look up each drawing name in the registry to enrich the output with the drawing title and fall back to the registry URL when the endpoint's own `drawing_url` is blank.
+`_download_with_progress` handles both HTTP(S) and `file://` URLs. `_file_url_to_path()` converts `file://` URLs — including UNC network shares (`file://server/share/path` → `\\server\share\path` on Windows) — to local paths before any HTTP machinery runs.
 
 ## Project folder structure (on save)
 
@@ -127,7 +163,7 @@ These four functions are pure and can be called or tested independently:
   Relay Settings/              ← downloaded relay setting files
   Maintenance Standards/       ← downloaded maintenance standard files
   Engineering Standards/       ← downloaded engineering standard files
-  CROW Outage/                 ← CROW-related files
+  CROW Outage/                 ← CROW-related files + attached documents
   Tailboards/
     Completed/
   Other/

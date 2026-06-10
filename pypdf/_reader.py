@@ -46,7 +46,10 @@ from typing import (
 if sys.version_info >= (3, 11):
     from typing import Self
 else:
-    from typing_extensions import Self
+    try:
+        from typing_extensions import Self
+    except ImportError:
+        from typing import Any as Self  # type: ignore[assignment]
 
 from ._doc_common import PdfDocCommon, convert_to_int
 from ._encryption import Encryption, PasswordType

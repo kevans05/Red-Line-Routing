@@ -22,7 +22,10 @@ if sys.version_info[:2] >= (3, 10):
 else:
     # PEP 613 introduced typing.TypeAlias with Python 3.10
     # For older Python versions, the backport typing_extensions is necessary:
-    from typing_extensions import TypeAlias
+    try:
+        from typing_extensions import TypeAlias
+    except ImportError:
+        from typing import Any as TypeAlias  # type: ignore[assignment]
 
 
 Vertex: TypeAlias = tuple[float, float]
