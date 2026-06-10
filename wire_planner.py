@@ -4793,6 +4793,19 @@ def _parse_cookies_from_headers(raw_headers: str) -> dict:
     return cookies
 
 
+def _fmt_phone(raw: str) -> str:
+    """Format a phone number string. Leaves unrecognized lengths (e.g. extensions) unchanged."""
+    digits = re.sub(r"\D", "", raw)
+    n = len(digits)
+    if n == 7:
+        return f"{digits[:3]}-{digits[3:]}"
+    if n == 10:
+        return f"({digits[:3]}) {digits[3:6]}-{digits[6:]}"
+    if n == 11 and digits[0] == "1":
+        return f"1-{digits[1:4]}-{digits[4:7]}-{digits[7:]}"
+    return raw  # unrecognized length — leave as typed
+
+
 def _update_cookie_in_headers(raw_headers: str, new_cookies: dict) -> str:
     """Rebuild the Cookie: line in raw_headers with updated values; preserve other lines."""
     new_val = "; ".join(f"{k}={v}" for k, v in new_cookies.items())
@@ -4950,7 +4963,10 @@ class CtrlRoomDeskEditDialog(tk.Toplevel):
             ttk.Label(f, text=label).grid(row=i, column=0, sticky="e", padx=(0, 6), pady=3)
             var = tk.StringVar(value=d.get(key, ""))
             self._vars[key] = var
-            ttk.Entry(f, textvariable=var, width=40).grid(row=i, column=1, sticky="ew", pady=3)
+            ent = ttk.Entry(f, textvariable=var, width=40)
+            ent.grid(row=i, column=1, sticky="ew", pady=3)
+            if key.startswith("phone"):
+                ent.bind("<FocusOut>", lambda _e, v=var: v.set(_fmt_phone(v.get())))
 
         r = len(fields)
         ttk.Label(f, text="Stations:").grid(row=r, column=0, sticky="ne", padx=(0, 6), pady=(8, 3))
