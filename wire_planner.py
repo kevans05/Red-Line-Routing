@@ -4,7 +4,7 @@ Red-Line-Routing
 ----------------
 All-in-one electrical job planner: work orders, drawings, relay settings, CROWs.
 Save/load plans as project folders with .redline JSON and organised subfolders.
-Export detailed report, table, CSV, or colour-coded HTML/PDF.
+Export Wizard builds print-ready PDF packages, hyperlinked HTML, and tablet output.
 """
 
 # stdlib
@@ -1346,136 +1346,8 @@ def format_job(index, job):
     lines.append("")
     return "\n".join(lines)
 
-def generate_report(jobs, project="", drawing_registry=None, title_page=None):
-    now = datetime.now().strftime("%Y-%m-%d  %H:%M")
-    title = "WIRE WORK PLAN" + (f"  —  {project}" if project else "")
-    counts = {}
-    for j in jobs: counts[j["type"]] = counts.get(j["type"],0)+1
-    summary = "  ".join(f"{v} {k}" for k,v in counts.items())
-    parts = [_bar("*"),title.center(W),f"Generated: {now}".center(W),_bar("*"),"",
-             f"  Total Jobs : {len(jobs)}",f"  Breakdown  : {summary}",""]
-    if title_page:
-        notes = title_page.get("notes", "").strip()
-        crows = title_page.get("crows", [])
-        if notes or crows:
-            parts += [_bar("-"), "  TITLE PAGE".center(W), _bar("-"), ""]
-            if notes:
-                parts += ["  Notes:"] + [f"    {ln}" for ln in notes.splitlines()] + [""]
-            if crows:
-                parts += ["  CROWs:"]
-                for c in crows:
-                    parts.append(f"    {c.get('outage_number', '')}")
-                    if c.get("url"): parts.append(f"      {c['url']}")
-                parts.append("")
-    if drawing_registry:
-        parts += [_bar("-"),"  PROJECT DRAWINGS".center(W),_bar("-"),""]
-        for name in sorted(drawing_registry.keys()):
-            info = drawing_registry[name]
-            parts.append(f"  {name}" + (f"  Rev: {info['rev']}" if info.get("rev") else ""))
-            if info.get("url"):   parts.append(f"    URL:   {info['url']}")
-            if info.get("notes"): parts.append(f"    Notes: {info['notes']}")
-        parts.append("")
-    return "\n".join(parts) + "\n".join(format_job(i,j) for i,j in enumerate(jobs))
-
-
 # ──────────────────────────────────────────────────────────────────
-# Table / CSV export helpers
-# ──────────────────────────────────────────────────────────────────
-
-def _ep_summary(ep):
-    parts = []
-    if ep.get("device"):   parts.append(ep["device"])
-    if ep.get("pin"):      parts.append(f"Pin {ep['pin']}")
-    if ep.get("location"): parts.append(ep["location"])
-    if ep.get("panel"):    parts.append(f"Panel {ep['panel']}")
-    if ep.get("drawing"):
-        rev  = f" Rev{ep['drawing_rev']}"  if ep.get("drawing_rev")  else ""
-        cell = f" [{ep['drawing_cell']}]"  if ep.get("drawing_cell") else ""
-        parts.append(f"Dwg {ep['drawing']}{rev}{cell}")
-    return "  |  ".join(parts)
-
-def _prot_summary(prot):
-    parts = []
-    if prot.get("equipment"): parts.append(prot["equipment"])
-    if prot.get("location"):  parts.append(prot["location"])
-    if prot.get("panel"):     parts.append(f"Panel {prot['panel']}")
-    if prot.get("notes"):     parts.append(prot["notes"])
-    for d in _get_prot_drawings(prot):
-        rev  = f" Rev{d['drawing_rev']}"  if d.get("drawing_rev")  else ""
-        cell = f" [{d['drawing_cell']}]"  if d.get("drawing_cell") else ""
-        parts.append(f"Dwg {d.get('drawing','')}{rev}{cell}")
-    for p in prot.get("iso_points", []):
-        equip = f" ({p['equipment']})" if p.get("equipment") else ""
-        parts.append(f"{p.get('iso_type','ISO')} {p.get('reference','')}{equip}")
-    if prot.get("mb_enabled"):
-        remote = f" [{prot['mb_remote']}]"  if prot.get("mb_remote") else ""
-        notes  = f" {prot['mb_notes']}"     if prot.get("mb_notes")  else ""
-        parts.append(f"⚠ MB INPUT req.{remote}{notes}")
-    return "  |  ".join(parts)
-
-def generate_table(jobs, project="", drawing_registry=None):
-    now = datetime.now().strftime("%Y-%m-%d  %H:%M")
-    title = "WIRE WORK PLAN  —  TABLE FORMAT" + (f"  —  {project}" if project else "")
-    CW = {"seq":4,"type":14,"desc":28,"start":36,"wire":18,"end":36}
-    SEP = "  "
-    def pad(t,w): return str(t)[:w].ljust(w)
-    def row(*c): return SEP.join(pad(c[i],list(CW.values())[i]) for i in range(len(c)))
-    div = "-"*(sum(CW.values())+len(SEP)*(len(CW)-1))
-    hdr = row("#","TYPE","DESCRIPTION","START POINT / DEVICE","WIRE","END POINT / DEVICE")
-    lines = ["="*len(div),title.center(len(div)),f"Generated: {now}".center(len(div)),"="*len(div),""]
-    if drawing_registry:
-        lines += ["PROJECT DRAWINGS","-"*40]
-        for name in sorted(drawing_registry.keys()):
-            info = drawing_registry[name]
-            lines.append(f"  {name}" + (f"  Rev: {info['rev']}" if info.get("rev") else ""))
-            if info.get("url"): lines.append(f"    URL: {info['url']}")
-        lines += ["",""]
-    lines += [hdr, div]
-    type_labels = {"REMOVE":"REMOVE WIRE","ADD":"ADD WIRE","MOVE":"MOVE WIRE",
-                   "BLOCK":"BLOCK PROT.","UNBLOCK":"UNBLOCK PROT.","TESTING":"TESTING",
-                   "DEVICE ADD":"INSTALL DEVICE","DEVICE REMOVE":"REMOVE DEVICE"}
-    seq = 1
-    for job in jobs:
-        jtype = job["type"]; desc = job.get("description",""); tl = type_labels.get(jtype,jtype)
-        if jtype in ("REMOVE","ADD"):
-            lines.append(row(seq,tl,desc,_ep_summary(job.get("start",{})),job.get("wire",""),_ep_summary(job.get("end",{})))); seq+=1
-        elif jtype == "MOVE":
-            lines.append(row(seq,"MOVE — REMOVE",desc,_ep_summary(job.get("start",{})),job.get("wire",""),_ep_summary(job.get("end",{})))); seq+=1
-            lines.append(row(seq,"MOVE — ADD",desc,_ep_summary(job.get("add_start",{})),job.get("add_wire",""),_ep_summary(job.get("add_end",{})))); seq+=1
-        elif jtype in ("BLOCK","UNBLOCK"):
-            lines.append(row(seq,tl,desc,_prot_summary(job.get("protection",{})),"","")); seq+=1
-        elif jtype == "TESTING":
-            lines.append(row(seq,tl,desc,job.get("notes",""),"","")); seq+=1
-        lines.append(div)
-    return "\n".join(lines)
-
-def generate_csv(jobs, project="", drawing_registry=None):
-    import csv, io
-    buf = io.StringIO()
-    w = csv.writer(buf)
-    w.writerow(["Wire Work Plan", project,"","","",""])
-    w.writerow([])
-    w.writerow(["#","Type","Description","Start Point / Device","Wire","End Point / Device"])
-    type_labels = {"REMOVE":"REMOVE WIRE","ADD":"ADD WIRE","MOVE":"MOVE WIRE",
-                   "BLOCK":"BLOCK PROTECTION","UNBLOCK":"UNBLOCK PROTECTION","TESTING":"TESTING",
-                   "DEVICE ADD":"INSTALL DEVICE","DEVICE REMOVE":"REMOVE DEVICE"}
-    seq = 1
-    for job in jobs:
-        jtype = job["type"]; desc = job.get("description",""); tl = type_labels.get(jtype,jtype)
-        if jtype in ("REMOVE","ADD"):
-            w.writerow([seq,tl,desc,_ep_summary(job.get("start",{})),job.get("wire",""),_ep_summary(job.get("end",{}))]); seq+=1
-        elif jtype == "MOVE":
-            w.writerow([seq,"MOVE — REMOVE",desc,_ep_summary(job.get("start",{})),job.get("wire",""),_ep_summary(job.get("end",{}))]); seq+=1
-            w.writerow([seq,"MOVE — ADD",desc,_ep_summary(job.get("add_start",{})),job.get("add_wire",""),_ep_summary(job.get("add_end",{}))]); seq+=1
-        elif jtype in ("BLOCK","UNBLOCK"):
-            w.writerow([seq,tl,desc,_prot_summary(job.get("protection",{})),"",""]); seq+=1
-        elif jtype == "TESTING":
-            w.writerow([seq,tl,desc,job.get("notes",""),"",""]); seq+=1
-    return buf.getvalue()
-
-
-# ──────────────────────────────────────────────────────────────────
-# HTML (colour-coded, print to PDF in browser)
+# Job row colour theme + HTML escaping (shared by Export Wizard)
 # ──────────────────────────────────────────────────────────────────
 
 _ROW_STYLE = {
@@ -1503,235 +1375,9 @@ def _esc(t):
             .replace(">","&gt;").replace('"',"&quot;"))
 
 
-def generate_html_table(jobs, project="", drawing_registry=None, title_page=None):
-    now   = datetime.now().strftime("%Y-%m-%d %H:%M")
-    title = "Red-Line-Routing" + (f" — {project}" if project else "")
-
-    tp_html = ""
-    if title_page:
-        tp_parts = []
-        notes = title_page.get("notes", "").strip()
-        crows = title_page.get("crows", [])
-        if notes:
-            tp_parts.append(
-                f"<h2>Notes</h2>"
-                f"<p style='white-space:pre-wrap;margin:4px 0 8px'>{_esc(notes)}</p>")
-        if crows:
-            crow_rows = "".join(
-                "<tr><td>{}</td><td>{}</td></tr>".format(
-                    _esc(c.get("outage_number", "")),
-                    ('<a href="{u}">{u}</a>'.format(u=_esc(c["url"])) if c.get("url") else ""))
-                for c in crows)
-            tp_parts.append(
-                "<h2>CROWs</h2>"
-                "<table><thead><tr><th>Outage Number</th><th>URL</th></tr></thead>"
-                f"<tbody>{crow_rows}</tbody></table>")
-        if tp_parts:
-            tp_html = "".join(tp_parts) + "<br>"
-
-    drw_html = ""
-    if drawing_registry:
-        def _url_cell(info):
-            u = info.get("url","")
-            return f'<a href="{_esc(u)}">{_esc(u)}</a>' if u else ""
-        rows = "".join(
-            f"<tr><td>{_esc(n)}</td><td>{_esc(i.get('title',''))}</td>"
-            f"<td>{_esc(i.get('rev',''))}</td>"
-            f"<td>{_url_cell(i)}</td>"
-            f"<td>{_esc(i.get('notes',''))}</td></tr>"
-            for n,i in sorted(drawing_registry.items()))
-        drw_html = (f"<h2>Project Drawings</h2><table>"
-                    f"<thead><tr><th>Drawing</th><th>Title</th><th>Rev</th><th>URL</th><th>Notes</th></tr></thead>"
-                    f"<tbody>{rows}</tbody></table><br>")
-
-    reg = drawing_registry or {}
-
-    # ep_html_r / prot_html_r look up each drawing name in the registry to append its title
-    # and fall back to the registry URL when the endpoint's own drawing_url is blank.
-    def ep_html_r(ep):
-        parts = []
-        if ep.get("device"):   parts.append(f"<b>{_esc(ep['device'])}</b>")
-        if ep.get("pin"):      parts.append(f"Pin {_esc(ep['pin'])}")
-        if ep.get("location"): parts.append(_esc(ep["location"]))
-        if ep.get("panel"):    parts.append(f"Panel {_esc(ep['panel'])}")
-        if ep.get("drawing"):
-            name = ep["drawing"]
-            ri   = reg.get(name, {})
-            rev  = f" Rev{_esc(ep['drawing_rev'])}" if ep.get("drawing_rev") else ""
-            cell = f" [{_esc(ep['drawing_cell'])}]" if ep.get("drawing_cell") else ""
-            url  = ep.get("drawing_url","") or ri.get("url","")
-            tag  = f'<a href="{_esc(url)}">' if url else ""
-            etag = "</a>" if url else ""
-            ttl  = ri.get("title","")
-            ttl_html = (f' <span style="color:#666;font-style:italic">'
-                        f'— {_esc(ttl)}</span>') if ttl else ""
-            parts.append(f"{tag}{_esc(name)}{etag}{ttl_html}{rev}{cell}")
-        return "<br>".join(parts)
-
-    def prot_html_r(prot):
-        parts = []
-        if prot.get("equipment"): parts.append(f"<b>{_esc(prot['equipment'])}</b>")
-        if prot.get("location"):  parts.append(_esc(prot["location"]))
-        if prot.get("panel"):     parts.append(f"Panel {_esc(prot['panel'])}")
-        if prot.get("notes"):     parts.append(f"<i>{_esc(prot['notes'])}</i>")
-        for d in _get_prot_drawings(prot):
-            name = d.get("drawing","")
-            ri   = reg.get(name, {})
-            rev  = f" Rev{_esc(d['drawing_rev'])}" if d.get("drawing_rev") else ""
-            cell = f" [{_esc(d['drawing_cell'])}]" if d.get("drawing_cell") else ""
-            url  = d.get("drawing_url","") or ri.get("url","")
-            tag  = f'<a href="{_esc(url)}">' if url else ""
-            etag = "</a>" if url else ""
-            ttl  = ri.get("title","")
-            ttl_html = (f' <span style="color:#666;font-style:italic">'
-                        f'— {_esc(ttl)}</span>') if ttl else ""
-            parts.append(f"Dwg: {tag}{_esc(name)}{etag}{ttl_html}{rev}{cell}")
-        for p in prot.get("iso_points", []):
-            equip = f" <i>({_esc(p['equipment'])})</i>" if p.get("equipment") else ""
-            notes = f" — {_esc(p['notes'])}" if p.get("notes") else ""
-            parts.append(f"<span style='color:#555'>{_esc(p.get('iso_type','ISO'))} block "
-                         f"{_esc(p.get('reference',''))}{equip}{notes}</span>")
-        if prot.get("mb_enabled"):
-            remote = f" &nbsp;<i>[{_esc(prot['mb_remote'])}]</i>" if prot.get("mb_remote") else ""
-            notes  = f" &nbsp;{_esc(prot['mb_notes'])}"            if prot.get("mb_notes")  else ""
-            parts.append(
-                f'<span style="background:#fff3cd;color:#7d4e00;font-weight:bold;'
-                f'padding:1px 5px;border-radius:3px">'
-                f'&#9888; MB INPUT — also required: block/unblock{remote}{notes}</span>')
-        return "<br>".join(parts)
-
-    job_rows = ""
-    seq = 1
-    type_labels = {"REMOVE":"Remove Wire","ADD":"Add Wire","MOVE":"Move Wire",
-                   "BLOCK":"Block Protection","UNBLOCK":"Unblock Protection"}
-    for job in jobs:
-        jtype = job["type"]; desc = _esc(job.get("description",""))
-
-        def tr(key, label, s_html, wire, e_html):
-            row_bg, type_style = _ROW_STYLE.get(key, ("",""))
-            bc = _ROW_BORDER.get(key, "#aaa")
-            nonlocal seq
-            r = (f'<tr style="{row_bg}">'
-                 f'<td class="chk" style="border-left:4px solid {bc}">'
-                 f'<input type="checkbox"></td>'
-                 f'<td style="text-align:center">{seq}</td>'
-                 f'<td style="{type_style}">{_esc(label)}</td>'
-                 f'<td>{desc}</td>'
-                 f'<td>{s_html}</td>'
-                 f'<td>{_esc(wire)}</td>'
-                 f'<td>{e_html}</td></tr>')
-            seq += 1
-            return r
-
-        # Append standards to desc if present
-        ms_list = _std_list(job, "maintenance_standards")
-        es_list = _std_list(job, "engineering_standards")
-        stds = []
-        if ms_list: stds.append("<span style='color:#1a5276'>Maint: " + ", ".join(_esc(s) for s in ms_list) + "</span>")
-        if es_list: stds.append("<span style='color:#1a5276'>Eng: "   + ", ".join(_esc(s) for s in es_list) + "</span>")
-        if stds:
-            desc = desc + ("<br>" if desc else "") + " &nbsp; ".join(stds)
-
-        if jtype in ("REMOVE","ADD"):
-            job_rows += tr(jtype, type_labels[jtype],
-                           ep_html_r(job.get("start",{})), job.get("wire",""),
-                           ep_html_r(job.get("end",{})))
-        elif jtype == "MOVE":
-            job_rows += tr("MOVE-REMOVE","Move — Remove",
-                           ep_html_r(job.get("start",{})), job.get("wire",""),
-                           ep_html_r(job.get("end",{})))
-            job_rows += tr("MOVE-ADD","Move — Add",
-                           ep_html_r(job.get("add_start",{})), job.get("add_wire",""),
-                           ep_html_r(job.get("add_end",{})))
-        elif jtype in ("BLOCK","UNBLOCK"):
-            job_rows += tr(jtype, type_labels[jtype],
-                           prot_html_r(job.get("protection",{})), "", "")
-        elif jtype == "TESTING":
-            job_rows += tr("TESTING", type_labels.get("TESTING","Testing"),
-                           _esc(job.get("notes","")), "", "")
-
-    def _leg_span(k, lbl):
-        bg = _ROW_STYLE[k][0]
-        fg = _ROW_STYLE[k][1].split(";")[0].replace("color:", "")
-        return f'<span class="leg" style="{bg};color:{fg}">{lbl}</span>'
-    legend = "".join(
-        _leg_span(k, lbl)
-        for k,lbl in [("REMOVE","Remove Wire"),("ADD","Add Wire"),
-                      ("MOVE-REMOVE","Move — Remove"),("MOVE-ADD","Move — Add"),
-                      ("BLOCK","Block Protection"),("UNBLOCK","Unblock Protection"),
-                      ("TESTING","Testing")])
-
-    return f"""<!DOCTYPE html>
-<html lang="en"><head><meta charset="utf-8"><title>{_esc(title)}</title>
-<style>
-body{{font-family:Arial,sans-serif;font-size:9pt;margin:12mm 8mm;color:#222}}
-h1{{font-size:13pt;margin-bottom:3px}}h2{{font-size:10pt;margin:14px 0 3px}}
-p.meta{{color:#666;margin-top:0;font-size:8pt}}
-table{{border-collapse:collapse;width:100%;margin-bottom:10px}}
-th{{background:#2c3e50;color:#fff;padding:5px 7px;text-align:left;font-size:8pt}}
-td{{padding:4px 7px;border:1px solid #ccc;vertical-align:top;font-size:8pt;line-height:1.4}}
-tr{{break-inside:avoid;page-break-inside:avoid}}
-a{{color:#1a5276}}
-.chk{{text-align:center;padding:3px 4px;width:22px}}
-input[type=checkbox]{{width:14px;height:14px;cursor:pointer;accent-color:#2c3e50}}
-.legend{{display:flex;gap:8px;margin:6px 0 12px;flex-wrap:wrap;font-size:7.5pt}}
-.leg{{padding:2px 7px;border-radius:3px;border:1px solid #ccc}}
-.print-header{{display:none;font-size:7.5pt;color:#555;border-bottom:1px solid #ccc;padding:3px 0 3px;margin-bottom:6px}}
-.print-footer{{display:none}}
-@media print{{
-  body{{margin-top:18mm;margin-bottom:14mm;-webkit-print-color-adjust:exact;print-color-adjust:exact}}
-  .print-header{{display:flex;position:fixed;top:0;left:0;right:0;background:#fff;
-    padding:3px 8mm;justify-content:space-between;z-index:99}}
-  .print-footer{{display:block;position:fixed;bottom:0;left:0;right:0;background:#fff;
-    font-size:7pt;color:#999;padding:2px 8mm;border-top:1px solid #eee;text-align:right}}
-  .print-footer::after{{content:"Page " counter(page)}}
-  a{{color:#000;text-decoration:none}}
-  input[type=checkbox]{{-webkit-appearance:none;appearance:none;border:1.5px solid #444;
-    width:11px;height:11px;display:inline-block;vertical-align:middle}}
-  tr.done td{{text-decoration:line-through;opacity:0.55}}
-  @page{{size:A3 landscape;margin:14mm 8mm 12mm 8mm}}
-}}
-tr.done td{{text-decoration:line-through;opacity:0.6}}
-</style></head><body>
-<div class="print-header">
-  <span><b>{_esc(title)}</b></span>
-  <span>Generated: {now} &nbsp;|&nbsp; {seq-1} step(s)</span>
-</div>
-<div class="print-footer"></div>
-<h1>{_esc(title)}</h1>
-<p class="meta">Generated: {now} &nbsp;|&nbsp; {seq-1} step(s)</p>
-<div class="legend">{legend}</div>
-{tp_html}{drw_html}
-<table><thead><tr>
-<th class="chk" style="width:22px">✓</th><th style="width:28px">#</th><th style="width:110px">Type</th>
-<th style="width:15%">Description</th><th style="width:24%">Start Point / Device</th>
-<th style="width:95px">Wire</th><th style="width:24%">End Point / Device</th>
-</tr></thead><tbody>{job_rows}</tbody></table>
-<p style="font-size:7pt;color:#aaa">Ctrl+P → Save as PDF</p>
-<script>
-document.querySelectorAll('input[type=checkbox]').forEach(function(cb){{
-  cb.addEventListener('change', function(){{
-    var tr = this.closest('tr');
-    if(this.checked){{
-      tr.classList.add('done');
-    }} else {{
-      tr.classList.remove('done');
-    }}
-  }});
-}});
-</script>
-</body></html>"""
-
-
-
 # ──────────────────────────────────────────────────────────────────
 # Export Wizard — helpers and dialog
 # ──────────────────────────────────────────────────────────────────
-
-_EW_DIVIDER_COLORS = [
-    "#2c3e50","#1a5276","#1e8449","#7d6608",
-    "#78281f","#4a235a","#1b4f72","#0e6655",
-]
 
 _EW_PAGE_SIZES = [
     "Letter Portrait", "Letter Landscape",
@@ -1799,7 +1445,6 @@ body{{font-family:-apple-system,"Helvetica Neue",Arial,sans-serif;
   section{{background:white;margin:0 auto 24px;padding:0.7in;
           box-shadow:0 2px 14px rgba(0,0,0,.3);position:relative;overflow:hidden;
           min-width:6in;max-width:16.5in}}
-  section.page-divider{{min-height:10in}}
   section.page-cover{{padding:0 0 0.7in}}
 }}
 @media print{{
@@ -1833,6 +1478,7 @@ h3{{font-size:10pt;margin:14px 0 4px;color:#1a252f;text-transform:uppercase;
 .toc-num{{color:#1a252f;font-weight:bold;width:32px;text-align:right;
           padding-right:14px !important;font-size:11pt}}
 .toc-tbl a{{color:#1a252f;text-decoration:none;font-weight:500}}
+.toc-ext{{color:#888;font-style:italic}}
 .toc-tbl tr:hover td{{background:#f0f4f8}}
 /* General */
 h2.sec-hdr{{font-size:13pt;color:#1a252f;border-bottom:2px solid #1a252f;
@@ -1924,7 +1570,8 @@ def _ew_cover(project, crows, date, toc_items, mode, css_class="page-cover",
     ) if crows else ""
     toc_rows = "".join(
         f"<tr><td class='toc-num'>{i + 1}</td>"
-        f"<td><a href='#{_esc(anch)}'>{_esc(label)}</a></td></tr>"
+        + (f"<td><a href='#{_esc(anch)}'>{_esc(label)}</a></td></tr>" if anch
+           else f"<td><span class='toc-ext'>{_esc(label)}</span></td></tr>")
         for i, (label, anch) in enumerate(toc_items)
     ) if toc_items else ""
     toc_html = (
@@ -1943,23 +1590,6 @@ def _ew_cover(project, crows, date, toc_items, mode, css_class="page-cover",
         f'<tr><td class="meta-lbl">Generated</td><td>{_esc(date)}</td></tr>'
         f'</tbody></table>'
         f'{outage_html}{toc_html}'
-        f'</div></section>\n'
-    )
-
-
-def _ew_divider(section_name, project, date, tab_idx, n_tabs, color, css_class="page-divider"):
-    usable_cm = 22.0
-    tab_h_cm  = 2.0
-    gap_cm    = max(0.2, (usable_cm - n_tabs * tab_h_cm) / max(n_tabs - 1, 1))
-    top_cm    = 1.5 + tab_idx * (tab_h_cm + gap_cm)
-    return (
-        f'<section class="{css_class}">'
-        f'<div class="divider-tab" style="background:{color};top:{top_cm:.1f}cm">'
-        f'{_esc(section_name)}</div>'
-        f'<div style="padding:.35in 3cm .35in .5in">'
-        f'<div class="divider-name" style="color:{color}">{_esc(section_name)}</div>'
-        f'<div class="divider-proj">{_esc(project)}</div>'
-        f'<div class="divider-date">{_esc(date)}</div>'
         f'</div></section>\n'
     )
 
@@ -3033,19 +2663,23 @@ def _build_print_pdf(app, inc: dict, sizes: dict, crows: list,
     nopdf = []     # filenames of files that couldn't be merged
 
     # ── 1. Cover page ─────────────────────────────────────────────
+    toc_items = [("Work Orders", "")]
+    for k, lbl in [
+        ("drawings",    "Drawings Register"),
+        ("relay",       "Relay Settings"),
+        ("maintenance", "Maintenance Standards"),
+        ("engineering", "Engineering Standards"),
+    ]:
+        if inc.get(k) == "print":
+            toc_items.append((lbl, ""))
+        elif inc.get(k) == "toc":
+            toc_items.append((lbl + "  — printed separately", ""))
     _pdf_cover(
         bld,
         app.project_var.get().strip(),
         crows,
         datetime.now().strftime("%Y-%m-%d %H:%M"),
-        toc_items=[("Work Orders", "")] + [
-            (lbl, "") for k, lbl in [
-                ("drawings",    "Drawings Register"),
-                ("relay",       "Relay Settings"),
-                ("maintenance", "Maintenance Standards"),
-                ("engineering", "Engineering Standards"),
-            ] if inc.get(k)
-        ],
+        toc_items=toc_items,
         size=sizes.get("cover", "Letter Portrait"),
     )
 
@@ -3054,28 +2688,28 @@ def _build_print_pdf(app, inc: dict, sizes: dict, crows: list,
     _pdf_work_orders(bld, app.jobs, app.drawing_registry, wo_size)
 
     # ── 3. Drawings ───────────────────────────────────────────────
-    if inc.get("drawings"):
+    if inc.get("drawings") == "print":
         _pdf_drawings_reg(bld, app.drawing_registry,
                           sizes.get("drawings","Letter Portrait"))
         if folder:
             parts.extend(_collect_pdfs(folder, "Drawings", recurse=True))
 
     # ── 4. Relay Settings ─────────────────────────────────────────
-    if inc.get("relay"):
+    if inc.get("relay") == "print":
         _pdf_relay_reg(bld, app.relay_registry,
                        sizes.get("relay","Letter Portrait"))
         if folder:
             parts.extend(_collect_pdfs(folder, "Relay Settings"))
 
     # ── 5. Maintenance Standards ──────────────────────────────────
-    if inc.get("maintenance"):
+    if inc.get("maintenance") == "print":
         _pdf_standards(bld, app.maintenance_standards_registry, {},
                        sizes.get("maintenance","Letter Portrait"))
         if folder:
             parts.extend(_collect_pdfs(folder, "Maintenance Standards"))
 
     # ── 6. Engineering Standards ──────────────────────────────────
-    if inc.get("engineering"):
+    if inc.get("engineering") == "print":
         _pdf_standards(bld, {}, app.engineering_standards_registry,
                        sizes.get("engineering","Letter Portrait"))
         if folder:
@@ -3132,7 +2766,8 @@ class ExportWizard(tk.Toplevel):
         self._v_paper   = tk.BooleanVar(value=True)
         self._v_digital = tk.BooleanVar(value=True)
         self._v_tablet  = tk.BooleanVar(value=False)
-        self._v_sec     = {k: tk.BooleanVar(value=False) for k, _ in self._SECTIONS}
+        # Per-section mode: "Skip" | "Print" | "TOC only"
+        self._v_sec     = {k: tk.StringVar(value="Skip") for k, _ in self._SECTIONS}
         self._v_qr      = tk.BooleanVar(value=True)
         self._v_sizes   = {k: tk.StringVar(value=v) for k, v in self._DEFAULTS.items()}
 
@@ -3217,8 +2852,13 @@ class ExportWizard(tk.Toplevel):
         opt.pack(fill="x", pady=(0, 10))
         for key, label in self._SECTIONS:
             r = ttk.Frame(opt); r.pack(fill="x", pady=2)
-            ttk.Checkbutton(r, variable=self._v_sec[key]).pack(side="left")
-            ttk.Label(r, text=label).pack(side="left", padx=(4, 0))
+            ttk.Combobox(r, textvariable=self._v_sec[key], width=10,
+                         values=("Skip", "Print", "TOC only"),
+                         state="readonly").pack(side="left")
+            ttk.Label(r, text=label).pack(side="left", padx=(8, 0))
+        ttk.Label(opt, text="TOC only — listed on the cover page as “printed separately”,"
+                            " no pages added to the package.",
+                  foreground="grey", font=("", 8)).pack(anchor="w", pady=(6, 0))
 
         ext = ttk.LabelFrame(f, text="Extras", padding=(12, 6))
         ext.pack(fill="x")
@@ -3298,7 +2938,9 @@ class ExportWizard(tk.Toplevel):
         date   = datetime.now().strftime("%Y-%m-%d %H:%M")
         date_s = datetime.now().strftime("%Y-%m-%d")
         crows  = app.title_page.get("crows", [])
-        inc    = {k: self._v_sec[k].get() for k, _ in self._SECTIONS}
+        _sec_mode = {"Skip": "skip", "Print": "print", "TOC only": "toc"}
+        inc    = {k: _sec_mode.get(self._v_sec[k].get(), "skip")
+                  for k, _ in self._SECTIONS}
         sizes  = {k: v.get() for k, v in self._v_sizes.items()}
         qr_flag = self._v_qr.get()
 
@@ -3308,8 +2950,12 @@ class ExportWizard(tk.Toplevel):
             "maintenance": "sec-maintenance",
             "engineering": "sec-engineering",
         }
-        toc = [("Work Orders", "sec-work-orders")] + [
-            (lbl, _sec_anchor[k]) for k, lbl in self._SECTIONS if inc.get(k)]
+        toc = [("Work Orders", "sec-work-orders")]
+        for k, lbl in self._SECTIONS:
+            if inc.get(k) == "print":
+                toc.append((lbl, _sec_anchor[k]))
+            elif inc.get(k) == "toc":
+                toc.append((lbl + "  — printed separately", ""))
 
         # Collect all document URLs for the QR sheet
         qr_items = []
@@ -3487,7 +3133,7 @@ class ExportWizard(tk.Toplevel):
             ),
         }
         for key, _ in self._SECTIONS:
-            if not inc.get(key):
+            if inc.get(key) != "print":
                 continue
             body += sec_funcs[key]()
 
@@ -5815,12 +5461,7 @@ class RedLineApp(tk.Tk):
         fm.add_command(label="Save",                   command=self._save,         accelerator="Ctrl+S")
         fm.add_command(label="Save As…",               command=self._save_as)
         fm.add_separator()
-        fm.add_command(label="Export Wizard…",            command=self._open_export_wizard, accelerator="Ctrl+W")
-        fm.add_separator()
-        fm.add_command(label="Export Report (detail)…",command=self._export_report,accelerator="Ctrl+E")
-        fm.add_command(label="Export Table (text)…",   command=self._export_table)
-        fm.add_command(label="Export CSV (Excel)…",    command=self._export_csv)
-        fm.add_command(label="Export HTML (colour PDF)…",command=self._export_html)
+        fm.add_command(label="Export Wizard…",         command=self._open_export_wizard, accelerator="Ctrl+E")
         fm.add_separator()
         fm.add_command(label="Software Settings…",     command=self._open_software_settings)
         fm.add_separator()
@@ -5830,8 +5471,7 @@ class RedLineApp(tk.Tk):
         self.bind("<Control-n>", lambda _: self._new_plan())
         self.bind("<Control-o>", lambda _: self._open())
         self.bind("<Control-s>", lambda _: self._save())
-        self.bind("<Control-e>", lambda _: self._export_report())
-        self.bind("<Control-w>", lambda _: self._open_export_wizard())
+        self.bind("<Control-e>", lambda _: self._open_export_wizard())
         self.bind("<Control-q>", lambda _: self.quit())
 
     def _build_ui(self):
@@ -5862,15 +5502,12 @@ class RedLineApp(tk.Tk):
             btn.pack(side="left", padx=2, ipady=5)
             self._mode_btns[val] = (btn, act_bg)
 
-        # Right: export buttons
+        # Right: export wizard button
         rf = tk.Frame(hdr, bg="#1c2833"); rf.pack(side="right", padx=6)
-        for lbl, cmd in [("HTML / PDF", self._export_html), ("CSV", self._export_csv),
-                          ("Table", self._export_table), ("Report", self._export_report),
-                          ("Preview", self._preview_report)]:
-            tk.Button(rf, text=lbl, bg="#2e4053", fg="#bdc3c7", relief="flat",
-                      padx=7, bd=0, cursor="hand2", font=("", 8),
-                      activebackground="#3d5166", activeforeground="white",
-                      command=cmd).pack(side="left", padx=2, ipady=4, pady=6)
+        tk.Button(rf, text="  Export Wizard  ", bg="#27ae60", fg="white",
+                  relief="flat", padx=7, bd=0, cursor="hand2", font=("", 9, "bold"),
+                  activebackground="#2ecc71", activeforeground="white",
+                  command=self._open_export_wizard).pack(side="left", padx=2, ipady=4, pady=6)
 
         self._update_mode_buttons("planner")
         tk.Frame(self, bg="#2980b9", height=2).pack(fill="x")
@@ -8525,83 +8162,11 @@ class RedLineApp(tk.Tk):
             f"Auto-grouped: {len(removes)} remove(s) and {len(adds)} add(s) sorted by shared device.")
 
     # ──────────────────────────────────────────────────────────────────
-    # Export methods (report, table, CSV, HTML)
+    # Export (wizard)
     # ──────────────────────────────────────────────────────────────────
-
-    def _preview_report(self):
-        if not self.jobs: messagebox.showinfo("No Jobs","Add at least one job before previewing."); return
-        tp = dict(self.title_page); tp["notes"] = self.title_notes.get("1.0","end").strip()
-        report = generate_report(self.jobs,self.project_var.get().strip(),self.drawing_registry,title_page=tp)
-        win = tk.Toplevel(self); win.title("Report Preview"); win.geometry("740x720")
-        txt = scrolledtext.ScrolledText(win,font=("Courier",9),wrap="none")
-        txt.pack(fill="both",expand=True,padx=6,pady=6); txt.insert("1.0",report); txt.configure(state="disabled")
-        bf = ttk.Frame(win); bf.pack(pady=(0,8))
-        ttk.Button(bf,text="Export Report…",command=self._export_report).pack(side="left",padx=4)
-        ttk.Button(bf,text="Close",command=win.destroy).pack(side="left",padx=4)
 
     def _open_export_wizard(self):
         ExportWizard(self, self)
-
-    def _export_report(self):
-        tp = dict(self.title_page); tp["notes"] = self.title_notes.get("1.0","end").strip()
-        self._export_text(generate_report(self.jobs,self.project_var.get().strip(),self.drawing_registry,title_page=tp),
-                          f"wire_report_{datetime.now().strftime('%Y%m%d')}.txt")
-
-    def _export_table(self):
-        self._export_text(generate_table(self.jobs,self.project_var.get().strip(),self.drawing_registry),
-                          f"wire_table_{datetime.now().strftime('%Y%m%d')}.txt")
-
-    def _export_text(self, content, default_name):
-        if not self.jobs: messagebox.showinfo("No Jobs","Add at least one job first."); return
-        path = filedialog.asksaveasfilename(defaultextension=".txt",
-                   filetypes=[("Text files","*.txt"),("All files","*.*")],initialfile=default_name)
-        if not path: return
-        with open(path,"w",encoding="utf-8") as fh: fh.write(content)
-        self.status_var.set(f"Exported → {path}")
-        if messagebox.askyesno("Exported",f"Saved to:\n{path}\n\nOpen the file now?"): _open_file(path)
-
-    def _export_csv(self):
-        if not self.jobs: messagebox.showinfo("No Jobs","Add at least one job first."); return
-        path = filedialog.asksaveasfilename(defaultextension=".csv",
-                   filetypes=[("CSV files","*.csv"),("All files","*.*")],
-                   initialfile=f"wire_table_{datetime.now().strftime('%Y%m%d')}.csv")
-        if not path: return
-        with open(path,"w",encoding="utf-8",newline="") as fh:
-            fh.write(generate_csv(self.jobs,self.project_var.get().strip(),self.drawing_registry))
-        self.status_var.set(f"CSV exported → {path}")
-        if messagebox.askyesno("Exported",f"Saved to:\n{path}\n\nOpen now?"): _open_file(path)
-
-    def _export_html(self):
-        if not self.jobs:
-            messagebox.showinfo("No Jobs", "Add at least one job first."); return
-
-        proj = self.project_var.get().strip()
-        safe = "".join(c if c not in r'<>:"/\|?*' else "_" for c in proj) if proj else "RedLine_Export"
-        default_name = safe + ".html"
-
-        if self.project_folder:
-            # Auto-save into the project root folder — no dialog needed
-            path = os.path.join(self.project_folder, default_name)
-        else:
-            path = filedialog.asksaveasfilename(
-                defaultextension=".html",
-                filetypes=[("HTML files", "*.html"), ("All files", "*.*")],
-                initialfile=default_name)
-            if not path: return
-
-        tp = dict(self.title_page); tp["notes"] = self.title_notes.get("1.0", "end").strip()
-        html = generate_html_table(self.jobs, proj, self.drawing_registry, title_page=tp)
-        try:
-            with open(path, "w", encoding="utf-8") as fh:
-                fh.write(html)
-        except OSError as exc:
-            messagebox.showerror("Export Error", f"Could not write HTML:\n{exc}"); return
-        self.status_var.set(f"HTML exported → {path}")
-        webbrowser.open(path)
-        messagebox.showinfo("HTML Saved",
-            f"Saved to:\n{path}\n\n"
-            "Opened in your browser.\n"
-            "Ctrl+P → Save as PDF to create a PDF copy.")
 
     # ──────────────────────────────────────────────────────────────────
     # Save / Load
