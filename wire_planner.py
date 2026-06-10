@@ -47,8 +47,13 @@ try:
                                 load_cached_options, save_cached_options,
                                 fetch_form_options)
     _DRAWING_SEARCH_AVAILABLE = True
+    import inspect as _insp
+    _DSC_HAS_COOKIE_CB = "on_cookie_update" in _insp.signature(
+        DrawingSearchClient.__init__).parameters
+    del _insp
 except ImportError:
     _DRAWING_SEARCH_AVAILABLE = False
+    _DSC_HAS_COOKIE_CB = False
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -4308,9 +4313,10 @@ class DrawingSearchDialog(tk.Toplevel):
             if self._persist_fn:
                 self._persist_fn()
 
+        kw = {"on_cookie_update": _on_cookie_update} if _DSC_HAS_COOKIE_CB else {}
         return DrawingSearchClient(base_url=base_url, cookies=cookies, cache=cache,
                                    search_path=path, extra_headers=extra or None,
-                                   on_cookie_update=_on_cookie_update)
+                                   **kw)
 
     def _get_params(self, page=0):
         # Parse code from "CODE — Label" or raw code
