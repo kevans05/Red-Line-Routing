@@ -60,6 +60,10 @@ class DrawingSearchCache:
 
     def put(self, params, results: "list[DrawingResult]") -> None:
         """Store *results* in the cache under the key derived from *params*."""
+        if not results:
+            # Never cache empty results — they are indistinguishable from an
+            # auth failure (server returned a login redirect instead of data).
+            return
         key = _params_hash(params)
         params_json = json.dumps(params._to_form_data(), sort_keys=True)
         results_json = json.dumps([asdict(r) for r in results])

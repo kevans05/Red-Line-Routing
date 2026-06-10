@@ -3253,24 +3253,50 @@ class ExportWizard(tk.Toplevel):
                       font=("", 9, "bold")).pack(side="left")
             ttk.Label(r, text=txt).pack(side="left", padx=(6, 0))
 
-        opt = ttk.LabelFrame(f, text="Optional sections", padding=(12, 6))
-        opt.pack(fill="x", pady=(0, 10))
-        for key, label in self._SECTIONS:
-            r = ttk.Frame(opt); r.pack(fill="x", pady=2)
-            ttk.Combobox(r, textvariable=self._v_sec[key], width=10,
-                         values=("Skip", "Print", "TOC only"),
-                         state="readonly").pack(side="left")
-            ttk.Label(r, text=label).pack(side="left", padx=(8, 0))
-        ttk.Label(opt, text="TOC only — listed on the cover page as “printed separately”,"
-                            " no pages added to the package.",
-                  foreground="grey", font=("", 8)).pack(anchor="w", pady=(6, 0))
-
+        # Pack "Extras" with side="bottom" first so it always stays visible when
+        # the optional-sections area expands to fill remaining space.
         ext = ttk.LabelFrame(f, text="Extras", padding=(12, 6))
-        ext.pack(fill="x")
+        ext.pack(side="bottom", fill="x")
         r2 = ttk.Frame(ext); r2.pack(fill="x", pady=2)
         ttk.Checkbutton(r2, variable=self._v_qr).pack(side="left")
         ttk.Label(r2, text="QR Code Sheet  (paper only — all document URLs as scannable codes)"
                   ).pack(side="left", padx=(4, 0))
+
+        opt = ttk.LabelFrame(f, text="Optional sections", padding=(12, 6))
+        opt.pack(fill="both", expand=True, pady=(0, 8))
+
+        # Scrollable canvas so the dialog size stays fixed regardless of section count
+        _cv  = tk.Canvas(opt, highlightthickness=0, bd=0)
+        _vsb = ttk.Scrollbar(opt, orient="vertical", command=_cv.yview)
+        _cv.configure(yscrollcommand=_vsb.set)
+        _inner = ttk.Frame(_cv)
+        for key, label in self._SECTIONS:
+            r = ttk.Frame(_inner); r.pack(fill="x", pady=2)
+            ttk.Combobox(r, textvariable=self._v_sec[key], width=10,
+                         values=("Skip", "Print", "TOC only"),
+                         state="readonly").pack(side="left")
+            ttk.Label(r, text=label).pack(side="left", padx=(8, 0))
+        ttk.Label(_inner,
+                  text="TOC only — listed on the cover page as “printed separately”,"
+                       " no pages added to the package.",
+                  foreground="grey", font=("", 8)).pack(anchor="w", pady=(6, 0))
+        _cwin = _cv.create_window((0, 0), window=_inner, anchor="nw")
+        _inner.bind("<Configure>",
+                    lambda e: _cv.configure(scrollregion=_cv.bbox("all")))
+        _cv.bind("<Configure>",
+                 lambda e: _cv.itemconfigure(_cwin, width=e.width))
+        def _wheel(event):
+            if event.delta:
+                _cv.yview_scroll(int(-1 * (event.delta / 120)), "units")
+            elif event.num == 4:
+                _cv.yview_scroll(-1, "units")
+            elif event.num == 5:
+                _cv.yview_scroll(1, "units")
+        for seq in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+            _cv.bind(seq, _wheel)
+            _inner.bind(seq, _wheel)
+        _vsb.pack(side="right", fill="y")
+        _cv.pack(side="left", fill="both", expand=True)
         return f
 
     def _step3(self, parent):
