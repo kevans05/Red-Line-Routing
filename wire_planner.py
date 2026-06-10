@@ -2995,16 +2995,7 @@ def _build_print_pdf(app, inc: dict, sizes: dict, crows: list,
 
     # ── 7. CROW attached files ────────────────────────────────────
     if folder:
-        crow_dir = os.path.join(folder, "CROW Outage")
-        for crow in crows:
-            for fname in crow.get("files", []):
-                fpath = os.path.join(crow_dir, fname)
-                if os.path.isfile(fpath):
-                    data, err = _convert_file_to_pdf(fpath)
-                    if data:
-                        parts.append(data)
-                    else:
-                        nopdf.append(f"{fname} ({err})")
+        parts.extend(_collect_pdfs(folder, "CROW Outage"))
 
     # ── Build + merge ─────────────────────────────────────────────
     doc_pdf = bld.build()
