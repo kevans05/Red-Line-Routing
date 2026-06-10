@@ -151,8 +151,10 @@ def empty_protection():
 def empty_job(job_type="REMOVE"):
     if job_type in ("BLOCK", "UNBLOCK"):
         return {"type": job_type, "description": "", "protection": empty_protection()}
-    if job_type in ("TESTING", "ISOLATION"):
+    if job_type == "TESTING":
         return {"type": job_type, "description": "", "notes": ""}
+    if job_type == "ISOLATION":
+        return {"type": job_type, "description": "", "drawings": [], "notes": ""}
     if job_type == "CR_PROT":
         return {"type": "CR_PROT", "description": "", "desks": [], "crows": [], "notes": ""}
     if job_type in ("DEVICE ADD", "DEVICE REMOVE"):
@@ -1072,10 +1074,16 @@ class JobDialog(tk.Toplevel):
         elif self.job_type == "ISOLATION":
             self._section_label(f, row, "── ISOLATION ──", color); row += 2
             ttk.Label(f, text="Notes:").grid(row=row, column=0, sticky="ne", padx=(0,6), pady=2)
-            iso_txt = tk.Text(f, width=58, height=6, wrap="word", font=("",9))
+            iso_txt = tk.Text(f, width=58, height=4, wrap="word", font=("",9))
             iso_txt.grid(row=row, column=0, columnspan=2, sticky="ew", pady=2)
             iso_txt.insert("1.0", ex.get("notes",""))
             self._test_notes_widget = iso_txt
+            row += 1
+            self._iso_drawings_frame = MultiDrawingFrame(
+                f, registry=self.registry,
+                base_drawing_url=self.settings.get("base_drawing_url", ""))
+            self._iso_drawings_frame.grid(row=row, column=0, columnspan=2, sticky="ew", pady=(4,2))
+            self._iso_drawings_frame.set(ex.get("drawings", []))
             row += 1
 
         elif self.job_type == "CR_PROT":
@@ -1255,7 +1263,10 @@ class JobDialog(tk.Toplevel):
         elif self.job_type in ("DEVICE ADD","DEVICE REMOVE"):
             job["endpoint"] = self.ep_device.get()
             job["notes"]    = self._dev_notes_widget.get("1.0","end").strip()
-        elif self.job_type in ("TESTING", "ISOLATION"):
+        elif self.job_type == "TESTING":
+            job["notes"] = self._test_notes_widget.get("1.0","end").strip()
+        elif self.job_type == "ISOLATION":
+            job["drawings"] = self._iso_drawings_frame.get()
             job["notes"] = self._test_notes_widget.get("1.0","end").strip()
         elif self.job_type == "CR_PROT":
             selected_ids = {did for did, var in self._cr_desk_vars.items() if var.get()}
@@ -1420,7 +1431,18 @@ def format_job(index, job):
         lines += ["", _ep_block(job.get("endpoint", {}), "DEVICE / LOCATION")]
         if job.get("notes"):
             lines += ["", "  NOTES", *[f"    {ln}" for ln in job["notes"].splitlines()]]
-    elif jtype in ("TESTING", "ISOLATION"):
+    elif jtype == "TESTING":
+        if job.get("notes"):
+            lines += ["","  NOTES", *[f"    {ln}" for ln in job["notes"].splitlines()]]
+    elif jtype == "ISOLATION":
+        drawings = job.get("drawings", [])
+        if drawings:
+            lines += ["", "  DRAWINGS"]
+            for d in drawings:
+                line = f"    {d.get('drawing','')}"
+                if d.get("drawing_rev"): line += f"  Rev {d['drawing_rev']}"
+                if d.get("drawing_cell"): line += f"  Cell {d['drawing_cell']}"
+                lines.append(line)
         if job.get("notes"):
             lines += ["","  NOTES", *[f"    {ln}" for ln in job["notes"].splitlines()]]
     elif jtype == "CR_PROT":
@@ -1801,8 +1823,15 @@ def _ew_work_orders(jobs, drawing_registry, mode, css_class="page-content"):
             rows += _tr("TESTING", tl.get("TESTING", "Testing"),
                         _esc(job.get("notes", "")), "", "")
         elif jt == "ISOLATION":
-            rows += _tr("ISOLATION", tl.get("ISOLATION", "Isolation"),
-                        _esc(job.get("notes", "")), "", "")
+            drawings = job.get("drawings", [])
+            cell = "<br>".join(
+                f"<b>{_esc(d.get('drawing',''))}</b>"
+                + (f" Rev {_esc(d['drawing_rev'])}" if d.get("drawing_rev") else "")
+                + (f" Cell {_esc(d['drawing_cell'])}" if d.get("drawing_cell") else "")
+                for d in drawings)
+            if job.get("notes"):
+                cell += ("<br>" if cell else "") + _esc(job["notes"])
+            rows += _tr("ISOLATION", tl.get("ISOLATION", "Isolation"), cell, "", "")
         elif jt == "CR_PROT":
             desks = job.get("desks", [])
             desk_parts = []
@@ -2594,8 +2623,17 @@ def _pdf_work_orders(bld, jobs, drw_reg, size="11x17 Landscape"):
                      _ep_flat(job.get("add_end",{})))
         elif jt in ("BLOCK","UNBLOCK"):
             draw_row(jt, desc, _prot_flat(job.get("protection",{})), "", "")
-        elif jt in ("TESTING", "ISOLATION"):
+        elif jt == "TESTING":
             draw_row(jt, desc, job.get("notes",""), "", "")
+        elif jt == "ISOLATION":
+            drawings = job.get("drawings", [])
+            detail = "; ".join(
+                d.get("drawing","")
+                + (f" Rev {d['drawing_rev']}" if d.get("drawing_rev") else "")
+                for d in drawings)
+            if job.get("notes"):
+                detail += (" | " if detail else "") + job["notes"]
+            draw_row(jt, desc, detail, "", "")
         elif jt == "CR_PROT":
             desks = job.get("desks", [])
             desk_str = "; ".join(
