@@ -28,6 +28,9 @@ import glob
 import shutil
 import sqlite3
 import tempfile
+import ctypes
+import ctypes.wintypes
+import base64
 
 # Ensure the directory containing wire_planner.py is on sys.path so that
 # sibling packages (drawing_search/) are always importable, regardless of
@@ -4814,6 +4817,136 @@ def _update_cookie_in_headers(raw_headers: str, new_cookies: dict) -> str:
     return "\n".join(lines_out)
 
 
+def _domain_from_url(url: str) -> str:
+    """Extract just the hostname from a URL, or return the raw string."""
+    try:
+        return urllib.parse.urlparse(url).hostname or url
+    except Exception:
+        return url
+
+
+def _dpapi_decrypt(data: bytes) -> bytes:
+    """Decrypt bytes using Windows CryptUnprotectData (stdlib ctypes only)."""
+    class _BLOB(ctypes.Structure):
+        _fields_ = [("cbData", ctypes.wintypes.DWORD),
+                    ("pbData", ctypes.POINTER(ctypes.c_char))]
+    inp = _BLOB(len(data), ctypes.cast(ctypes.c_char_p(data), ctypes.POINTER(ctypes.c_char)))
+    out = _BLOB()
+    ok  = ctypes.windll.crypt32.CryptUnprotectData(
+        ctypes.byref(inp), None, None, None, None, 0, ctypes.byref(out))
+    if not ok:
+        raise OSError(f"CryptUnprotectData failed (error {ctypes.GetLastError()})")
+    result = ctypes.string_at(out.pbData, out.cbData)
+    ctypes.windll.kernel32.LocalFree(out.pbData)
+    return result
+
+
+def _decrypt_cookie_aes_gcm(key: bytes, enc_val: bytes) -> "str | None":
+    """Decrypt a Chrome/Edge v10/v20 AES-256-GCM cookie value via PowerShell."""
+    if len(enc_val) < 3 + 12 + 16:
+        return None
+    nonce  = enc_val[3:15]
+    ct_tag = enc_val[15:]
+    k64 = base64.b64encode(key).decode()
+    n64 = base64.b64encode(nonce).decode()
+    d64 = base64.b64encode(ct_tag).decode()
+    script = (
+        f"$k=[Convert]::FromBase64String('{k64}');"
+        f"$n=[Convert]::FromBase64String('{n64}');"
+        f"$d=[Convert]::FromBase64String('{d64}');"
+        "$t=$d[($d.Length-16)..($d.Length-1)];"
+        "$c=$d[0..($d.Length-17)];"
+        "$a=[System.Security.Cryptography.AesGcm]::new($k);"
+        "$p=New-Object byte[] $c.Length;"
+        "$a.Decrypt($n,$c,$t,$p);"
+        "[Convert]::ToBase64String($p)"
+    )
+    try:
+        r = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+            capture_output=True, text=True, timeout=15)
+        out = r.stdout.strip()
+        if r.returncode != 0 or not out:
+            return None
+        return base64.b64decode(out).decode("utf-8", errors="replace")
+    except Exception:
+        return None
+
+
+def _grab_browser_cookies(domain: str) -> dict:
+    """Extract cookies for *domain* from Edge (or Chrome) on Windows.
+
+    Returns {name: value}.  Raises RuntimeError on any setup failure.
+    """
+    if sys.platform != "win32":
+        raise RuntimeError("Browser cookie extraction is only supported on Windows.")
+
+    local_app = os.environ.get("LOCALAPPDATA", "")
+    browser_dir = None
+    for candidate in (
+        os.path.join(local_app, "Microsoft", "Edge", "User Data"),
+        os.path.join(local_app, "Google",    "Chrome", "User Data"),
+    ):
+        if os.path.isdir(candidate):
+            browser_dir = candidate
+            break
+    if browser_dir is None:
+        raise RuntimeError("Could not find Edge or Chrome user data directory.")
+
+    local_state_path = os.path.join(browser_dir, "Local State")
+    with open(local_state_path, "r", encoding="utf-8") as fh:
+        local_state = json.load(fh)
+    enc_key_b64 = local_state["os_crypt"]["encrypted_key"]
+    enc_key     = base64.b64decode(enc_key_b64)[5:]   # strip leading "DPAPI" bytes
+    master_key  = _dpapi_decrypt(enc_key)
+
+    cookies_path = None
+    for rel in (
+        os.path.join("Default", "Network", "Cookies"),
+        os.path.join("Default", "Cookies"),
+    ):
+        p = os.path.join(browser_dir, rel)
+        if os.path.isfile(p):
+            cookies_path = p
+            break
+    if cookies_path is None:
+        raise RuntimeError("Could not find Edge/Chrome Cookies database.")
+
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tf:
+        tmp_path = tf.name
+    try:
+        shutil.copy2(cookies_path, tmp_path)
+        conn = sqlite3.connect(tmp_path)
+        domain_clean = domain.lstrip(".")
+        rows = conn.execute(
+            "SELECT name, encrypted_value FROM cookies"
+            " WHERE host_key LIKE ? OR host_key LIKE ?",
+            (f"%{domain_clean}%", f"%.{domain_clean}%"),
+        ).fetchall()
+        conn.close()
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+
+    result = {}
+    for name, enc_val in rows:
+        if not enc_val:
+            continue
+        if enc_val[:3] in (b"v10", b"v20"):
+            val = _decrypt_cookie_aes_gcm(master_key, enc_val)
+        else:
+            try:
+                val = _dpapi_decrypt(enc_val).decode("utf-8", errors="replace")
+            except Exception:
+                val = None
+        if val is not None:
+            result[name] = val
+
+    return result
+
+
 def _show_fetch_options_dialog(parent, url: str, headers: dict, search_path: str = None) -> None:
     """Open a pop-out dialog that fetches and displays drawing form options."""
     if not _DRAWING_SEARCH_AVAILABLE:
@@ -5108,6 +5241,90 @@ class CtrlRoomDesksManagerDialog(tk.Toplevel):
             self._load()
 
 
+class _BrowserCookieDialog(tk.Toplevel):
+    """Extract cookies from Edge/Chrome for a given domain and inject them into a headers widget."""
+
+    def __init__(self, parent, domain: str, headers_widget):
+        super().__init__(parent)
+        self.title("Grab Cookies from Browser")
+        self.resizable(False, False)
+        self._headers_widget = headers_widget
+        self._vars: dict = {}
+        self._cookies: dict = {}
+
+        self._build(domain)
+        _center_window(self)
+        self.grab_set()
+        threading.Thread(target=self._fetch, args=(domain,), daemon=True).start()
+        self.wait_window()
+
+    def _build(self, domain):
+        body = tk.Frame(self, bg="white")
+        body.pack(fill="both", expand=True, padx=20, pady=14)
+
+        tk.Label(body, text="Grab Cookies from Edge / Chrome",
+                 bg="white", font=("", 11, "bold"), fg="#1c2833").pack(anchor="w")
+        tk.Label(body, text=f"Domain: {domain}",
+                 bg="white", fg="#5d6d7e", font=("", 9)).pack(anchor="w", pady=(2, 10))
+
+        self._status_lbl = tk.Label(body, text="Searching...",
+                                    bg="white", fg="#2980b9", font=("", 9))
+        self._status_lbl.pack(anchor="w")
+
+        self._cookie_frame = tk.Frame(body, bg="white")
+        self._cookie_frame.pack(fill="x", pady=(6, 0))
+
+        sep = tk.Frame(self, bg="#d5d8dc", height=1)
+        sep.pack(fill="x", side="bottom")
+        bf = tk.Frame(self, bg="#eaecee")
+        bf.pack(fill="x", side="bottom")
+        ttk.Button(bf, text="Cancel", command=self.destroy).pack(side="right", padx=(6, 12), pady=8)
+        self._apply_btn = ttk.Button(bf, text="Apply Selected",
+                                     state="disabled", command=self._apply)
+        self._apply_btn.pack(side="right", pady=8)
+
+    def _fetch(self, domain):
+        try:
+            cookies = _grab_browser_cookies(domain)
+            self.after(0, self._show_results, cookies)
+        except Exception as exc:
+            self.after(0, self._show_error, str(exc))
+
+    def _show_results(self, cookies: dict):
+        self._cookies = cookies
+        if not cookies:
+            self._status_lbl.config(text="No cookies found for this domain.", fg="#e74c3c")
+            return
+        self._status_lbl.config(
+            text=f"Found {len(cookies)} cookie(s) — select which to apply:", fg="#1a7a30")
+        for name, val in cookies.items():
+            row = tk.Frame(self._cookie_frame, bg="white")
+            row.pack(fill="x", pady=1)
+            var = tk.BooleanVar(value=True)
+            self._vars[name] = var
+            tk.Checkbutton(row, variable=var, bg="white").pack(side="left")
+            preview = val[:48] + "..." if len(val) > 48 else val
+            tk.Label(row, text=f"{name}  =  {preview}",
+                     bg="white", font=("Courier", 8), anchor="w").pack(side="left")
+        self._apply_btn.config(state="normal")
+        _center_window(self)
+
+    def _show_error(self, msg: str):
+        self._status_lbl.config(text=f"Error: {msg}", fg="#e74c3c", wraplength=420)
+
+    def _apply(self):
+        selected = {n: self._cookies[n] for n, v in self._vars.items() if v.get()}
+        if not selected:
+            messagebox.showwarning("Nothing selected",
+                                   "Select at least one cookie.", parent=self)
+            return
+        raw     = self._headers_widget.get("1.0", "end")
+        updated = _update_cookie_in_headers(raw, selected)
+        self._headers_widget.delete("1.0", "end")
+        self._headers_widget.insert("1.0", updated)
+        self.destroy()
+
+
 class SoftwareSetupDialog(tk.Toplevel):
     """First-time global setup: collect base URLs."""
     def __init__(self, parent, app_config):
@@ -5181,6 +5398,16 @@ class SoftwareSetupDialog(tk.Toplevel):
         self._headers_txt = scrolledtext.ScrolledText(auth_body, height=3, font=("Courier", 9), wrap="none")
         self._headers_txt.pack(fill="x", padx=4, pady=(2, 0))
         self._headers_txt.insert("1.0", cfg.get("request_headers", ""))
+        grab_row = tk.Frame(auth_body, bg="white"); grab_row.pack(anchor="w", padx=4, pady=(4, 0))
+        tk.Button(
+            grab_row, text="🍪 Grab from Browser",
+            command=lambda: self._grab_cookies(self._headers_txt),
+            bg="#1a7a30", fg="white", relief="flat", font=("", 8),
+            cursor="hand2", activebackground="#229954", activeforeground="white",
+            padx=8, pady=3).pack(side="left")
+        tk.Label(grab_row,
+                 text="Reads cookies directly from your running Edge / Chrome session.",
+                 bg="white", fg="#7f8c8d", font=("", 8)).pack(side="left", padx=8)
         # Engineering Standards Headers (optional per-server override)
         eng_hdr_row = tk.Frame(body, bg="white"); eng_hdr_row.pack(fill="x", pady=(6, 4))
         tk.Frame(eng_hdr_row, bg="#2980b9", width=3).pack(side="left", fill="y")
@@ -5250,6 +5477,18 @@ class SoftwareSetupDialog(tk.Toplevel):
         raw  = self._headers_txt.get("1.0", "end") if self._headers_txt else ""
         headers = _parse_request_headers_raw(raw)
         _show_fetch_options_dialog(self, url, headers)
+
+    def _grab_cookies(self, headers_widget):
+        url = self._cfg_vars.get("drawing_search_url", tk.StringVar()).get().strip()
+        if not url:
+            url = self._cfg_vars.get("base_drawing_url", tk.StringVar()).get().strip()
+        domain = _domain_from_url(url) if url else ""
+        if not domain:
+            messagebox.showwarning("No URL",
+                "Set a Drawing Search URL (or Base Drawing URL) first so the domain is known.",
+                parent=self)
+            return
+        _BrowserCookieDialog(self, domain, headers_widget)
 
     def _skip(self):
         self.result = {}; self.destroy()
@@ -7033,6 +7272,25 @@ class RedLineApp(tk.Tk):
         headers_txt = scrolledtext.ScrolledText(auth_lf, height=4, font=("Courier", 9), wrap="none")
         headers_txt.pack(fill="x")
         headers_txt.insert("1.0", self.app_config.get("request_headers", ""))
+
+        def _do_grab_cookies():
+            url = cfg_vars.get("drawing_search_url", tk.StringVar()).get().strip()
+            if not url:
+                url = cfg_vars.get("base_drawing_url", tk.StringVar()).get().strip()
+            domain = _domain_from_url(url) if url else ""
+            if not domain:
+                messagebox.showwarning("No URL",
+                    "Set a Drawing Search URL (or Base Drawing URL) first so the domain is known.",
+                    parent=dlg)
+                return
+            _BrowserCookieDialog(dlg, domain, headers_txt)
+
+        grab_row = ttk.Frame(auth_lf); grab_row.pack(anchor="w", pady=(4, 0))
+        ttk.Button(grab_row, text="🍪 Grab from Browser",
+                   command=_do_grab_cookies).pack(side="left")
+        ttk.Label(grab_row,
+                  text="Reads cookies directly from your running Edge / Chrome session.",
+                  foreground="grey", font=("", 8)).pack(side="left", padx=8)
 
         eng_hdrs_lf = ttk.LabelFrame(f, text="Engineering Standards Headers (optional override)", padding=8)
         eng_hdrs_lf.pack(fill="x", pady=(0, 8))
