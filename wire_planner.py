@@ -4358,6 +4358,17 @@ class _AppDB:
         except sqlite3.Error:
             return []
 
+    def cache_stale_keys(self, max_age_seconds):
+        """Return cache keys whose entry is older than max_age_seconds."""
+        cutoff = datetime.now().timestamp() - max_age_seconds
+        try:
+            with self._conn() as c:
+                return [r[0] for r in c.execute(
+                    "SELECT cache_key FROM drawing_cache WHERE cached_at < ?",
+                    (cutoff,))]
+        except sqlite3.Error:
+            return []
+
     def cache_merge_legacy(self, store: dict):
         """Import a per-project drawing_search_cache dict from an old .redline.
 
@@ -5598,6 +5609,7 @@ class RedLineApp(tk.Tk):
         self._build_menu()
         self._build_ui()
         self.after_idle(self._startup_flow)
+        self._schedule_drawing_cache_refresh()
 
     # ── Startup flow ─────────────────────────────────────────────
 
@@ -8604,7 +8616,7 @@ class RedLineApp(tk.Tk):
             if self.mode_var.get() == "impl": self._refresh_file_tabs()
             proj = data.get("project","") or os.path.splitext(os.path.basename(path))[0]
             self.title(f"Red-Line-Routing — {proj}")
-            self.after_idle(self._refresh_drawing_cache_bg)
+            self.after_idle(lambda: self._refresh_drawing_cache_bg(stale_only=True))
             self._remember_all_standards()
         except Exception as exc: messagebox.showerror("Open Error",str(exc))
 
@@ -8653,17 +8665,46 @@ class RedLineApp(tk.Tk):
             self._remember_all_standards()
         except Exception as exc: messagebox.showerror("Save Error",str(exc))
 
-    def _refresh_drawing_cache_bg(self):
-        """Silently refresh every cached drawing-search entry in the background.
+    # How often to look for stale cache entries, and how old an entry must
+    # be before it is re-fetched. The age is configurable via the
+    # drawing_cache_refresh_hours app setting.
+    _CACHE_CHECK_INTERVAL_MS = 15 * 60 * 1000   # check every 15 minutes
+    _CACHE_DEFAULT_MAX_AGE_H = 4.0              # refresh entries older than 4 h
 
-        Called after a project is loaded.  For each (facility, type, subject, state)
-        tuple stored in the project cache, re-runs search_all_pages and updates the
-        cached results so the next search in the session is up-to-date.
+    def _cache_max_age_seconds(self):
+        try:
+            hours = float(self.app_config.get(
+                "drawing_cache_refresh_hours", self._CACHE_DEFAULT_MAX_AGE_H))
+        except (TypeError, ValueError):
+            hours = self._CACHE_DEFAULT_MAX_AGE_H
+        return max(0.25, hours) * 3600.0
+
+    def _schedule_drawing_cache_refresh(self, first_delay_ms=30000):
+        """Start the periodic stale-entry refresh loop (runs for app lifetime)."""
+        def _tick():
+            self._refresh_drawing_cache_bg(stale_only=True)
+            self.after(self._CACHE_CHECK_INTERVAL_MS, _tick)
+        self.after(first_delay_ms, _tick)
+
+    def _refresh_drawing_cache_bg(self, stale_only=False):
+        """Refresh cached drawing-search entries in a background thread.
+
+        stale_only=True (periodic timer) re-fetches only entries older than
+        the configured max age; stale_only=False (project open) refreshes
+        everything. Skips silently when a refresh is already running or
+        drawing search is not configured.
         """
         if not _DRAWING_SEARCH_AVAILABLE:
             return
+        if getattr(self, "_cache_refresh_running", False):
+            return
         cache = self._drawing_cache
-        keys = list(cache.iter_keys())
+        if stale_only:
+            raw = self._app_db.cache_stale_keys(self._cache_max_age_seconds())
+            keys = [tuple(p) for p in (k.split("|") for k in raw)
+                    if len(p) == 4]
+        else:
+            keys = list(cache.iter_keys())
         if not keys:
             return
         base_url = self.app_config.get("drawing_search_url", "").strip()
@@ -8676,15 +8717,25 @@ class RedLineApp(tk.Tk):
         client   = DrawingSearchClient(base_url=base_url, cookies=cookies,
                                         extra_headers=extra or None)
 
+        self._cache_refresh_running = True
+
         def _run():
-            for fac, typ, subj, state in keys:
-                try:
-                    params = SearchParams(facility=fac, drawing_type=typ,
-                                          drawing_subject=subj, state=state)
-                    results = client.search_all_pages(params)
-                    cache.put(params, results)
-                except Exception:
-                    pass
+            done = 0
+            try:
+                for fac, typ, subj, state in keys:
+                    try:
+                        params = SearchParams(facility=fac, drawing_type=typ,
+                                              drawing_subject=subj, state=state)
+                        results = client.search_all_pages(params)
+                        cache.put(params, results)
+                        done += 1
+                    except Exception:
+                        pass
+            finally:
+                self._cache_refresh_running = False
+                if done:
+                    self.after(0, lambda: self.status_var.set(
+                        f"Drawing cache refreshed — {done} search(es) updated"))
 
         threading.Thread(target=_run, daemon=True).start()
 

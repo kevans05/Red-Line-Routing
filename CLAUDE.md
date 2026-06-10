@@ -80,6 +80,8 @@ Migration is automatic and one-way: on first run `_AppDB._migrate_legacy_json()`
 
 Standards library flow: `_remember_standard()` captures entries as they're added/edited, `_remember_all_standards()` sweeps both registries on project open/save, and `StandardsLibraryDialog` ("📚 From Library" buttons) adds remembered standards to the current project. `_GlobalDrawingCache` keeps the old `_ProjectDrawingCache` interface (`get`/`put`/`is_cacheable`/`iter_keys`) but reads/writes the DB.
 
+Drawing cache freshness: `_schedule_drawing_cache_refresh()` starts a timer in `__init__` that checks every 15 minutes (`_CACHE_CHECK_INTERVAL_MS`) and re-fetches entries older than 4 hours (`drawing_cache_refresh_hours` app setting overrides the default). Project open triggers the same stale-only refresh; the search dialog additionally revalidates in the background on every cache hit. A `_cache_refresh_running` flag prevents overlapping refresh runs.
+
 Job types: `REMOVE`, `ADD`, `MOVE`, `BLOCK`, `UNBLOCK`, `TESTING`.  
 `BLOCK`/`UNBLOCK` carry a `protection` sub-dict; `MOVE` carries both `start/end` and `add_start/add_end` endpoint pairs.
 
