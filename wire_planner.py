@@ -161,7 +161,7 @@ def empty_job(job_type="REMOVE"):
         return {"type": job_type, "description": "",
                 "endpoint": empty_endpoint(), "notes": ""}
     job = {"type": job_type, "description": "", "wire": "",
-           "start": empty_endpoint(), "end": empty_endpoint()}
+           "start": empty_endpoint(), "end": empty_endpoint(), "notes": ""}
     if job_type == "MOVE":
         job["add_wire"] = ""
         job["add_start"] = empty_endpoint()
@@ -986,6 +986,11 @@ class JobDialog(tk.Toplevel):
             self.wire_var = tk.StringVar(value=ex.get("wire",""))
             self._wire_combo(f, self.wire_var).grid(row=row, column=1, sticky="w", pady=(6,2))
             row += 1
+            ttk.Label(f, text="Notes:").grid(row=row, column=0, sticky="ne", padx=(0,6), pady=2)
+            self._rem_add_notes = tk.Text(f, width=58, height=3, wrap="word", font=("",9))
+            self._rem_add_notes.grid(row=row, column=0, columnspan=2, sticky="ew", pady=2)
+            self._rem_add_notes.insert("1.0", ex.get("notes",""))
+            row += 1
 
         elif self.job_type == "MOVE":
             # MOVE has two endpoint pairs: the wire being removed ("start"/"end") and
@@ -1251,6 +1256,7 @@ class JobDialog(tk.Toplevel):
             job["start"] = self.ep_start.get()
             job["wire"]  = self.wire_var.get().strip()
             job["end"]   = self.ep_end.get()
+            job["notes"] = self._rem_add_notes.get("1.0","end").strip()
         elif self.job_type == "MOVE":
             job["start"]     = self.ep_rem_start.get()
             job["wire"]      = self.wire_var.get().strip()
@@ -1415,6 +1421,8 @@ def format_job(index, job):
         lines += ["",_ep_block(job.get("start",{}),"START POINT / DEVICE"),
                   "",f"  WIRE: {job.get('wire','')}",
                   "",_ep_block(job.get("end",{}),"END POINT / DEVICE")]
+        if job.get("notes"):
+            lines += ["","  NOTES", *[f"    {ln}" for ln in job["notes"].splitlines()]]
     elif jtype == "MOVE":
         lines += ["","  "+"─"*30+"  REMOVE  "+"─"*(W-42),
                   "",_ep_block(job.get("start",{}),"REMOVE: Start Point / Device"),
@@ -1807,9 +1815,11 @@ def _ew_work_orders(jobs, drawing_registry, mode, css_class="page-content"):
             return r
 
         if jt in ("REMOVE", "ADD"):
+            notes = job.get("notes","").strip()
+            dsc_n = dsc + ("<br><em>" + _esc(notes) + "</em>" if notes else "")
             rows += _tr(jt, tl[jt],
                         ep_r(job.get("start", {})), job.get("wire", ""),
-                        ep_r(job.get("end", {})))
+                        ep_r(job.get("end", {})), _d=dsc_n)
         elif jt == "MOVE":
             rows += _tr("MOVE-REMOVE", "Move — Remove",
                         ep_r(job.get("start", {})), job.get("wire", ""),
@@ -2612,7 +2622,9 @@ def _pdf_work_orders(bld, jobs, drw_reg, size="11x17 Landscape"):
         if stds: desc += (" | " if desc else "") + " | ".join(stds)
 
         if jt in ("REMOVE","ADD"):
-            draw_row(jt, desc, _ep_flat(job.get("start",{})),
+            notes = job.get("notes","").strip()
+            desc_n = desc + (" | " + notes if notes else "")
+            draw_row(jt, desc_n, _ep_flat(job.get("start",{})),
                      job.get("wire",""), _ep_flat(job.get("end",{})))
         elif jt == "MOVE":
             draw_row("MOVE-REMOVE", desc,
@@ -6379,22 +6391,25 @@ class RedLineApp(tk.Tk):
         ttk.Button(tb, text="⬇ Download All",  command=self._download_drawings).pack(side="left", padx=(10,2))
         ttk.Button(tb, text="🖨 Print Selected", command=self._print_selected_drawings).pack(side="left", padx=2)
         ttk.Button(tb, text="🖨 Print All",      command=self._print_all_drawings).pack(side="left", padx=2)
-        ttk.Label(tb, text="Drawing names entered in any job are added here automatically.  Ctrl+click a row to open its URL.",
+        ttk.Label(tb, text="Click to open  ·  Ctrl+click to force web  ·  Double-click to edit",
                   foreground="grey").pack(side="left", padx=8)
         frame = ttk.Frame(parent); frame.pack(fill="both", expand=True, padx=4, pady=(0,4))
-        cols = ("Drawing","Title","Revision","URL","Notes")
+        cols = ("Drawing","Title","Revision","Local","URL","Notes")
         self.drawings_tree = ttk.Treeview(frame, columns=cols, show="headings")
         self.drawings_tree.heading("Drawing",text="Drawing"); self.drawings_tree.heading("Title",text="Title")
-        self.drawings_tree.heading("Revision",text="Revision")
+        self.drawings_tree.heading("Revision",text="Rev")
+        self.drawings_tree.heading("Local",text="Local")
         self.drawings_tree.heading("URL",text="Drawing URL"); self.drawings_tree.heading("Notes",text="Notes")
         self.drawings_tree.column("Drawing",width=140,stretch=False); self.drawings_tree.column("Title",width=160,stretch=False)
-        self.drawings_tree.column("Revision",width=68,stretch=False)
-        self.drawings_tree.column("URL",width=300); self.drawings_tree.column("Notes",width=160)
+        self.drawings_tree.column("Revision",width=44,stretch=False)
+        self.drawings_tree.column("Local",width=60,stretch=False,anchor="center")
+        self.drawings_tree.column("URL",width=280); self.drawings_tree.column("Notes",width=160)
+        self.drawings_tree.tag_configure("downloaded", foreground="#1a7a30")
         vsb = ttk.Scrollbar(frame, orient="vertical", command=self.drawings_tree.yview)
         self.drawings_tree.configure(yscrollcommand=vsb.set)
         self.drawings_tree.pack(side="left", fill="both", expand=True); vsb.pack(side="right", fill="y")
+        self.drawings_tree.bind("<Button-1>", self._on_drawings_click)
         self.drawings_tree.bind("<Double-1>", lambda _: self._edit_drawing())
-        self.drawings_tree.bind("<Control-Button-1>", self._on_drawings_ctrl_click)
 
     # ── Drawing registry CRUD ─────────────────────────────────────
 
@@ -6416,8 +6431,12 @@ class RedLineApp(tk.Tk):
         for iid in self.drawings_tree.get_children(): self.drawings_tree.delete(iid)
         for name in sorted(self.drawing_registry.keys()):
             info = self.drawing_registry[name]
-            self.drawings_tree.insert("","end",iid=name,
-                values=(name,info.get("title",""),info.get("rev",""),info.get("url",""),info.get("notes","")))
+            downloaded = bool(self._find_drawing_files({name}))
+            local_lbl = "✓ local" if downloaded else "—"
+            tags = ("downloaded",) if downloaded else ()
+            self.drawings_tree.insert("","end",iid=name, tags=tags,
+                values=(name,info.get("title",""),info.get("rev",""),
+                        local_lbl,info.get("url",""),info.get("notes","")))
 
     def _add_drawing(self):
         dlg = DrawingEditDialog(self, base_url=self.app_config.get("base_drawing_url",""),
@@ -6468,12 +6487,22 @@ class RedLineApp(tk.Tk):
         self._scan_jobs_for_drawings(); self._refresh_drawings_list()
         self.status_var.set(f"Registry updated — {len(self.drawing_registry)} drawing(s).")
 
-    def _on_drawings_ctrl_click(self, event):
+    def _on_drawings_click(self, event):
+        if self.drawings_tree.identify_region(event.x, event.y) != "cell":
+            return
         row = self.drawings_tree.identify_row(event.y)
         if not row:
             return
+        ctrl = bool(event.state & 0x4)
         url = self.drawing_registry.get(row, {}).get("url", "").strip()
-        if url:
+        files = self._find_drawing_files({row})
+        if ctrl:
+            # Force-open web version
+            if url:
+                webbrowser.open(url)
+        elif files:
+            _open_file(files[0][1])
+        elif url:
             webbrowser.open(url)
 
     def _show_drawing_index(self):
