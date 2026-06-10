@@ -47,8 +47,13 @@ try:
                                 load_cached_options, save_cached_options,
                                 fetch_form_options)
     _DRAWING_SEARCH_AVAILABLE = True
+    import inspect as _insp
+    _DSC_HAS_COOKIE_CB = "on_cookie_update" in _insp.signature(
+        DrawingSearchClient.__init__).parameters
+    del _insp
 except ImportError:
     _DRAWING_SEARCH_AVAILABLE = False
+    _DSC_HAS_COOKIE_CB = False
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -3178,7 +3183,7 @@ class ExportWizard(tk.Toplevel):
 
         self._step = 1
         self._build()
-        self.geometry("600x530")
+        self.geometry("600x580")
         _center_window(self)
         self.grab_set()
         self.wait_window()
@@ -3191,6 +3196,18 @@ class ExportWizard(tk.Toplevel):
                                   font=("", 11, "bold"), padx=14, pady=10)
         self._hdr_lbl.pack(side="left")
 
+        # Nav bar MUST be packed with side="bottom" before the expanding
+        # container, otherwise the container claims all remaining height and
+        # the buttons are pushed below the visible window area.
+        nav = ttk.Frame(self, padding=(14, 6, 14, 10))
+        nav.pack(side="bottom", fill="x")
+        self._back_btn = ttk.Button(nav, text="◄ Back",  command=self._back,    state="disabled")
+        self._back_btn.pack(side="left")
+        self._cancel_btn = ttk.Button(nav, text="Cancel", command=self.destroy)
+        self._cancel_btn.pack(side="right")
+        self._next_btn = ttk.Button(nav, text="Next ►",  command=self._next)
+        self._next_btn.pack(side="right", padx=(0, 6))
+
         container = tk.Frame(self, bg=self.cget("bg"))
         container.pack(fill="both", expand=True)
 
@@ -3199,14 +3216,6 @@ class ExportWizard(tk.Toplevel):
             self._step2(container),
             self._step3(container),
         ]
-
-        nav = ttk.Frame(self, padding=(14, 6, 14, 10)); nav.pack(fill="x")
-        self._back_btn = ttk.Button(nav, text="◄ Back",  command=self._back,    state="disabled")
-        self._back_btn.pack(side="left")
-        self._cancel_btn = ttk.Button(nav, text="Cancel", command=self.destroy)
-        self._cancel_btn.pack(side="right")
-        self._next_btn = ttk.Button(nav, text="Next ►",  command=self._next)
-        self._next_btn.pack(side="right", padx=(0, 6))
 
         self._show_step(1)
 
@@ -3253,24 +3262,50 @@ class ExportWizard(tk.Toplevel):
                       font=("", 9, "bold")).pack(side="left")
             ttk.Label(r, text=txt).pack(side="left", padx=(6, 0))
 
-        opt = ttk.LabelFrame(f, text="Optional sections", padding=(12, 6))
-        opt.pack(fill="x", pady=(0, 10))
-        for key, label in self._SECTIONS:
-            r = ttk.Frame(opt); r.pack(fill="x", pady=2)
-            ttk.Combobox(r, textvariable=self._v_sec[key], width=10,
-                         values=("Skip", "Print", "TOC only"),
-                         state="readonly").pack(side="left")
-            ttk.Label(r, text=label).pack(side="left", padx=(8, 0))
-        ttk.Label(opt, text="TOC only — listed on the cover page as “printed separately”,"
-                            " no pages added to the package.",
-                  foreground="grey", font=("", 8)).pack(anchor="w", pady=(6, 0))
-
+        # Pack "Extras" with side="bottom" first so it always stays visible when
+        # the optional-sections area expands to fill remaining space.
         ext = ttk.LabelFrame(f, text="Extras", padding=(12, 6))
-        ext.pack(fill="x")
+        ext.pack(side="bottom", fill="x")
         r2 = ttk.Frame(ext); r2.pack(fill="x", pady=2)
         ttk.Checkbutton(r2, variable=self._v_qr).pack(side="left")
         ttk.Label(r2, text="QR Code Sheet  (paper only — all document URLs as scannable codes)"
                   ).pack(side="left", padx=(4, 0))
+
+        opt = ttk.LabelFrame(f, text="Optional sections", padding=(12, 6))
+        opt.pack(fill="both", expand=True, pady=(0, 8))
+
+        # Scrollable canvas so the dialog size stays fixed regardless of section count
+        _cv  = tk.Canvas(opt, highlightthickness=0, bd=0)
+        _vsb = ttk.Scrollbar(opt, orient="vertical", command=_cv.yview)
+        _cv.configure(yscrollcommand=_vsb.set)
+        _inner = ttk.Frame(_cv)
+        for key, label in self._SECTIONS:
+            r = ttk.Frame(_inner); r.pack(fill="x", pady=2)
+            ttk.Combobox(r, textvariable=self._v_sec[key], width=10,
+                         values=("Skip", "Print", "TOC only"),
+                         state="readonly").pack(side="left")
+            ttk.Label(r, text=label).pack(side="left", padx=(8, 0))
+        ttk.Label(_inner,
+                  text="TOC only — listed on the cover page as “printed separately”,"
+                       " no pages added to the package.",
+                  foreground="grey", font=("", 8)).pack(anchor="w", pady=(6, 0))
+        _cwin = _cv.create_window((0, 0), window=_inner, anchor="nw")
+        _inner.bind("<Configure>",
+                    lambda e: _cv.configure(scrollregion=_cv.bbox("all")))
+        _cv.bind("<Configure>",
+                 lambda e: _cv.itemconfigure(_cwin, width=e.width))
+        def _wheel(event):
+            if event.delta:
+                _cv.yview_scroll(int(-1 * (event.delta / 120)), "units")
+            elif event.num == 4:
+                _cv.yview_scroll(-1, "units")
+            elif event.num == 5:
+                _cv.yview_scroll(1, "units")
+        for seq in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+            _cv.bind(seq, _wheel)
+            _inner.bind(seq, _wheel)
+        _vsb.pack(side="right", fill="y")
+        _cv.pack(side="left", fill="both", expand=True)
         return f
 
     def _step3(self, parent):
@@ -4282,9 +4317,10 @@ class DrawingSearchDialog(tk.Toplevel):
             if self._persist_fn:
                 self._persist_fn()
 
+        kw = {"on_cookie_update": _on_cookie_update} if _DSC_HAS_COOKIE_CB else {}
         return DrawingSearchClient(base_url=base_url, cookies=cookies, cache=cache,
                                    search_path=path, extra_headers=extra or None,
-                                   on_cookie_update=_on_cookie_update)
+                                   **kw)
 
     def _get_params(self, page=0):
         # Parse code from "CODE — Label" or raw code
@@ -5056,25 +5092,52 @@ def _grab_browser_cookies(domain: str) -> dict:
     enc_key     = base64.b64decode(enc_key_b64)[5:]   # strip leading "DPAPI" bytes
     master_key  = _dpapi_decrypt(enc_key)
 
+    # Search for the Cookies database across all profiles (Default, Profile 1, …)
     cookies_path = None
-    for rel in (
-        os.path.join("Default", "Network", "Cookies"),
-        os.path.join("Default", "Cookies"),
-    ):
-        p = os.path.join(browser_dir, rel)
-        if os.path.isfile(p):
-            cookies_path = p
+    try:
+        profiles = sorted(os.listdir(browser_dir))
+    except OSError:
+        profiles = []
+    for profile in ["Default"] + [p for p in profiles if p.startswith("Profile")]:
+        for rel in ("Network", ""):
+            p = os.path.join(browser_dir, profile,
+                             "Network" if rel == "Network" else "", "Cookies").rstrip(os.sep)
+            # Normalise: join properly rather than relying on string ops
+            p = os.path.join(browser_dir, profile, "Network", "Cookies") if rel == "Network" \
+                else os.path.join(browser_dir, profile, "Cookies")
+            if os.path.isfile(p):
+                cookies_path = p
+                break
+        if cookies_path:
             break
     if cookies_path is None:
-        raise RuntimeError("Could not find Edge/Chrome Cookies database.")
+        raise RuntimeError(
+            "Could not find the Edge/Chrome Cookies database.\n\n"
+            f"Searched inside: {browser_dir}")
 
-    # Open the live DB in immutable read-only mode so we bypass Edge's file
-    # lock.  The ?immutable=1 flag tells SQLite not to check or acquire any
-    # lock files, which works even while the browser is running.
     domain_clean = domain.lstrip(".")
+
+    def _query_cookies_db(path: str) -> list:
+        conn = sqlite3.connect(path)
+        try:
+            return conn.execute(
+                "SELECT name, encrypted_value FROM cookies"
+                " WHERE host_key LIKE ? OR host_key LIKE ?",
+                (f"%{domain_clean}%", f"%.{domain_clean}%"),
+            ).fetchall()
+        finally:
+            conn.close()
+
     rows = None
+
+    # ── Try 1: SQLite immutable URI (bypasses WAL/lock files)
+    # Windows absolute paths need three slashes: file:///C:/path/…
+    path_fwd = cookies_path.replace("\\", "/")
+    if len(path_fwd) >= 2 and path_fwd[1] == ":":
+        uri = "file:///" + path_fwd + "?immutable=1"
+    else:
+        uri = "file://" + path_fwd + "?immutable=1"
     try:
-        uri = "file:{}?immutable=1".format(cookies_path.replace("\\", "/"))
         conn = sqlite3.connect(uri, uri=True)
         rows = conn.execute(
             "SELECT name, encrypted_value FROM cookies"
@@ -5085,25 +5148,20 @@ def _grab_browser_cookies(domain: str) -> dict:
     except Exception:
         pass
 
+    # ── Try 2: copy to a temp file (works when Edge is fully closed)
     if rows is None:
-        # Fallback: copy to temp file (may fail if Edge holds an exclusive lock)
         with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tf:
             tmp_path = tf.name
         try:
             shutil.copy2(cookies_path, tmp_path)
-            conn = sqlite3.connect(tmp_path)
-            rows = conn.execute(
-                "SELECT name, encrypted_value FROM cookies"
-                " WHERE host_key LIKE ? OR host_key LIKE ?",
-                (f"%{domain_clean}%", f"%.{domain_clean}%"),
-            ).fetchall()
-            conn.close()
-        except OSError as exc:
+            rows = _query_cookies_db(tmp_path)
+        except Exception as exc:
             raise RuntimeError(
                 f"Could not read the browser cookie database.\n\n"
-                f"Edge/Chrome may be locking the file.  Try closing all "
-                f"browser windows and clicking Grab again.\n\n"
-                f"(Technical detail: {exc})"
+                f"Close ALL Edge and Chrome windows (including background\n"
+                f"apps in the system tray) and click Grab again.\n\n"
+                f"Database: {cookies_path}\n"
+                f"Detail: {exc}"
             ) from exc
         finally:
             try:
