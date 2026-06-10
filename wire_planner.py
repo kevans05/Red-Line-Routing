@@ -827,7 +827,7 @@ class ProtectionFrame(ttk.LabelFrame):
         mb_outer.columnconfigure(1, weight=1)
 
         # Warning banner (visible only when MB checkbox is ticked)
-        action = "BLOCK MB INPUT" if self.job_type == "BLOCK" else "UNBLOCK MB INPUT"
+        action = "BLOCK MB INPUT" if self.job_type == "BLOCK" else "RESTORE MB INPUT"
         self._mb_banner = tk.Frame(mb_outer, bg="#fff3cd", relief="solid", bd=1)
         self._mb_banner.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(4, 0))
         self._mb_banner_label = tk.Label(
@@ -1025,10 +1025,10 @@ class JobDialog(tk.Toplevel):
             row += 1
 
         elif self.job_type in ("BLOCK","UNBLOCK"):
-            lbl = "BLOCK PROTECTION" if self.job_type == "BLOCK" else "UNBLOCK PROTECTION"
+            lbl = "BLOCK PROTECTION" if self.job_type == "BLOCK" else "RESTORE PROTECTION"
             self._section_label(f, row, f"── {lbl} ──", color); row += 2
 
-            # UNBLOCK: offer to copy settings from an existing BLOCK step
+            # RESTORE: offer to copy settings from an existing BLOCK step
             if self.job_type == "UNBLOCK":
                 block_jobs = [(i, j) for i, j in enumerate(self.jobs) if j["type"] == "BLOCK"]
                 if block_jobs:
@@ -1240,7 +1240,7 @@ class JobDialog(tk.Toplevel):
                     f" to{wire(self.add_wire_var)} {dev(self.ep_add_start)}→{dev(self.ep_add_end)}")
         elif jt in ("BLOCK", "UNBLOCK"):
             eq = self.ep_prot.vars.get("equipment", tk.StringVar()).get().strip() or "?"
-            action = "Block" if jt == "BLOCK" else "Unblock"
+            action = "Block" if jt == "BLOCK" else "Restore"
             desc = f"{action} protection on {eq}"
         elif jt in ("DEVICE ADD", "DEVICE REMOVE"):
             d = dev(self.ep_device)
@@ -1414,7 +1414,7 @@ def _std_list(job, key):
 def format_job(index, job):
     jtype = job["type"]
     labels = {"REMOVE":"REMOVE WIRE","ADD":"ADD WIRE","MOVE":"MOVE WIRE",
-              "BLOCK":"BLOCK PROTECTION","UNBLOCK":"UNBLOCK PROTECTION","TESTING":"TESTING / NOTE",
+              "BLOCK":"BLOCK PROTECTION","UNBLOCK":"RESTORE PROTECTION","TESTING":"TESTING / NOTE",
               "ISOLATION":"ISOLATION","CR_PROT":"CONTROL ROOM PROTECTION",
               "DEVICE ADD":"INSTALL DEVICE","DEVICE REMOVE":"REMOVE DEVICE"}
     lines = [_bar(), f"  JOB #{index+1}   [{labels.get(jtype,jtype)}]", _bar()]
@@ -1436,7 +1436,7 @@ def format_job(index, job):
                   "",f"  WIRE (Add):    {job.get('add_wire','')}",
                   "",_ep_block(job.get("add_end",{}),"ADD: End Point / Device")]
     elif jtype in ("BLOCK","UNBLOCK"):
-        lbl = "BLOCK PROTECTION" if jtype=="BLOCK" else "UNBLOCK PROTECTION"
+        lbl = "BLOCK PROTECTION" if jtype=="BLOCK" else "RESTORE PROTECTION"
         lines += ["",_prot_block(job.get("protection",{}), lbl)]
     elif jtype in ("DEVICE ADD", "DEVICE REMOVE"):
         lines += ["", _ep_block(job.get("endpoint", {}), "DEVICE / LOCATION")]
@@ -1784,7 +1784,7 @@ def _ew_work_orders(jobs, drawing_registry, mode, css_class="page-content"):
 
     tl = {
         "REMOVE":"Remove Wire","ADD":"Add Wire","MOVE":"Move Wire",
-        "BLOCK":"Block Protection","UNBLOCK":"Unblock Protection","TESTING":"Testing",
+        "BLOCK":"Block Protection","UNBLOCK":"Restore Protection","TESTING":"Testing",
         "ISOLATION":"Isolation","CR_PROT":"CR Protection",
     }
     rows = ""
@@ -2215,7 +2215,7 @@ class _PDFPage:
         "MOVE-REMOVE": "Move — Remove",
         "MOVE-ADD":    "Move — Add",
         "BLOCK":       "Block",
-        "UNBLOCK":     "Unblock",
+        "UNBLOCK":     "Restore",
         "TESTING":     "Testing",
         "ISOLATION":   "Isolation",
         "CR_PROT":     "CR Protection",
@@ -3001,6 +3001,18 @@ def _build_print_pdf(app, inc: dict, sizes: dict, crows: list,
     if folder:
         parts.extend(_collect_pdfs(folder, "CROW Outage"))
 
+    # ── 8. Tailboards ─────────────────────────────────────────────
+    if inc.get("tailboards") == "print" and folder:
+        parts.extend(_collect_pdfs(folder, os.path.join("Tailboards", "Completed")))
+
+    # ── 9. Safety Documents ───────────────────────────────────────
+    if inc.get("safety") == "print" and folder:
+        parts.extend(_collect_pdfs(folder, os.path.join("Safety Documents", "Completed")))
+
+    # ── 10. Other Documents ───────────────────────────────────────
+    if inc.get("other") == "print" and folder:
+        parts.extend(_collect_pdfs(folder, "Other Documents"))
+
     # ── Build + merge ─────────────────────────────────────────────
     doc_pdf = bld.build()
     if parts and _PYPDF_AVAILABLE:
@@ -3019,6 +3031,9 @@ class ExportWizard(tk.Toplevel):
         ("relay",       "Relay Settings"),
         ("maintenance", "Maintenance Standards"),
         ("engineering", "Engineering Standards"),
+        ("tailboards",  "Tailboards"),
+        ("safety",      "Safety Documents"),
+        ("other",       "Other Documents"),
     ]
     # default paper sizes per section key
     _DEFAULTS = {
@@ -3222,6 +3237,9 @@ class ExportWizard(tk.Toplevel):
             "relay":       "sec-relay",
             "maintenance": "sec-maintenance",
             "engineering": "sec-engineering",
+            "tailboards":  "sec-tailboards",
+            "safety":      "sec-safety",
+            "other":       "sec-other",
         }
         toc = [("Work Orders", "sec-work-orders")]
         for k, lbl in self._SECTIONS:
@@ -3368,6 +3386,9 @@ class ExportWizard(tk.Toplevel):
             "relay":       "sec-relay",
             "maintenance": "sec-maintenance",
             "engineering": "sec-engineering",
+            "tailboards":  "sec-tailboards",
+            "safety":      "sec-safety",
+            "other":       "sec-other",
         }
         sec_funcs = {
             "drawings": lambda: (
@@ -3404,6 +3425,17 @@ class ExportWizard(tk.Toplevel):
                     "sec-engineering") +
                 _ew_embedded_files(pf, "Engineering Standards", mode, css_class=_emb_cls)
             ),
+            "tailboards": lambda: _ew_with_id(
+                _ew_embedded_files(
+                    pf, os.path.join("Tailboards", "Completed"), mode, css_class=_emb_cls),
+                "sec-tailboards"),
+            "safety": lambda: _ew_with_id(
+                _ew_embedded_files(
+                    pf, os.path.join("Safety Documents", "Completed"), mode, css_class=_emb_cls),
+                "sec-safety"),
+            "other": lambda: _ew_with_id(
+                _ew_embedded_files(pf, "Other Documents", mode, css_class=_emb_cls),
+                "sec-other"),
         }
         for key, _ in self._SECTIONS:
             if inc.get(key) != "print":
@@ -6401,7 +6433,10 @@ class RedLineApp(tk.Tk):
         try:
             os.makedirs(folder, exist_ok=True)
             for sub in ("Drawings", "Relay Settings", "Maintenance Standards", "Engineering Standards",
-                        "CROW Outage", "Other", os.path.join("Tailboards", "Completed")):
+                        "CROW Outage", "Other",
+                        os.path.join("Tailboards", "Completed"),
+                        os.path.join("Safety Documents", "Completed"),
+                        "Other Documents"):
                 os.makedirs(os.path.join(folder, sub), exist_ok=True)
         except Exception as exc:
             messagebox.showerror("Error", f"Could not create project folder:\n{exc}"); return
@@ -6595,6 +6630,8 @@ class RedLineApp(tk.Tk):
         mt = ttk.Frame(nb); nb.add(mt, text="  Maintenance Standards  "); self._build_maintenance_tab(mt)
         et = ttk.Frame(nb); nb.add(et, text="  Engineering Standards  "); self._build_engineering_tab(et)
         ct = ttk.Frame(nb); nb.add(ct, text="  CROW  ");             self._build_title_tab(ct)
+        sdt = ttk.Frame(nb); nb.add(sdt, text="  Safety Documents  "); self._build_safety_tab(sdt)
+        odt = ttk.Frame(nb); nb.add(odt, text="  Other Documents  ");  self._build_other_docs_tab(odt)
 
         # ── Implementation mode frame (hidden initially) ────────────
         self.impl_frame = ttk.Frame(self)
@@ -6608,7 +6645,7 @@ class RedLineApp(tk.Tk):
                 ("+ Move Wire", "MOVE", "#1a5a99"),
                 ("+ Install Device", "DEVICE ADD", "#117a65"),
                 ("+ Remove Device", "DEVICE REMOVE", "#784212"),
-                ("+ Block", "BLOCK", "#d35400"), ("+ Unblock", "UNBLOCK", "#16a085"),
+                ("+ Block", "BLOCK", "#d35400"), ("+ Restore", "UNBLOCK", "#16a085"),
                 ("+ Testing", "TESTING", "#6c3483"),
                 ("+ Isolation", "ISOLATION", "#1a6b8a"),
                 ("+ CR Protection", "CR_PROT", "#1a5276")]:
@@ -7921,6 +7958,9 @@ class RedLineApp(tk.Tk):
         # Custom tailboard panel — built but hidden; swapped in when TAILBOARD is selected
         self.impl_tb_frame = ttk.Frame(details_f)
         self._build_tailboard_panel(self.impl_tb_frame)
+        # Safety Documents panel — same swap mechanism
+        self.impl_safety_frame = ttk.Frame(details_f)
+        self._build_safety_panel(self.impl_safety_frame)
 
         viewer_f = ttk.LabelFrame(pw_right, text="Reference Files", padding=4)
         pw_right.add(viewer_f, weight=3)
@@ -8263,7 +8303,7 @@ class RedLineApp(tk.Tk):
         # Drawings: honour the current filter mode
         sel = self.impl_tree.selection()
         if (self._drw_filter_var.get() == "step"
-                and sel and sel[0] not in ("__prep__", "__tailboard__")):
+                and sel and sel[0] not in ("__prep__", "__tailboard__", "__safety__")):
             idx = int(sel[0])
             if 0 <= idx < len(self.jobs):
                 self._filter_drawings_to_job(self.jobs[idx])
@@ -8360,8 +8400,18 @@ class RedLineApp(tk.Tk):
                     f"Complete tailboard before starting work  ·  {tb_hint}"),
             tags=("TAILBOARD", "COMPLETED") if tb_done else ("TAILBOARD",))
         self.impl_tree.tag_configure("TAILBOARD", foreground="#e67e22", font=("", 9, "bold"))
+
+        # SAFETY DOCUMENTS — always third (before work steps)
+        saf_done = self.title_page.get("safety_done", False)
+        saf_hint = "Template: " + (self.app_config.get("safety_template_path","") or "none set — click to configure")
+        self.impl_tree.insert("", "end", iid="__safety__",
+            values=("☑" if saf_done else "☐", "", "SAFETY DOCS",
+                    f"Safety documents  ·  {saf_hint}"),
+            tags=("SAFETY", "COMPLETED") if saf_done else ("SAFETY",))
+        self.impl_tree.tag_configure("SAFETY", foreground="#1a7a30", font=("", 9, "bold"))
+
         disp = {"REMOVE":"REMOVE","ADD":"ADD","MOVE":"MOVE",
-                "BLOCK":"BLOCK PROT.","UNBLOCK":"UNBLOCK PROT.","TESTING":"TESTING",
+                "BLOCK":"BLOCK PROT.","UNBLOCK":"RESTORE PROT.","TESTING":"TESTING",
                 "ISOLATION":"ISOLATION","CR_PROT":"CR PROTECTION",
                 "DEVICE ADD":"INSTALL DEVICE","DEVICE REMOVE":"REMOVE DEVICE"}
         self.impl_tree.tag_configure("MB_WARN", foreground="#e59866")
@@ -8386,8 +8436,13 @@ class RedLineApp(tk.Tk):
             self._update_mb_warn(None)
             self._show_tailboard_panel()
             return
-        # All other rows: hide tailboard panel, show text preview
+        if sel[0] == "__safety__":
+            self._update_mb_warn(None)
+            self._show_safety_panel()
+            return
+        # All other rows: hide both custom panels, show text preview
         self.impl_tb_frame.pack_forget()
+        self.impl_safety_frame.pack_forget()
         self.impl_preview.pack(fill="both", expand=True)
         if sel[0] == "__prep__":
             self._update_mb_warn(None)
@@ -8416,7 +8471,7 @@ class RedLineApp(tk.Tk):
             self._drw_filter_var.set("step")
             self._drw_filter_btn.configure(text="Show All")
             sel = self.impl_tree.selection()
-            if sel and sel[0] not in ("__prep__", "__tailboard__"):
+            if sel and sel[0] not in ("__prep__", "__tailboard__", "__safety__"):
                 idx = int(sel[0])
                 if 0 <= idx < len(self.jobs):
                     self._filter_drawings_to_job(self.jobs[idx])
@@ -8894,6 +8949,7 @@ class RedLineApp(tk.Tk):
     def _show_tailboard_panel(self):
         """Swap step-details area to show the tailboard panel."""
         self.impl_preview.pack_forget()
+        self.impl_safety_frame.pack_forget()
         self.impl_tb_frame.pack(fill="both", expand=True)
         self._refresh_tailboard_panel()
 
@@ -9079,6 +9135,373 @@ class RedLineApp(tk.Tk):
         messagebox.showinfo("No Tailboard Saved",
             "Save a tailboard first using the 'Save Tailboard' button.")
 
+    # ── Safety Documents (template + sign-ons, mirrors tailboard pattern) ──
+
+    def _safety_dir(self):
+        if not self.project_folder:
+            return None
+        return os.path.join(self.project_folder, "Safety Documents")
+
+    def _safety_template_path(self):
+        p = self.app_config.get("safety_template_path", "").strip()
+        return p if p and os.path.isfile(p) else None
+
+    def _build_safety_panel(self, parent):
+        """Build the Safety Documents detail panel (hidden until __safety__ is selected)."""
+        tmpl_f = ttk.LabelFrame(parent,
+                                text="Template  (read-only — click Browse to change)",
+                                padding=6)
+        tmpl_f.pack(fill="x", padx=4, pady=(4, 2))
+        self._saf_tmpl_lbl = ttk.Label(tmpl_f, text="(loading…)", foreground="#2980b9",
+                                        cursor="hand2", font=("", 9))
+        self._saf_tmpl_lbl.pack(side="left", expand=True, fill="x")
+        self._saf_tmpl_lbl.bind("<Button-1>", lambda _: self._open_safety_template())
+        bf_tmpl = ttk.Frame(tmpl_f); bf_tmpl.pack(side="right")
+        ttk.Button(bf_tmpl, text="Browse…",
+                   command=self._browse_safety_template).pack(side="left", padx=(0, 4))
+        ttk.Button(bf_tmpl, text="View ↗",
+                   command=self._open_safety_template).pack(side="left")
+
+        mid_f = ttk.Frame(parent)
+        mid_f.pack(fill="both", expand=True, padx=4, pady=2)
+
+        so_f = ttk.LabelFrame(mid_f, text="Sign-ons", padding=4)
+        so_f.pack(side="left", fill="both", expand=True, padx=(0, 4))
+
+        so_tree_f = ttk.Frame(so_f)
+        so_tree_f.pack(fill="both", expand=True)
+        self._saf_signon_tree = ttk.Treeview(
+            so_tree_f, columns=("Name", "Email"),
+            show="headings", height=6, selectmode="browse")
+        self._saf_signon_tree.heading("Name",  text="Name")
+        self._saf_signon_tree.heading("Email", text="Email")
+        self._saf_signon_tree.column("Name",  width=130)
+        self._saf_signon_tree.column("Email", width=170)
+        so_vsb = ttk.Scrollbar(so_tree_f, orient="vertical",
+                                command=self._saf_signon_tree.yview)
+        self._saf_signon_tree.configure(yscrollcommand=so_vsb.set)
+        so_vsb.pack(side="right", fill="y")
+        self._saf_signon_tree.pack(fill="both", expand=True)
+
+        so_btn_f = ttk.Frame(so_f)
+        so_btn_f.pack(fill="x", pady=(4, 0))
+        ttk.Button(so_btn_f, text="+ Add",
+                   command=self._saf_add_signon).pack(side="left")
+        ttk.Button(so_btn_f, text="Remove",
+                   command=self._saf_remove_signon).pack(side="left", padx=4)
+
+        rv_f = ttk.LabelFrame(mid_f, text="Saved Documents", padding=4)
+        rv_f.pack(side="left", fill="both", expand=True)
+
+        self._saf_rev_lb = tk.Listbox(rv_f, font=("Courier", 8), selectmode="browse",
+                                       activestyle="none", relief="flat", borderwidth=0)
+        rv_vsb = ttk.Scrollbar(rv_f, orient="vertical",
+                                command=self._saf_rev_lb.yview)
+        self._saf_rev_lb.configure(yscrollcommand=rv_vsb.set)
+        rv_vsb.pack(side="right", fill="y")
+        self._saf_rev_lb.pack(fill="both", expand=True)
+        self._saf_rev_lb.bind("<Double-1>", self._saf_open_revision)
+
+        act_f = ttk.Frame(parent)
+        act_f.pack(fill="x", padx=4, pady=(2, 4))
+        ttk.Button(act_f, text="Save Safety Document",
+                   command=self._save_safety_record).pack(side="left")
+
+    def _show_safety_panel(self):
+        self.impl_preview.pack_forget()
+        self.impl_tb_frame.pack_forget()
+        self.impl_safety_frame.pack(fill="both", expand=True)
+        self._refresh_safety_panel()
+
+    def _refresh_safety_panel(self):
+        tmpl = self._safety_template_path()
+        if tmpl:
+            self._saf_tmpl_lbl.configure(text=tmpl, foreground="#2980b9")
+        else:
+            self._saf_tmpl_lbl.configure(
+                text="No template set — click Browse… to select a PDF template",
+                foreground="#c0392b")
+        self._refresh_saf_signons()
+        self._refresh_saf_revisions()
+
+    def _refresh_saf_signons(self):
+        for iid in self._saf_signon_tree.get_children():
+            self._saf_signon_tree.delete(iid)
+        for entry in self.title_page.get("safety_signons", []):
+            self._saf_signon_tree.insert("", "end",
+                values=(entry.get("name", ""), entry.get("email", "")))
+
+    def _refresh_saf_revisions(self):
+        self._saf_rev_lb.delete(0, "end")
+        saf_dir = self._safety_dir()
+        completed_dir = os.path.join(saf_dir, "Completed") if saf_dir else None
+        if not (completed_dir and os.path.isdir(completed_dir)):
+            return
+        for fn in sorted(
+                (f for f in os.listdir(completed_dir) if not f.startswith(".")),
+                reverse=True):
+            self._saf_rev_lb.insert("end", fn)
+
+    def _saf_open_revision(self, _=None):
+        sel = self._saf_rev_lb.curselection()
+        if not sel: return
+        saf_dir = self._safety_dir()
+        if not saf_dir: return
+        path = os.path.join(saf_dir, "Completed", self._saf_rev_lb.get(sel[0]))
+        if os.path.exists(path): _open_file(path)
+
+    def _saf_add_signon(self):
+        dlg = tk.Toplevel(self); dlg.title("Add Sign-on"); dlg.grab_set()
+        dlg.resizable(False, False)
+        f = ttk.Frame(dlg, padding=14); f.pack(fill="both", expand=True)
+        ttk.Label(f, text="Name:").grid(row=0, column=0, sticky="e", padx=(0, 6), pady=4)
+        name_var = tk.StringVar()
+        name_entry = ttk.Entry(f, textvariable=name_var, width=30)
+        name_entry.grid(row=0, column=1, sticky="ew", pady=4)
+        ttk.Label(f, text="Email:").grid(row=1, column=0, sticky="e", padx=(0, 6), pady=4)
+        email_var = tk.StringVar()
+        ttk.Entry(f, textvariable=email_var, width=30).grid(row=1, column=1, sticky="ew", pady=4)
+        f.columnconfigure(1, weight=1)
+        bf = ttk.Frame(dlg, padding=(14, 4)); bf.pack(fill="x")
+        ttk.Button(bf, text="Cancel", command=dlg.destroy).pack(side="right", padx=4)
+        def _add():
+            name = name_var.get().strip()
+            if not name:
+                messagebox.showwarning("Name Required", "Please enter a name.", parent=dlg)
+                return
+            self.title_page.setdefault("safety_signons", []).append(
+                {"name": name, "email": email_var.get().strip()})
+            self._saf_signon_tree.insert("", "end", values=(name, email_var.get().strip()))
+            dlg.destroy()
+        ttk.Button(bf, text="Add", command=_add).pack(side="right")
+        _center_window(dlg); name_entry.focus_set()
+        dlg.bind("<Return>", lambda _: _add())
+
+    def _saf_remove_signon(self):
+        sel = self._saf_signon_tree.selection()
+        if not sel: return
+        iid = sel[0]
+        idx = self._saf_signon_tree.index(iid)
+        signons = self.title_page.get("safety_signons", [])
+        if 0 <= idx < len(signons):
+            signons.pop(idx)
+        self._saf_signon_tree.delete(iid)
+
+    def _save_safety_record(self):
+        saf_dir = self._safety_dir()
+        if not saf_dir:
+            messagebox.showinfo("Save Project First",
+                "Save the project first so the Safety Documents folder is known.")
+            return
+        completed_dir = os.path.join(saf_dir, "Completed")
+        os.makedirs(completed_dir, exist_ok=True)
+        ts   = datetime.now().strftime("%Y-%m-%d_%H%M")
+        base = f"safety_{ts}"
+        tmpl = self._safety_template_path()
+        saved_pdf = None
+        if tmpl:
+            dst = os.path.join(completed_dir, f"{base}.pdf")
+            try:
+                shutil.copy2(tmpl, dst); saved_pdf = dst
+            except Exception as exc:
+                messagebox.showwarning("PDF Copy Failed",
+                    f"Could not copy template:\n{exc}\n\nSaving JSON record only.")
+        record = {"timestamp": ts, "project": self.project_var.get().strip(),
+                  "signons": self.title_page.get("safety_signons", [])}
+        json_path = os.path.join(completed_dir, f"{base}.json")
+        try:
+            with open(json_path, "w") as fh:
+                json.dump(record, fh, indent=2)
+        except Exception as exc:
+            messagebox.showerror("Save Failed", str(exc)); return
+        self.title_page["safety_done"] = True
+        self._refresh_impl_list()
+        self.impl_tree.selection_set("__safety__")
+        self._show_safety_panel()
+        saved_name = os.path.basename(saved_pdf) if saved_pdf else os.path.basename(json_path)
+        messagebox.showinfo("Saved", f"Safety document saved:\n{saved_name}")
+
+    def _browse_safety_template(self):
+        path = filedialog.askopenfilename(
+            title="Select Safety Document Template",
+            filetypes=[("PDF files", "*.pdf"), ("All files", "*.*")])
+        if not path: return
+        self.app_config["safety_template_path"] = path
+        self._save_app_config()
+        self._refresh_safety_panel()
+        self._refresh_impl_list()
+
+    def _open_safety_template(self):
+        tmpl = self._safety_template_path()
+        if tmpl:
+            _open_file(tmpl)
+        else:
+            messagebox.showinfo("No Template",
+                "No safety template configured.\nClick Browse… to select a PDF template.")
+
+    # ── Safety Documents planning tab ─────────────────────────────
+
+    def _build_safety_tab(self, parent):
+        """Safety Documents management tab in the planning notebook."""
+        tb = ttk.Frame(parent, padding=(4, 4, 4, 2)); tb.pack(fill="x")
+        ttk.Button(tb, text="⬆ Upload Document",
+                   command=self._upload_safety_doc).pack(side="left")
+        ttk.Button(tb, text="⊞ Open Folder",
+                   command=self._open_safety_folder).pack(side="left", padx=(6, 0))
+        ttk.Label(tb, text="  double-click to open",
+                  foreground="grey", font=("", 8)).pack(side="left", padx=8)
+
+        lf = ttk.LabelFrame(parent, text="Safety Documents / Completed", padding=4)
+        lf.pack(fill="both", expand=True, padx=6, pady=4)
+        lb_f = ttk.Frame(lf); lb_f.pack(fill="both", expand=True)
+        self._saf_tab_lb = tk.Listbox(lb_f, selectmode="browse",
+                                       font=("Courier", 9), activestyle="none",
+                                       relief="flat", borderwidth=0)
+        vsb = ttk.Scrollbar(lb_f, orient="vertical", command=self._saf_tab_lb.yview)
+        self._saf_tab_lb.configure(yscrollcommand=vsb.set)
+        self._saf_tab_lb.pack(side="left", fill="both", expand=True)
+        vsb.pack(side="right", fill="y")
+        self._saf_tab_lb.bind("<Double-1>", self._saf_tab_open)
+        self._refresh_safety_tab()
+
+    def _refresh_safety_tab(self):
+        if not hasattr(self, "_saf_tab_lb"): return
+        self._saf_tab_lb.delete(0, "end")
+        saf_dir = self._safety_dir()
+        completed_dir = os.path.join(saf_dir, "Completed") if saf_dir else None
+        if not (completed_dir and os.path.isdir(completed_dir)):
+            return
+        for fn in sorted(
+                (f for f in os.listdir(completed_dir) if not f.startswith(".")),
+                reverse=True):
+            self._saf_tab_lb.insert("end", fn)
+
+    def _saf_tab_open(self, _=None):
+        sel = self._saf_tab_lb.curselection()
+        if not sel: return
+        saf_dir = self._safety_dir()
+        if not saf_dir: return
+        path = os.path.join(saf_dir, "Completed", self._saf_tab_lb.get(sel[0]))
+        if os.path.exists(path): _open_file(path)
+
+    def _upload_safety_doc(self):
+        if not self.project_folder:
+            messagebox.showinfo("Save Project First",
+                "Save the project before uploading documents."); return
+        paths = filedialog.askopenfilenames(
+            title="Upload Safety Documents",
+            filetypes=[("PDF / Word / Text", "*.pdf *.docx *.doc *.txt"),
+                       ("All files", "*.*")])
+        if not paths: return
+        dest = os.path.join(self.project_folder, "Safety Documents", "Completed")
+        os.makedirs(dest, exist_ok=True)
+        for src in paths:
+            try:
+                shutil.copy2(src, os.path.join(dest, os.path.basename(src)))
+            except Exception as exc:
+                messagebox.showwarning("Copy Failed",
+                    f"Could not copy {os.path.basename(src)}:\n{exc}")
+        self._refresh_safety_tab()
+        self._refresh_saf_revisions() if hasattr(self, "_saf_rev_lb") else None
+
+    def _open_safety_folder(self):
+        if not self.project_folder:
+            messagebox.showinfo("Save Project First",
+                "Save the project first."); return
+        d = os.path.join(self.project_folder, "Safety Documents")
+        os.makedirs(d, exist_ok=True)
+        _reveal_file(d)
+
+    # ── Other Documents tab ────────────────────────────────────────
+
+    def _other_docs_dir(self):
+        if not self.project_folder:
+            return None
+        return os.path.join(self.project_folder, "Other Documents")
+
+    def _build_other_docs_tab(self, parent):
+        """Other Documents tab — simple file upload and management."""
+        tb = ttk.Frame(parent, padding=(4, 4, 4, 2)); tb.pack(fill="x")
+        ttk.Button(tb, text="⬆ Upload Document(s)",
+                   command=self._upload_other_doc).pack(side="left")
+        ttk.Button(tb, text="⊞ Open Folder",
+                   command=self._open_other_docs_folder).pack(side="left", padx=(6, 0))
+        ttk.Button(tb, text="✕ Remove Selected",
+                   command=self._remove_other_doc).pack(side="left", padx=(6, 0))
+        ttk.Label(tb, text="  double-click to open",
+                  foreground="grey", font=("", 8)).pack(side="left", padx=8)
+
+        lf = ttk.LabelFrame(parent, text="Uploaded Documents", padding=4)
+        lf.pack(fill="both", expand=True, padx=6, pady=4)
+        lb_f = ttk.Frame(lf); lb_f.pack(fill="both", expand=True)
+        self._other_docs_lb = tk.Listbox(lb_f, selectmode="browse",
+                                          font=("Courier", 9), activestyle="none",
+                                          relief="flat", borderwidth=0)
+        vsb = ttk.Scrollbar(lb_f, orient="vertical", command=self._other_docs_lb.yview)
+        self._other_docs_lb.configure(yscrollcommand=vsb.set)
+        self._other_docs_lb.pack(side="left", fill="both", expand=True)
+        vsb.pack(side="right", fill="y")
+        self._other_docs_lb.bind("<Double-1>", self._other_doc_open)
+        self._refresh_other_docs_tab()
+
+    def _refresh_other_docs_tab(self):
+        if not hasattr(self, "_other_docs_lb"): return
+        self._other_docs_lb.delete(0, "end")
+        d = self._other_docs_dir()
+        if not (d and os.path.isdir(d)): return
+        for fn in sorted(f for f in os.listdir(d)
+                         if os.path.isfile(os.path.join(d, f)) and not f.startswith(".")):
+            self._other_docs_lb.insert("end", fn)
+
+    def _other_doc_open(self, _=None):
+        sel = self._other_docs_lb.curselection()
+        if not sel: return
+        d = self._other_docs_dir()
+        if not d: return
+        path = os.path.join(d, self._other_docs_lb.get(sel[0]))
+        if os.path.exists(path): _open_file(path)
+
+    def _upload_other_doc(self):
+        if not self.project_folder:
+            messagebox.showinfo("Save Project First",
+                "Save the project before uploading documents."); return
+        paths = filedialog.askopenfilenames(
+            title="Upload Other Documents",
+            filetypes=[("PDF / Word / Text", "*.pdf *.docx *.doc *.txt"),
+                       ("All files", "*.*")])
+        if not paths: return
+        dest = self._other_docs_dir()
+        os.makedirs(dest, exist_ok=True)
+        for src in paths:
+            try:
+                shutil.copy2(src, os.path.join(dest, os.path.basename(src)))
+            except Exception as exc:
+                messagebox.showwarning("Copy Failed",
+                    f"Could not copy {os.path.basename(src)}:\n{exc}")
+        self._refresh_other_docs_tab()
+
+    def _remove_other_doc(self):
+        sel = self._other_docs_lb.curselection()
+        if not sel: return
+        fn = self._other_docs_lb.get(sel[0])
+        d  = self._other_docs_dir()
+        if not d: return
+        path = os.path.join(d, fn)
+        if not messagebox.askyesno("Remove", f"Delete  {fn}  from Other Documents?"):
+            return
+        try:
+            os.remove(path)
+        except Exception as exc:
+            messagebox.showerror("Error", str(exc)); return
+        self._refresh_other_docs_tab()
+
+    def _open_other_docs_folder(self):
+        if not self.project_folder:
+            messagebox.showinfo("Save Project First", "Save the project first."); return
+        d = self._other_docs_dir()
+        os.makedirs(d, exist_ok=True)
+        _reveal_file(d)
+
     def _show_impl_prep(self):
         """Generate the project briefing shown when the PREP row is selected."""
         lines = []
@@ -9165,6 +9588,12 @@ class RedLineApp(tk.Tk):
             self.title_page["tailboard_done"] = not self.title_page.get("tailboard_done", False)
             self._refresh_impl_list()
             self.impl_tree.selection_set("__tailboard__")
+            self._on_impl_select()
+            return
+        if row == "__safety__":
+            self.title_page["safety_done"] = not self.title_page.get("safety_done", False)
+            self._refresh_impl_list()
+            self.impl_tree.selection_set("__safety__")
             self._on_impl_select()
             return
         idx = int(row)
@@ -9426,7 +9855,10 @@ class RedLineApp(tk.Tk):
         try:
             os.makedirs(folder, exist_ok=True)
             for sub in ("Drawings", "Relay Settings", "Maintenance Standards", "Engineering Standards",
-                        "CROW Outage", "Other", os.path.join("Tailboards", "Completed")):
+                        "CROW Outage", "Other",
+                        os.path.join("Tailboards", "Completed"),
+                        os.path.join("Safety Documents", "Completed"),
+                        "Other Documents"):
                 os.makedirs(os.path.join(folder, sub), exist_ok=True)
         except Exception as exc:
             messagebox.showerror("Save Error", f"Could not create project folder:\n{exc}"); return
