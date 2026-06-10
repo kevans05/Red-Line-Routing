@@ -26,6 +26,7 @@ import urllib.parse
 import queue
 import glob
 import shutil
+import sqlite3
 import tempfile
 
 # Ensure the directory containing wire_planner.py is on sys.path so that
@@ -3602,17 +3603,19 @@ class EngineeringStandardDialog(tk.Toplevel):
 class StandardsLibraryDialog(tk.Toplevel):
     """Pick standards from the cross-project library to add to this project.
 
-    library      : {sid: info} — the global library bucket for one kind
+    kind         : "maintenance" | "engineering" — library bucket name
+    library      : {sid: info} — the global library bucket for that kind
     existing_ids : iterable of IDs already in the project (shown greyed, not addable)
     result       : {sid: info} of the chosen entries, or None on cancel
     """
 
-    def __init__(self, parent, kind_label, library, existing_ids):
+    def __init__(self, parent, kind, kind_label, library, existing_ids):
         super().__init__(parent)
         self.title(f"{kind_label} Library")
         self.resizable(True, True)
         self.grab_set()
         self.result = None
+        self._kind = kind
         self._library = library
 
         ttk.Label(self, text=f"Standards remembered from previous projects."
@@ -3669,13 +3672,12 @@ class StandardsLibraryDialog(tk.Toplevel):
                           "from the library?\n(Projects that already contain them "
                           "are not affected.)", parent=self):
             return
+        app = self.master
         for iid in sel:
             self._library.pop(iid, None)
             self._tree.delete(iid)
-        # Persist via parent app
-        app = self.master
-        if hasattr(app, "_save_app_config"):
-            app._save_app_config()
+            if hasattr(app, "_forget_standard"):
+                app._forget_standard(self._kind, iid)
 
     def _add(self):
         chosen = {}
@@ -3769,7 +3771,7 @@ class DrawingSearchDialog(tk.Toplevel):
         self._last_paged = None   # most recent PagedResults
         self._from_cache = False
         self._client = None
-        self._proj_cache: "_ProjectDrawingCache | None" = proj_cache
+        self._proj_cache: "_GlobalDrawingCache | None" = proj_cache
         self._build()
         self.geometry("900x580")
         _center_window(self)
@@ -3969,7 +3971,7 @@ class DrawingSearchDialog(tk.Toplevel):
 
         # ── Live search path ──────────────────────────────────────────────
         if (self._proj_cache is not None
-                and _ProjectDrawingCache.is_cacheable(params)
+                and _GlobalDrawingCache.is_cacheable(params)
                 and page == 0):
             # Fetch all pages so the cache is useful for future searches
             def _run_all():
@@ -4224,17 +4226,166 @@ def _bind_filter_combobox(combo: ttk.Combobox, all_choices: list) -> None:
     _ComboFilterHelper(combo, all_choices)
 
 
-class _ProjectDrawingCache:
-    """Per-project drawing search cache stored inside the .redline JSON.
+class _AppDB:
+    """Global application database (~/.redlinerouting.db).
 
-    Only categorical searches (facility / drawing_type / drawing_subject / state,
-    no free-text filters) are cached and auto-refreshed.  The caller owns the
-    backing dict (``RedLineApp.drawing_search_cache``) so it is persisted when
-    the project is saved.
+    Holds the app settings, the cross-project standards library, and the
+    drawing-search cache shared by all projects. A new connection is
+    opened per call so the same instance is safe from any thread
+    (background cache refreshes write here too).
+
+    On first run, settings and the standards library are migrated from
+    the legacy ~/.redlinerouting.json (the file is left in place).
     """
 
-    def __init__(self, store: dict):
-        self._store = store   # mutable ref — changes are visible to the caller
+    PATH = os.path.expanduser("~/.redlinerouting.db")
+    _LEGACY_JSON = os.path.expanduser("~/.redlinerouting.json")
+
+    def __init__(self, path=None):
+        self.path = path or self.PATH
+        with self._conn() as c:
+            c.executescript("""
+                CREATE TABLE IF NOT EXISTS config(
+                    key   TEXT PRIMARY KEY,
+                    value TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS standards_library(
+                    kind        TEXT NOT NULL,
+                    standard_id TEXT NOT NULL,
+                    info        TEXT NOT NULL,
+                    updated_at  REAL NOT NULL,
+                    PRIMARY KEY (kind, standard_id));
+                CREATE TABLE IF NOT EXISTS drawing_cache(
+                    cache_key TEXT PRIMARY KEY,
+                    results   TEXT NOT NULL,
+                    cached_at REAL NOT NULL);
+            """)
+        self._migrate_legacy_json()
+
+    def _conn(self):
+        conn = sqlite3.connect(self.path, timeout=10)
+        conn.isolation_level = None   # autocommit
+        return conn
+
+    def _migrate_legacy_json(self):
+        try:
+            with self._conn() as c:
+                if c.execute("SELECT COUNT(*) FROM config").fetchone()[0]:
+                    return   # already migrated / in use
+            with open(self._LEGACY_JSON, encoding="utf-8") as fh:
+                legacy = json.load(fh)
+        except (FileNotFoundError, json.JSONDecodeError, sqlite3.Error):
+            return
+        lib = legacy.pop("standards_library", {})
+        self.save_config(legacy)
+        for kind, bucket in lib.items():
+            for sid, info in bucket.items():
+                self.put_standard(kind, sid, info)
+
+    # ── config ────────────────────────────────────────────────────
+
+    def load_config(self) -> dict:
+        try:
+            with self._conn() as c:
+                rows = c.execute("SELECT key, value FROM config").fetchall()
+            return {k: json.loads(v) for k, v in rows}
+        except (sqlite3.Error, json.JSONDecodeError):
+            return {}
+
+    def save_config(self, cfg: dict):
+        with self._conn() as c:
+            c.execute("BEGIN")
+            c.execute("DELETE FROM config")
+            c.executemany(
+                "INSERT INTO config(key, value) VALUES (?, ?)",
+                [(k, json.dumps(v)) for k, v in cfg.items()])
+            c.execute("COMMIT")
+
+    # ── standards library ─────────────────────────────────────────
+
+    def get_standards(self, kind) -> dict:
+        try:
+            with self._conn() as c:
+                rows = c.execute(
+                    "SELECT standard_id, info FROM standards_library "
+                    "WHERE kind = ?", (kind,)).fetchall()
+            return {sid: json.loads(info) for sid, info in rows}
+        except (sqlite3.Error, json.JSONDecodeError):
+            return {}
+
+    def put_standard(self, kind, sid, info):
+        with self._conn() as c:
+            c.execute(
+                "INSERT INTO standards_library(kind, standard_id, info, updated_at) "
+                "VALUES (?, ?, ?, ?) "
+                "ON CONFLICT(kind, standard_id) DO UPDATE SET "
+                "info = excluded.info, updated_at = excluded.updated_at",
+                (kind, sid, json.dumps(info), datetime.now().timestamp()))
+
+    def delete_standard(self, kind, sid):
+        with self._conn() as c:
+            c.execute("DELETE FROM standards_library "
+                      "WHERE kind = ? AND standard_id = ?", (kind, sid))
+
+    # ── drawing search cache ──────────────────────────────────────
+
+    def cache_get(self, key):
+        """Return the cached list of result dicts for key, or None."""
+        try:
+            with self._conn() as c:
+                row = c.execute(
+                    "SELECT results FROM drawing_cache WHERE cache_key = ?",
+                    (key,)).fetchone()
+            return json.loads(row[0]) if row else None
+        except (sqlite3.Error, json.JSONDecodeError):
+            return None
+
+    def cache_put(self, key, results, cached_at=None):
+        with self._conn() as c:
+            c.execute(
+                "INSERT INTO drawing_cache(cache_key, results, cached_at) "
+                "VALUES (?, ?, ?) "
+                "ON CONFLICT(cache_key) DO UPDATE SET "
+                "results = excluded.results, cached_at = excluded.cached_at",
+                (key, json.dumps(results),
+                 cached_at if cached_at is not None
+                 else datetime.now().timestamp()))
+
+    def cache_keys(self):
+        try:
+            with self._conn() as c:
+                return [r[0] for r in
+                        c.execute("SELECT cache_key FROM drawing_cache")]
+        except sqlite3.Error:
+            return []
+
+    def cache_merge_legacy(self, store: dict):
+        """Import a per-project drawing_search_cache dict from an old .redline.
+
+        Entries newer than what the DB already holds win.
+        """
+        for key, entry in store.items():
+            try:
+                ts = float(entry.get("cached_at", 0))
+                results = entry.get("results", [])
+            except (AttributeError, TypeError, ValueError):
+                continue
+            with self._conn() as c:
+                row = c.execute(
+                    "SELECT cached_at FROM drawing_cache WHERE cache_key = ?",
+                    (key,)).fetchone()
+            if row is None or row[0] < ts:
+                self.cache_put(key, results, cached_at=ts)
+
+
+class _GlobalDrawingCache:
+    """Drawing search cache shared across all projects (SQLite-backed).
+
+    Only categorical searches (facility / drawing_type / drawing_subject / state,
+    no free-text filters) are cached and auto-refreshed.
+    """
+
+    def __init__(self, db: "_AppDB"):
+        self._db = db
 
     # ── helpers ───────────────────────────────────────────────────
 
@@ -4256,23 +4407,22 @@ class _ProjectDrawingCache:
     def get(self, params) -> "list | None":
         if not self.is_cacheable(params):
             return None
-        entry = self._store.get(self._key(params))
-        if entry is None:
+        raw = self._db.cache_get(self._key(params))
+        if raw is None:
             return None
         try:
-            return [DrawingResult(**d) for d in entry["results"]]
+            return [DrawingResult(**d) for d in raw]
         except Exception:
             return None
 
     def put(self, params, results: list) -> None:
-        self._store[self._key(params)] = {
-            "results": [vars(r) for r in results],
-            "cached_at": datetime.now().timestamp(),
-        }
+        if not self.is_cacheable(params):
+            return
+        self._db.cache_put(self._key(params), [vars(r) for r in results])
 
     def iter_keys(self):
         """Yield (facility, drawing_type, drawing_subject, state) for every cached entry."""
-        for k in list(self._store.keys()):
+        for k in self._db.cache_keys():
             parts = k.split("|")
             if len(parts) == 4:
                 yield tuple(parts)
@@ -5442,8 +5592,9 @@ class RedLineApp(tk.Tk):
         self.relay_registry = {}          # keyed by device_id
         self.maintenance_standards_registry = {}  # keyed by standard_id
         self.engineering_standards_registry = {}  # keyed by standard_id
-        self.drawing_search_cache = {}    # keyed by "facility|type|subject|state"
-        self.app_config = self._load_app_config()   # global prefs (~/.redlinerouting.json)
+        self._app_db = _AppDB()           # ~/.redlinerouting.db — settings, standards library, drawing cache
+        self._drawing_cache = _GlobalDrawingCache(self._app_db)
+        self.app_config = self._load_app_config()
         self._build_menu()
         self._build_ui()
         self.after_idle(self._startup_flow)
@@ -5803,7 +5954,7 @@ class RedLineApp(tk.Tk):
 
     def _search_drawings(self):
         dlg = DrawingSearchDialog(self, self.app_config, multi_select=True,
-                                  proj_cache=_ProjectDrawingCache(self.drawing_search_cache))
+                                  proj_cache=self._drawing_cache)
         for r in dlg.selected:
             if r.drawing_number not in self.drawing_registry:
                 self.drawing_registry[r.drawing_number] = {
@@ -5825,7 +5976,7 @@ class RedLineApp(tk.Tk):
     def _add_drawing(self):
         dlg = DrawingEditDialog(self, base_url=self.app_config.get("base_drawing_url",""),
                                 app_config=self.app_config,
-                                proj_cache=_ProjectDrawingCache(self.drawing_search_cache))
+                                proj_cache=self._drawing_cache)
         if dlg.result:
             name = dlg.result["name"]
             self.drawing_registry[name] = {"title":dlg.result["title"],"rev":dlg.result["rev"],"url":dlg.result["url"],"notes":dlg.result["notes"]}
@@ -5838,7 +5989,7 @@ class RedLineApp(tk.Tk):
         dlg = DrawingEditDialog(self, existing={"name":name,**info},
                                 base_url=self.app_config.get("base_drawing_url",""),
                                 app_config=self.app_config,
-                                proj_cache=_ProjectDrawingCache(self.drawing_search_cache))
+                                proj_cache=self._drawing_cache)
         if dlg.result:
             old = dlg.result.get("old_name"); new_name = dlg.result["name"]
             if old and old != new_name and old in self.drawing_registry: del self.drawing_registry[old]
@@ -6247,53 +6398,44 @@ class RedLineApp(tk.Tk):
 
     # ── Software / Global Settings ────────────────────────────────
 
-    _APP_CONFIG_PATH = os.path.expanduser("~/.redlinerouting.json")
-
     def _load_app_config(self):
-        try:
-            with open(self._APP_CONFIG_PATH, encoding="utf-8") as fh:
-                return json.load(fh)
-        except (FileNotFoundError, json.JSONDecodeError):
-            return {}
+        return self._app_db.load_config()
 
     def _save_app_config(self):
         try:
-            with open(self._APP_CONFIG_PATH, "w", encoding="utf-8") as fh:
-                json.dump(self.app_config, fh, indent=2)
+            self._app_db.save_config(self.app_config)
         except Exception as exc:
             messagebox.showerror("Settings Error", f"Could not save software settings:\n{exc}")
 
     # ── Cross-project standards library ───────────────────────────
     # Every standard added to any project is remembered globally in
-    # ~/.redlinerouting.json so new projects can pull it from the
+    # ~/.redlinerouting.db so new projects can pull it from the
     # library instead of re-entering it.
 
     def _remember_standard(self, kind, sid, info):
-        """Merge one standard into the global library and persist."""
+        """Merge one standard into the global library."""
         if not sid:
             return
-        bucket = self.app_config.setdefault(
-            "standards_library", {}).setdefault(kind, {})
-        if bucket.get(sid) != info:
-            bucket[sid] = dict(info)
-            self._save_app_config()
+        try:
+            self._app_db.put_standard(kind, sid, info)
+        except sqlite3.Error:
+            pass
 
     def _remember_all_standards(self):
         """Sweep both project registries into the global library."""
-        lib = self.app_config.setdefault("standards_library", {})
-        changed = False
         for kind, reg in (("maintenance", self.maintenance_standards_registry),
                           ("engineering", self.engineering_standards_registry)):
-            bucket = lib.setdefault(kind, {})
             for sid, info in reg.items():
-                if sid and bucket.get(sid) != info:
-                    bucket[sid] = dict(info)
-                    changed = True
-        if changed:
-            self._save_app_config()
+                self._remember_standard(kind, sid, info)
+
+    def _forget_standard(self, kind, sid):
+        try:
+            self._app_db.delete_standard(kind, sid)
+        except sqlite3.Error:
+            pass
 
     def _standards_library(self, kind):
-        return self.app_config.get("standards_library", {}).get(kind, {})
+        return self._app_db.get_standards(kind)
 
     def _open_software_settings(self):
         dlg = tk.Toplevel(self)
@@ -6619,8 +6761,8 @@ class RedLineApp(tk.Tk):
                 "Standards are added to the library automatically as you "
                 "add them to projects.")
             return
-        dlg = StandardsLibraryDialog(self, "Maintenance Standards", lib,
-                                     self.maintenance_standards_registry.keys())
+        dlg = StandardsLibraryDialog(self, "maintenance", "Maintenance Standards",
+                                     lib, self.maintenance_standards_registry.keys())
         if dlg.result:
             self.maintenance_standards_registry.update(dlg.result)
             self._refresh_maintenance_list()
@@ -6755,8 +6897,8 @@ class RedLineApp(tk.Tk):
                 "Standards are added to the library automatically as you "
                 "add them to projects.")
             return
-        dlg = StandardsLibraryDialog(self, "Engineering Standards", lib,
-                                     self.engineering_standards_registry.keys())
+        dlg = StandardsLibraryDialog(self, "engineering", "Engineering Standards",
+                                     lib, self.engineering_standards_registry.keys())
         if dlg.result:
             self.engineering_standards_registry.update(dlg.result)
             self._refresh_engineering_list()
@@ -8411,7 +8553,6 @@ class RedLineApp(tk.Tk):
         if self.jobs and not messagebox.askyesno("New Plan","Discard current plan and start fresh?"): return
         self.jobs=[]; self.drawing_registry={}; self.relay_registry={}
         self.maintenance_standards_registry={}; self.engineering_standards_registry={}
-        self.drawing_search_cache={}
         self.current_file=None; self.project_folder=None
         self.project_var.set("")
         self.history = {"device": [], "location": [], "pin": [], "panel": [], "wire": []}
@@ -8443,7 +8584,12 @@ class RedLineApp(tk.Tk):
             self.maintenance_standards_registry = data.get("maintenance_standards", {})
             self.engineering_standards_registry = data.get("engineering_standards", {})
             self.history = data.get("history", {"device":[],"location":[],"pin":[],"panel":[],"wire":[]})
-            self.drawing_search_cache = data.get("drawing_search_cache", {})
+            # Older files carried a per-project drawing cache — fold it
+            # into the global DB so nothing is lost, then ignore it.
+            legacy_cache = data.get("drawing_search_cache", {})
+            if legacy_cache:
+                try: self._app_db.cache_merge_legacy(legacy_cache)
+                except sqlite3.Error: pass
             self.title_page = data.get("title_page", {"notes": "", "crows": []})
             self.current_file = path
             self.project_folder = os.path.dirname(path)
@@ -8499,7 +8645,6 @@ class RedLineApp(tk.Tk):
                            "relay_settings":self.relay_registry,           # key kept as "relay_settings" for file compatibility
                            "maintenance_standards":self.maintenance_standards_registry,
                            "engineering_standards":self.engineering_standards_registry,
-                           "drawing_search_cache":self.drawing_search_cache,
                            "history":self.history,
                            "jobs":self.jobs},fh,indent=2)
             proj = self.project_var.get().strip() or os.path.splitext(os.path.basename(path))[0]
@@ -8517,7 +8662,7 @@ class RedLineApp(tk.Tk):
         """
         if not _DRAWING_SEARCH_AVAILABLE:
             return
-        cache = _ProjectDrawingCache(self.drawing_search_cache)
+        cache = self._drawing_cache
         keys = list(cache.iter_keys())
         if not keys:
             return
