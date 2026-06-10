@@ -2690,19 +2690,20 @@ def _pdf_relay_reg(bld, reg, size="Letter Portrait"):
     margin = 43 if "Letter" in size else 36
     pw = _SimplePDFBuilder.SIZES.get(size, (612.0, 792.0))[0]
     cw = pw - 2*margin
-    rev_w  = 42; eng_w = 130
-    dev_w  = min(130, int(cw * 0.18))
-    title_w = cw - dev_w - rev_w - eng_w
+    rev_w   = 42; eng_w = 110; phone_w = 110
+    dev_w   = min(110, int(cw * 0.16))
+    title_w = cw - dev_w - rev_w - eng_w - phone_w
     specs = [
-        ("Device ID", dev_w,   "left"),
-        ("Title",     title_w, "left"),
-        ("Rev",       rev_w,   "center"),
-        ("Engineer",  eng_w,   "left"),
+        ("Device ID",      dev_w,   "left"),
+        ("Title",          title_w, "left"),
+        ("Rev",            rev_w,   "center"),
+        ("Engineer",       eng_w,   "left"),
+        ("Phone / Contact", phone_w, "left"),
     ]
     def rows():
         for did, info in sorted(reg.items()):
             yield None, [did, info.get("title",""), info.get("revision",""),
-                         info.get("engineer","")]
+                         info.get("engineer",""), info.get("contact","")]
     _pdf_section_table(bld, "Relay Settings", specs, rows(), size)
 
 
@@ -4912,23 +4913,48 @@ def _grab_browser_cookies(domain: str) -> dict:
     if cookies_path is None:
         raise RuntimeError("Could not find Edge/Chrome Cookies database.")
 
-    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tf:
-        tmp_path = tf.name
+    # Open the live DB in immutable read-only mode so we bypass Edge's file
+    # lock.  The ?immutable=1 flag tells SQLite not to check or acquire any
+    # lock files, which works even while the browser is running.
+    domain_clean = domain.lstrip(".")
+    rows = None
     try:
-        shutil.copy2(cookies_path, tmp_path)
-        conn = sqlite3.connect(tmp_path)
-        domain_clean = domain.lstrip(".")
+        uri = "file:{}?immutable=1".format(cookies_path.replace("\\", "/"))
+        conn = sqlite3.connect(uri, uri=True)
         rows = conn.execute(
             "SELECT name, encrypted_value FROM cookies"
             " WHERE host_key LIKE ? OR host_key LIKE ?",
             (f"%{domain_clean}%", f"%.{domain_clean}%"),
         ).fetchall()
         conn.close()
-    finally:
+    except Exception:
+        pass
+
+    if rows is None:
+        # Fallback: copy to temp file (may fail if Edge holds an exclusive lock)
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tf:
+            tmp_path = tf.name
         try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
+            shutil.copy2(cookies_path, tmp_path)
+            conn = sqlite3.connect(tmp_path)
+            rows = conn.execute(
+                "SELECT name, encrypted_value FROM cookies"
+                " WHERE host_key LIKE ? OR host_key LIKE ?",
+                (f"%{domain_clean}%", f"%.{domain_clean}%"),
+            ).fetchall()
+            conn.close()
+        except OSError as exc:
+            raise RuntimeError(
+                f"Could not read the browser cookie database.\n\n"
+                f"Edge/Chrome may be locking the file.  Try closing all "
+                f"browser windows and clicking Grab again.\n\n"
+                f"(Technical detail: {exc})"
+            ) from exc
+        finally:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
 
     result = {}
     for name, enc_val in rows:
@@ -9084,10 +9110,11 @@ class RedLineApp(tk.Tk):
         if self.relay_registry:
             lines += ["RELAY / DEVICE SETTINGS", "-"*40]
             for dev_id, info in sorted(self.relay_registry.items()):
-                eng  = f"  Eng: {info['engineer']}"    if info.get("engineer") else ""
-                rev  = f"  Rev {info['revision']}"     if info.get("revision") else ""
-                url  = f"\n    {info['url']}"          if info.get("url") else ""
-                lines.append(f"  {dev_id}{rev}{eng}{url}")
+                eng     = f"  Eng: {info['engineer']}"         if info.get("engineer") else ""
+                rev     = f"  Rev {info['revision']}"          if info.get("revision") else ""
+                contact = f"\n    Phone/Contact: {info['contact']}" if info.get("contact") else ""
+                url     = f"\n    {info['url']}"               if info.get("url") else ""
+                lines.append(f"  {dev_id}{rev}{eng}{contact}{url}")
             lines.append("")
 
         # Collect all standards referenced in jobs
