@@ -42,6 +42,7 @@ class DrawingSearchClient:
         cache=None,
         search_path: Optional[str] = None,
         extra_headers: Optional[dict] = None,
+        on_cookie_update: Optional[Callable[[dict], None]] = None,
     ):
         _base = base_url.rstrip("/")
         if search_path is not None:
@@ -55,12 +56,13 @@ class DrawingSearchClient:
             else:
                 self.base_url    = _base
                 self.search_path = _SEARCH_PATH
-        self.cookies            = cookies or {}
-        self.timeout            = timeout
-        self.user_agent         = user_agent
-        self.cache              = cache  # DrawingSearchCache | None
-        self.extra_headers      = dict(extra_headers) if extra_headers else {}
+        self.cookies             = dict(cookies) if cookies else {}
+        self.timeout             = timeout
+        self.user_agent          = user_agent
+        self.cache               = cache  # DrawingSearchCache | None
+        self.extra_headers       = dict(extra_headers) if extra_headers else {}
         self._last_response_html = ""   # stored for caller diagnostics
+        self.on_cookie_update    = on_cookie_update
 
     # ── public API ────────────────────────────────────────────────
 
@@ -158,6 +160,7 @@ class DrawingSearchClient:
             with urllib.request.urlopen(req, timeout=self.timeout) as resp:
                 charset = _charset_from_headers(resp.headers)
                 html = resp.read().decode(charset, errors="replace")
+                self._absorb_set_cookies(resp.headers)
             self._last_response_html = html
             return html
         except urllib.error.HTTPError as exc:
@@ -167,6 +170,28 @@ class DrawingSearchClient:
                 exc._response_body = ""
             self._last_response_html = exc._response_body
             raise
+
+    def _absorb_set_cookies(self, headers) -> None:
+        """Parse Set-Cookie response headers and refresh any matching stored cookies.
+
+        Only updates names already present in self.cookies so we don't absorb
+        unrelated tracking cookies. Fires on_cookie_update if anything changed.
+        """
+        set_cookies = headers.get_all("Set-Cookie") if hasattr(headers, "get_all") else []
+        if not set_cookies:
+            return
+        changed = False
+        for sc in set_cookies:
+            pair = sc.split(";")[0].strip()
+            if "=" not in pair:
+                continue
+            k, v = pair.split("=", 1)
+            k = k.strip()
+            if k in self.cookies and self.cookies[k] != v:
+                self.cookies[k] = v
+                changed = True
+        if changed and self.on_cookie_update is not None:
+            self.on_cookie_update(dict(self.cookies))
 
 
 def _charset_from_headers(headers) -> str:

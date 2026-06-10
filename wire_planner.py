@@ -28,6 +28,9 @@ import glob
 import shutil
 import sqlite3
 import tempfile
+import ctypes
+import ctypes.wintypes
+import base64
 
 # Ensure the directory containing wire_planner.py is on sys.path so that
 # sibling packages (drawing_search/) are always importable, regardless of
@@ -151,15 +154,17 @@ def empty_protection():
 def empty_job(job_type="REMOVE"):
     if job_type in ("BLOCK", "UNBLOCK"):
         return {"type": job_type, "description": "", "protection": empty_protection()}
-    if job_type in ("TESTING", "ISOLATION"):
+    if job_type == "TESTING":
         return {"type": job_type, "description": "", "notes": ""}
+    if job_type == "ISOLATION":
+        return {"type": job_type, "description": "", "drawings": [], "notes": ""}
     if job_type == "CR_PROT":
-        return {"type": "CR_PROT", "description": "", "desks": [], "notes": ""}
+        return {"type": "CR_PROT", "description": "", "desks": [], "crows": [], "notes": ""}
     if job_type in ("DEVICE ADD", "DEVICE REMOVE"):
         return {"type": job_type, "description": "",
                 "endpoint": empty_endpoint(), "notes": ""}
     job = {"type": job_type, "description": "", "wire": "",
-           "start": empty_endpoint(), "end": empty_endpoint()}
+           "start": empty_endpoint(), "end": empty_endpoint(), "notes": ""}
     if job_type == "MOVE":
         job["add_wire"] = ""
         job["add_start"] = empty_endpoint()
@@ -184,26 +189,12 @@ def _get_prot_drawings(prot):
 
 def _bind_search_combobox(combo, get_values_fn):
     """Attach live search filtering to a ttk.Combobox.
-    Filters values containing the typed text and opens the dropdown."""
-    def _do_filter():
-        typed = combo.get()
-        all_vals = get_values_fn()
-        if typed.strip():
-            lo = typed.lower()
-            filtered = [v for v in all_vals if lo in v.lower()]
-        else:
-            filtered = all_vals
-        combo["values"] = filtered
-        if filtered and typed.strip():
-            try:
-                combo.tk.call("ttk::combobox::Post", str(combo))
-            except tk.TclError:
-                pass
-    def _on_key(event):
-        if event.keysym in ("Return","Tab","Escape","Up","Down","Left","Right","Home","End"):
-            return
-        combo.after(1, _do_filter)
-    combo.bind("<KeyRelease>", _on_key)
+
+    Uses the same non-focus-stealing custom popup as _ComboFilterHelper so
+    that typing does not dismiss the suggestion list on each keystroke.
+    get_values_fn is a zero-argument callable returning the current candidate list.
+    """
+    _ComboFilterHelper(combo, get_values_fn)
 
 
 def _bind_url_open(entry_widget, url_var):
@@ -889,7 +880,7 @@ class JobDialog(tk.Toplevel):
     def __init__(self, parent, job_type, existing=None, registry=None,
                  history=None, ep_history=None, jobs=None, settings=None,
                  maintenance_standards=None, engineering_standards=None,
-                 ctrl_desks=None):
+                 ctrl_desks=None, crows=None):
         super().__init__(parent)
         self.title(f"{'Edit' if existing else 'Add'} — {job_type}")
         self.result = None
@@ -902,6 +893,7 @@ class JobDialog(tk.Toplevel):
         self.maintenance_standards = maintenance_standards if maintenance_standards is not None else {}
         self.engineering_standards = engineering_standards if engineering_standards is not None else {}
         self.ctrl_desks = ctrl_desks if ctrl_desks is not None else []
+        self.crows = crows if crows is not None else []
         self.resizable(True, True)
         self._build(existing)
         self.grab_set()
@@ -997,6 +989,11 @@ class JobDialog(tk.Toplevel):
             self.wire_var = tk.StringVar(value=ex.get("wire",""))
             self._wire_combo(f, self.wire_var).grid(row=row, column=1, sticky="w", pady=(6,2))
             row += 1
+            ttk.Label(f, text="Notes:").grid(row=row, column=0, sticky="ne", padx=(0,6), pady=2)
+            self._rem_add_notes = tk.Text(f, width=58, height=3, wrap="word", font=("",9))
+            self._rem_add_notes.grid(row=row, column=0, columnspan=2, sticky="ew", pady=2)
+            self._rem_add_notes.insert("1.0", ex.get("notes",""))
+            row += 1
 
         elif self.job_type == "MOVE":
             # MOVE has two endpoint pairs: the wire being removed ("start"/"end") and
@@ -1085,47 +1082,84 @@ class JobDialog(tk.Toplevel):
         elif self.job_type == "ISOLATION":
             self._section_label(f, row, "── ISOLATION ──", color); row += 2
             ttk.Label(f, text="Notes:").grid(row=row, column=0, sticky="ne", padx=(0,6), pady=2)
-            iso_txt = tk.Text(f, width=58, height=6, wrap="word", font=("",9))
+            iso_txt = tk.Text(f, width=58, height=4, wrap="word", font=("",9))
             iso_txt.grid(row=row, column=0, columnspan=2, sticky="ew", pady=2)
             iso_txt.insert("1.0", ex.get("notes",""))
             self._test_notes_widget = iso_txt
+            row += 1
+            self._iso_drawings_frame = MultiDrawingFrame(
+                f, registry=self.registry,
+                base_drawing_url=self.settings.get("base_drawing_url", ""))
+            self._iso_drawings_frame.grid(row=row, column=0, columnspan=2, sticky="ew", pady=(4,2))
+            self._iso_drawings_frame.set(ex.get("drawings", []))
             row += 1
 
         elif self.job_type == "CR_PROT":
             self._section_label(f, row, "── CONTROL ROOM PROTECTION ──", color); row += 2
 
-            # Desk selection
-            ttk.Label(f, text="Desks:").grid(row=row, column=0, sticky="ne", padx=(0, 6), pady=2)
-            desk_outer = ttk.Frame(f)
-            desk_outer.grid(row=row, column=1, sticky="ew", pady=2)
-            desk_outer.columnconfigure(0, weight=1)
+            def _make_checklist(parent_frame, items, checked_ids, label_fn):
+                """Return (frame, {id: BooleanVar}) for a bordered checklist."""
+                border = tk.Frame(parent_frame, bg="#d5d8dc", padx=1, pady=1)
+                border.columnconfigure(0, weight=1)
+                inner = tk.Frame(border, bg="white")
+                inner.pack(fill="both", expand=True)
+                vars_ = {}
+                if items:
+                    for item in items:
+                        iid = item["desk_id"] if "desk_id" in item else item["outage_number"]
+                        var = tk.BooleanVar(value=(iid in checked_ids))
+                        vars_[iid] = var
+                        ttk.Checkbutton(inner, text=label_fn(item), variable=var).pack(
+                            anchor="w", padx=6, pady=2)
+                return border, vars_
 
-            # Checklist frame
-            ck_border = tk.Frame(desk_outer, bg="#d5d8dc", padx=1, pady=1)
-            ck_border.grid(row=0, column=0, sticky="ew")
-            ck_border.columnconfigure(0, weight=1)
-            ck_inner = tk.Frame(ck_border, bg="white")
-            ck_inner.pack(fill="both", expand=True)
+            # ── Desks ────────────────────────────────────────────────
+            ttk.Label(f, text="Desks to call:").grid(row=row, column=0, sticky="ne",
+                                                      padx=(0, 6), pady=2)
+            selected_desk_ids = {d["desk_id"] for d in ex.get("desks", [])}
+            self._cr_desk_vars = {}
 
-            self._cr_desk_vars = {}  # desk_id -> BooleanVar
-            selected_ids = {d["desk_id"] for d in ex.get("desks", [])}
             if self.ctrl_desks:
-                for desk in self.ctrl_desks:
-                    var = tk.BooleanVar(value=(desk["desk_id"] in selected_ids))
-                    self._cr_desk_vars[desk["desk_id"]] = var
-                    cb_text = desk["desk_name"]
-                    if desk["desk_type"]:
-                        cb_text += f"  ({desk['desk_type']})"
-                    ttk.Checkbutton(ck_inner, text=cb_text, variable=var).pack(
-                        anchor="w", padx=6, pady=2)
+                desk_border, self._cr_desk_vars = _make_checklist(
+                    f, self.ctrl_desks, selected_desk_ids,
+                    lambda d: d["desk_name"] + (f"  ({d['desk_type']})" if d.get("desk_type") else ""))
+                desk_border.grid(row=row, column=1, sticky="ew", pady=2)
             else:
-                tk.Label(ck_inner, text="No desks configured. Use File → Control Room Desks to add desks.",
-                         bg="white", fg="#7f8c8d", font=("", 8), justify="left",
-                         wraplength=350).pack(padx=8, pady=8)
+                tk.Label(f, text="No desks configured — use File → Control Room Desks.",
+                         fg="#7f8c8d", font=("", 8)).grid(row=row, column=1, sticky="w", pady=2)
+
+            # Live description update when desks are toggled
+            def _update_desc(*_):
+                sel_names = [d["desk_name"] for d in self.ctrl_desks
+                             if self._cr_desk_vars.get(d["desk_id"], tk.BooleanVar()).get()]
+                if sel_names and not self.desc_var.get().strip():
+                    self.desc_var.set("Call: " + ", ".join(sel_names))
+                elif sel_names:
+                    self.desc_var.set("Call: " + ", ".join(sel_names))
+
+            for var in self._cr_desk_vars.values():
+                var.trace_add("write", _update_desc)
 
             row += 1
 
-            # Notes
+            # ── CROWs ────────────────────────────────────────────────
+            ttk.Label(f, text="Associated CROWs:").grid(row=row, column=0, sticky="ne",
+                                                         padx=(0, 6), pady=2)
+            selected_crow_nums = set(ex.get("crows", []))
+            self._cr_crow_vars = {}
+
+            if self.crows:
+                crow_border, self._cr_crow_vars = _make_checklist(
+                    f, self.crows, selected_crow_nums,
+                    lambda c: c["outage_number"])
+                crow_border.grid(row=row, column=1, sticky="ew", pady=2)
+            else:
+                tk.Label(f, text="No CROWs registered for this project.",
+                         fg="#7f8c8d", font=("", 8)).grid(row=row, column=1, sticky="w", pady=2)
+
+            row += 1
+
+            # ── Notes ────────────────────────────────────────────────
             ttk.Label(f, text="Notes:").grid(row=row, column=0, sticky="ne", padx=(0, 6), pady=2)
             cr_txt = tk.Text(f, width=58, height=4, wrap="word", font=("", 9))
             cr_txt.grid(row=row, column=0, columnspan=2, sticky="ew", pady=2)
@@ -1133,50 +1167,53 @@ class JobDialog(tk.Toplevel):
             self._test_notes_widget = cr_txt
             row += 1
 
-        # Standards — shown for every job type
-        ttk.Separator(f, orient="horizontal").grid(row=row, column=0, columnspan=2, sticky="ew", pady=(8,4)); row+=1
-        self._section_label(f, row, "── STANDARDS ──", "#5d6d7e"); row+=2
+        self._maint_lb = self._eng_lb = None
 
-        def _std_list_widget(parent, grid_row, label, all_ids, existing_vals):
-            """Inline list+combobox widget for multi-select standards. Returns the Listbox."""
-            ttk.Label(parent, text=label).grid(row=grid_row, column=0, sticky="ne", padx=(0,6), pady=2)
-            holder = ttk.Frame(parent)
-            holder.grid(row=grid_row, column=1, sticky="ew", pady=2)
-            holder.columnconfigure(0, weight=1)
-            lb = tk.Listbox(holder, height=3, selectmode="single", font=("",9),
-                            relief="flat", bd=1, highlightthickness=1,
-                            highlightbackground="#d5d8dc", highlightcolor="#2980b9",
-                            bg="white", exportselection=False)
-            lb.grid(row=0, column=0, sticky="ew")
-            for v in existing_vals:
-                lb.insert("end", v)
-            btn_f = ttk.Frame(holder); btn_f.grid(row=0, column=1, sticky="ns", padx=(4,0))
-            pick_var = tk.StringVar()
-            cb = ttk.Combobox(holder, textvariable=pick_var, values=all_ids, width=28, state="readonly")
-            cb.grid(row=1, column=0, sticky="ew", pady=(2,0))
-            def _add():
-                val = pick_var.get().strip()
-                if val and val not in lb.get(0, "end"):
-                    lb.insert("end", val)
-            def _remove():
-                sel = lb.curselection()
-                if sel: lb.delete(sel[0])
-            ttk.Button(btn_f, text="Add",    command=_add,    width=7).pack(pady=(0,2))
-            ttk.Button(btn_f, text="Remove", command=_remove, width=7).pack()
-            return lb
+        if self.job_type != "CR_PROT":
+            # Standards — shown for all job types except CR_PROT
+            ttk.Separator(f, orient="horizontal").grid(row=row, column=0, columnspan=2, sticky="ew", pady=(8,4)); row+=1
+            self._section_label(f, row, "── STANDARDS ──", "#5d6d7e"); row+=2
 
-        def _load_std_list(job, key):
-            val = job.get(key, [])
-            if isinstance(val, str):
-                return [val] if val else []
-            return list(val)
+            def _std_list_widget(parent, grid_row, label, all_ids, existing_vals):
+                """Inline list+combobox widget for multi-select standards. Returns the Listbox."""
+                ttk.Label(parent, text=label).grid(row=grid_row, column=0, sticky="ne", padx=(0,6), pady=2)
+                holder = ttk.Frame(parent)
+                holder.grid(row=grid_row, column=1, sticky="ew", pady=2)
+                holder.columnconfigure(0, weight=1)
+                lb = tk.Listbox(holder, height=3, selectmode="single", font=("",9),
+                                relief="flat", bd=1, highlightthickness=1,
+                                highlightbackground="#d5d8dc", highlightcolor="#2980b9",
+                                bg="white", exportselection=False)
+                lb.grid(row=0, column=0, sticky="ew")
+                for v in existing_vals:
+                    lb.insert("end", v)
+                btn_f = ttk.Frame(holder); btn_f.grid(row=0, column=1, sticky="ns", padx=(4,0))
+                pick_var = tk.StringVar()
+                cb = ttk.Combobox(holder, textvariable=pick_var, values=all_ids, width=28, state="readonly")
+                cb.grid(row=1, column=0, sticky="ew", pady=(2,0))
+                def _add():
+                    val = pick_var.get().strip()
+                    if val and val not in lb.get(0, "end"):
+                        lb.insert("end", val)
+                def _remove():
+                    sel = lb.curselection()
+                    if sel: lb.delete(sel[0])
+                ttk.Button(btn_f, text="Add",    command=_add,    width=7).pack(pady=(0,2))
+                ttk.Button(btn_f, text="Remove", command=_remove, width=7).pack()
+                return lb
 
-        maint_ids = sorted(self.maintenance_standards.keys())
-        self._maint_lb = _std_list_widget(f, row, "Maintenance Standards:", maint_ids,
-                                          _load_std_list(ex, "maintenance_standards")); row+=1
-        eng_ids = sorted(self.engineering_standards.keys())
-        self._eng_lb   = _std_list_widget(f, row, "Engineering Standards:", eng_ids,
-                                          _load_std_list(ex, "engineering_standards")); row+=1
+            def _load_std_list(job, key):
+                val = job.get(key, [])
+                if isinstance(val, str):
+                    return [val] if val else []
+                return list(val)
+
+            maint_ids = sorted(self.maintenance_standards.keys())
+            self._maint_lb = _std_list_widget(f, row, "Maintenance Standards:", maint_ids,
+                                              _load_std_list(ex, "maintenance_standards")); row+=1
+            eng_ids = sorted(self.engineering_standards.keys())
+            self._eng_lb   = _std_list_widget(f, row, "Engineering Standards:", eng_ids,
+                                              _load_std_list(ex, "engineering_standards")); row+=1
 
         f.columnconfigure(0, weight=1)
         f.columnconfigure(1, weight=1)
@@ -1222,6 +1259,7 @@ class JobDialog(tk.Toplevel):
             job["start"] = self.ep_start.get()
             job["wire"]  = self.wire_var.get().strip()
             job["end"]   = self.ep_end.get()
+            job["notes"] = self._rem_add_notes.get("1.0","end").strip()
         elif self.job_type == "MOVE":
             job["start"]     = self.ep_rem_start.get()
             job["wire"]      = self.wire_var.get().strip()
@@ -1234,14 +1272,20 @@ class JobDialog(tk.Toplevel):
         elif self.job_type in ("DEVICE ADD","DEVICE REMOVE"):
             job["endpoint"] = self.ep_device.get()
             job["notes"]    = self._dev_notes_widget.get("1.0","end").strip()
-        elif self.job_type in ("TESTING", "ISOLATION"):
+        elif self.job_type == "TESTING":
+            job["notes"] = self._test_notes_widget.get("1.0","end").strip()
+        elif self.job_type == "ISOLATION":
+            job["drawings"] = self._iso_drawings_frame.get()
             job["notes"] = self._test_notes_widget.get("1.0","end").strip()
         elif self.job_type == "CR_PROT":
             selected_ids = {did for did, var in self._cr_desk_vars.items() if var.get()}
             job["desks"] = [d for d in self.ctrl_desks if d["desk_id"] in selected_ids]
+            job["crows"] = [num for num, var in self._cr_crow_vars.items() if var.get()]
             job["notes"] = self._test_notes_widget.get("1.0","end").strip()
-        job["maintenance_standards"] = list(self._maint_lb.get(0, "end"))
-        job["engineering_standards"] = list(self._eng_lb.get(0, "end"))
+        if self._maint_lb is not None:
+            job["maintenance_standards"] = list(self._maint_lb.get(0, "end"))
+        if self._eng_lb is not None:
+            job["engineering_standards"] = list(self._eng_lb.get(0, "end"))
         self.result = job
         self.destroy()
 
@@ -1380,6 +1424,8 @@ def format_job(index, job):
         lines += ["",_ep_block(job.get("start",{}),"START POINT / DEVICE"),
                   "",f"  WIRE: {job.get('wire','')}",
                   "",_ep_block(job.get("end",{}),"END POINT / DEVICE")]
+        if job.get("notes"):
+            lines += ["","  NOTES", *[f"    {ln}" for ln in job["notes"].splitlines()]]
     elif jtype == "MOVE":
         lines += ["","  "+"─"*30+"  REMOVE  "+"─"*(W-42),
                   "",_ep_block(job.get("start",{}),"REMOVE: Start Point / Device"),
@@ -1396,7 +1442,18 @@ def format_job(index, job):
         lines += ["", _ep_block(job.get("endpoint", {}), "DEVICE / LOCATION")]
         if job.get("notes"):
             lines += ["", "  NOTES", *[f"    {ln}" for ln in job["notes"].splitlines()]]
-    elif jtype in ("TESTING", "ISOLATION"):
+    elif jtype == "TESTING":
+        if job.get("notes"):
+            lines += ["","  NOTES", *[f"    {ln}" for ln in job["notes"].splitlines()]]
+    elif jtype == "ISOLATION":
+        drawings = job.get("drawings", [])
+        if drawings:
+            lines += ["", "  DRAWINGS"]
+            for d in drawings:
+                line = f"    {d.get('drawing','')}"
+                if d.get("drawing_rev"): line += f"  Rev {d['drawing_rev']}"
+                if d.get("drawing_cell"): line += f"  Cell {d['drawing_cell']}"
+                lines.append(line)
         if job.get("notes"):
             lines += ["","  NOTES", *[f"    {ln}" for ln in job["notes"].splitlines()]]
     elif jtype == "CR_PROT":
@@ -1411,6 +1468,9 @@ def format_job(index, job):
                 if phones:    lines.append(f"      Phones   : {phones}")
                 if d.get("stations"):
                     lines.append(f"      Stations : {', '.join(d['stations'])}")
+        crows = job.get("crows", [])
+        if crows:
+            lines += ["", "  CROW OUTAGES", *[f"    {c}" for c in crows]]
         if job.get("notes"):
             lines += ["", "  NOTES", *[f"    {ln}" for ln in job["notes"].splitlines()]]
     ms = _std_list(job, "maintenance_standards")
@@ -1758,9 +1818,11 @@ def _ew_work_orders(jobs, drawing_registry, mode, css_class="page-content"):
             return r
 
         if jt in ("REMOVE", "ADD"):
+            notes = job.get("notes","").strip()
+            dsc_n = dsc + ("<br><em>" + _esc(notes) + "</em>" if notes else "")
             rows += _tr(jt, tl[jt],
                         ep_r(job.get("start", {})), job.get("wire", ""),
-                        ep_r(job.get("end", {})))
+                        ep_r(job.get("end", {})), _d=dsc_n)
         elif jt == "MOVE":
             rows += _tr("MOVE-REMOVE", "Move — Remove",
                         ep_r(job.get("start", {})), job.get("wire", ""),
@@ -1774,8 +1836,15 @@ def _ew_work_orders(jobs, drawing_registry, mode, css_class="page-content"):
             rows += _tr("TESTING", tl.get("TESTING", "Testing"),
                         _esc(job.get("notes", "")), "", "")
         elif jt == "ISOLATION":
-            rows += _tr("ISOLATION", tl.get("ISOLATION", "Isolation"),
-                        _esc(job.get("notes", "")), "", "")
+            drawings = job.get("drawings", [])
+            cell = "<br>".join(
+                f"<b>{_esc(d.get('drawing',''))}</b>"
+                + (f" Rev {_esc(d['drawing_rev'])}" if d.get("drawing_rev") else "")
+                + (f" Cell {_esc(d['drawing_cell'])}" if d.get("drawing_cell") else "")
+                for d in drawings)
+            if job.get("notes"):
+                cell += ("<br>" if cell else "") + _esc(job["notes"])
+            rows += _tr("ISOLATION", tl.get("ISOLATION", "Isolation"), cell, "", "")
         elif jt == "CR_PROT":
             desks = job.get("desks", [])
             desk_parts = []
@@ -1790,6 +1859,9 @@ def _ew_work_orders(jobs, drawing_registry, mode, css_class="page-content"):
                 if stations: part += f"<br><small>Stations: {_esc(stations)}</small>"
                 desk_parts.append(part)
             cell = "<br>".join(desk_parts)
+            crows = job.get("crows", [])
+            if crows:
+                cell += ("<br>" if cell else "") + "<small><b>CROWs:</b> " + _esc(", ".join(crows)) + "</small>"
             if job.get("notes"):
                 cell += ("<br>" if cell else "") + f"<em>{_esc(job['notes'])}</em>"
             rows += _tr("CR_PROT", tl.get("CR_PROT", "CR Protection"), cell, "", "")
@@ -2553,7 +2625,9 @@ def _pdf_work_orders(bld, jobs, drw_reg, size="11x17 Landscape"):
         if stds: desc += (" | " if desc else "") + " | ".join(stds)
 
         if jt in ("REMOVE","ADD"):
-            draw_row(jt, desc, _ep_flat(job.get("start",{})),
+            notes = job.get("notes","").strip()
+            desc_n = desc + (" | " + notes if notes else "")
+            draw_row(jt, desc_n, _ep_flat(job.get("start",{})),
                      job.get("wire",""), _ep_flat(job.get("end",{})))
         elif jt == "MOVE":
             draw_row("MOVE-REMOVE", desc,
@@ -2564,14 +2638,26 @@ def _pdf_work_orders(bld, jobs, drw_reg, size="11x17 Landscape"):
                      _ep_flat(job.get("add_end",{})))
         elif jt in ("BLOCK","UNBLOCK"):
             draw_row(jt, desc, _prot_flat(job.get("protection",{})), "", "")
-        elif jt in ("TESTING", "ISOLATION"):
+        elif jt == "TESTING":
             draw_row(jt, desc, job.get("notes",""), "", "")
+        elif jt == "ISOLATION":
+            drawings = job.get("drawings", [])
+            detail = "; ".join(
+                d.get("drawing","")
+                + (f" Rev {d['drawing_rev']}" if d.get("drawing_rev") else "")
+                for d in drawings)
+            if job.get("notes"):
+                detail += (" | " if detail else "") + job["notes"]
+            draw_row(jt, desc, detail, "", "")
         elif jt == "CR_PROT":
             desks = job.get("desks", [])
             desk_str = "; ".join(
                 d.get("desk_name","") + (f" ({d['desk_type']})" if d.get("desk_type") else "")
                 for d in desks
             )
+            crows = job.get("crows", [])
+            if crows:
+                desk_str += (" | " if desk_str else "") + "CROWs: " + ", ".join(crows)
             if job.get("notes"):
                 desk_str += (" | " if desk_str else "") + job["notes"]
             draw_row("CR_PROT", desc, desk_str, "", "")
@@ -2912,16 +2998,7 @@ def _build_print_pdf(app, inc: dict, sizes: dict, crows: list,
 
     # ── 7. CROW attached files ────────────────────────────────────
     if folder:
-        crow_dir = os.path.join(folder, "CROW Outage")
-        for crow in crows:
-            for fname in crow.get("files", []):
-                fpath = os.path.join(crow_dir, fname)
-                if os.path.isfile(fpath):
-                    data, err = _convert_file_to_pdf(fpath)
-                    if data:
-                        parts.append(data)
-                    else:
-                        nopdf.append(f"{fname} ({err})")
+        parts.extend(_collect_pdfs(folder, "CROW Outage"))
 
     # ── Build + merge ─────────────────────────────────────────────
     doc_pdf = bld.build()
@@ -3887,12 +3964,13 @@ def _styled_header(parent, title, subtitle=None, bg="#1c2833"):
 class DrawingSearchDialog(tk.Toplevel):
     """Reusable drawing search UI backed by DrawingSearchClient."""
 
-    def __init__(self, parent, app_config: dict, multi_select=True, proj_cache=None):
+    def __init__(self, parent, app_config: dict, multi_select=True, proj_cache=None, persist_fn=None):
         super().__init__(parent)
         self.title("Search Drawings")
         self.resizable(True, True)
         self.app_config = app_config
         self.multi_select = multi_select
+        self._persist_fn = persist_fn
         self.selected: list = []  # list[DrawingResult]
         self._page = 0
         self._last_paged = None   # most recent PagedResults
@@ -4035,12 +4113,22 @@ class DrawingSearchDialog(tk.Toplevel):
         base_url = self.app_config.get("drawing_search_url", "").strip()
         if not base_url:
             return None
+        path     = self.app_config.get("drawing_search_path", "").strip() or None
         raw_hdrs = self.app_config.get("request_headers", "")
         cookies  = _parse_cookies_from_headers(raw_hdrs)
         extra    = _parse_request_headers_raw(raw_hdrs)
         extra.pop("Cookie", None)
-        return DrawingSearchClient(base_url=base_url, cookies=cookies,
-                                   extra_headers=extra or None)
+        cache = DrawingSearchCache() if _DRAWING_SEARCH_AVAILABLE else None
+
+        def _on_cookie_update(updated: dict):
+            raw = self.app_config.get("request_headers", "")
+            self.app_config["request_headers"] = _update_cookie_in_headers(raw, updated)
+            if self._persist_fn:
+                self._persist_fn()
+
+        return DrawingSearchClient(base_url=base_url, cookies=cookies, cache=cache,
+                                   search_path=path, extra_headers=extra or None,
+                                   on_cookie_update=_on_cookie_update)
 
     def _get_params(self, page=0):
         # Parse code from "CODE — Label" or raw code
@@ -4234,6 +4322,9 @@ class _ComboFilterHelper:
     filtered to entries containing the typed text anywhere (case-insensitive).
     Focus stays in the entry widget so typing is uninterrupted.
     ↓ moves focus into the popup; click or Enter selects; Escape closes.
+
+    all_choices may be a plain list or a zero-argument callable that returns
+    a list (used when the candidate values change dynamically).
     """
 
     _NAV = frozenset({
@@ -4241,9 +4332,9 @@ class _ComboFilterHelper:
         "Alt_L", "Alt_R", "Win_L", "Win_R",
     })
 
-    def __init__(self, combo: ttk.Combobox, all_choices: list):
-        self.combo       = combo
-        self.all_choices = all_choices
+    def __init__(self, combo: ttk.Combobox, all_choices):
+        self.combo        = combo
+        self._get_choices = all_choices if callable(all_choices) else (lambda: all_choices)
         self._popup: tk.Toplevel | None = None
         self._lb:    tk.Listbox  | None = None
 
@@ -4312,7 +4403,7 @@ class _ComboFilterHelper:
         if not typed:
             self._hide()
             return
-        filtered = [c for c in self.all_choices if typed in c.lower()]
+        filtered = [c for c in self._get_choices() if typed in c.lower()]
         if filtered:
             self._show(filtered)
         else:
@@ -4696,6 +4787,166 @@ def _parse_cookies_from_headers(raw_headers: str) -> dict:
     return cookies
 
 
+def _fmt_phone(raw: str) -> str:
+    """Format a phone number string. Leaves unrecognized lengths (e.g. extensions) unchanged."""
+    digits = re.sub(r"\D", "", raw)
+    n = len(digits)
+    if n == 7:
+        return f"{digits[:3]}-{digits[3:]}"
+    if n == 10:
+        return f"({digits[:3]}) {digits[3:6]}-{digits[6:]}"
+    if n == 11 and digits[0] == "1":
+        return f"1-{digits[1:4]}-{digits[4:7]}-{digits[7:]}"
+    return raw  # unrecognized length — leave as typed
+
+
+def _update_cookie_in_headers(raw_headers: str, new_cookies: dict) -> str:
+    """Rebuild the Cookie: line in raw_headers with updated values; preserve other lines."""
+    new_val = "; ".join(f"{k}={v}" for k, v in new_cookies.items())
+    lines_out = []
+    replaced = False
+    for line in raw_headers.splitlines():
+        if line.lower().startswith("cookie:"):
+            if not replaced:
+                lines_out.append(f"Cookie: {new_val}")
+                replaced = True
+        else:
+            lines_out.append(line)
+    if not replaced and new_cookies:
+        lines_out.append(f"Cookie: {new_val}")
+    return "\n".join(lines_out)
+
+
+def _domain_from_url(url: str) -> str:
+    """Extract just the hostname from a URL, or return the raw string."""
+    try:
+        return urllib.parse.urlparse(url).hostname or url
+    except Exception:
+        return url
+
+
+def _dpapi_decrypt(data: bytes) -> bytes:
+    """Decrypt bytes using Windows CryptUnprotectData (stdlib ctypes only)."""
+    class _BLOB(ctypes.Structure):
+        _fields_ = [("cbData", ctypes.wintypes.DWORD),
+                    ("pbData", ctypes.POINTER(ctypes.c_char))]
+    inp = _BLOB(len(data), ctypes.cast(ctypes.c_char_p(data), ctypes.POINTER(ctypes.c_char)))
+    out = _BLOB()
+    ok  = ctypes.windll.crypt32.CryptUnprotectData(
+        ctypes.byref(inp), None, None, None, None, 0, ctypes.byref(out))
+    if not ok:
+        raise OSError(f"CryptUnprotectData failed (error {ctypes.GetLastError()})")
+    result = ctypes.string_at(out.pbData, out.cbData)
+    ctypes.windll.kernel32.LocalFree(out.pbData)
+    return result
+
+
+def _decrypt_cookie_aes_gcm(key: bytes, enc_val: bytes) -> "str | None":
+    """Decrypt a Chrome/Edge v10/v20 AES-256-GCM cookie value via PowerShell."""
+    if len(enc_val) < 3 + 12 + 16:
+        return None
+    nonce  = enc_val[3:15]
+    ct_tag = enc_val[15:]
+    k64 = base64.b64encode(key).decode()
+    n64 = base64.b64encode(nonce).decode()
+    d64 = base64.b64encode(ct_tag).decode()
+    script = (
+        f"$k=[Convert]::FromBase64String('{k64}');"
+        f"$n=[Convert]::FromBase64String('{n64}');"
+        f"$d=[Convert]::FromBase64String('{d64}');"
+        "$t=$d[($d.Length-16)..($d.Length-1)];"
+        "$c=$d[0..($d.Length-17)];"
+        "$a=[System.Security.Cryptography.AesGcm]::new($k);"
+        "$p=New-Object byte[] $c.Length;"
+        "$a.Decrypt($n,$c,$t,$p);"
+        "[Convert]::ToBase64String($p)"
+    )
+    try:
+        r = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+            capture_output=True, text=True, timeout=15)
+        out = r.stdout.strip()
+        if r.returncode != 0 or not out:
+            return None
+        return base64.b64decode(out).decode("utf-8", errors="replace")
+    except Exception:
+        return None
+
+
+def _grab_browser_cookies(domain: str) -> dict:
+    """Extract cookies for *domain* from Edge (or Chrome) on Windows.
+
+    Returns {name: value}.  Raises RuntimeError on any setup failure.
+    """
+    if sys.platform != "win32":
+        raise RuntimeError("Browser cookie extraction is only supported on Windows.")
+
+    local_app = os.environ.get("LOCALAPPDATA", "")
+    browser_dir = None
+    for candidate in (
+        os.path.join(local_app, "Microsoft", "Edge", "User Data"),
+        os.path.join(local_app, "Google",    "Chrome", "User Data"),
+    ):
+        if os.path.isdir(candidate):
+            browser_dir = candidate
+            break
+    if browser_dir is None:
+        raise RuntimeError("Could not find Edge or Chrome user data directory.")
+
+    local_state_path = os.path.join(browser_dir, "Local State")
+    with open(local_state_path, "r", encoding="utf-8") as fh:
+        local_state = json.load(fh)
+    enc_key_b64 = local_state["os_crypt"]["encrypted_key"]
+    enc_key     = base64.b64decode(enc_key_b64)[5:]   # strip leading "DPAPI" bytes
+    master_key  = _dpapi_decrypt(enc_key)
+
+    cookies_path = None
+    for rel in (
+        os.path.join("Default", "Network", "Cookies"),
+        os.path.join("Default", "Cookies"),
+    ):
+        p = os.path.join(browser_dir, rel)
+        if os.path.isfile(p):
+            cookies_path = p
+            break
+    if cookies_path is None:
+        raise RuntimeError("Could not find Edge/Chrome Cookies database.")
+
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tf:
+        tmp_path = tf.name
+    try:
+        shutil.copy2(cookies_path, tmp_path)
+        conn = sqlite3.connect(tmp_path)
+        domain_clean = domain.lstrip(".")
+        rows = conn.execute(
+            "SELECT name, encrypted_value FROM cookies"
+            " WHERE host_key LIKE ? OR host_key LIKE ?",
+            (f"%{domain_clean}%", f"%.{domain_clean}%"),
+        ).fetchall()
+        conn.close()
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+
+    result = {}
+    for name, enc_val in rows:
+        if not enc_val:
+            continue
+        if enc_val[:3] in (b"v10", b"v20"):
+            val = _decrypt_cookie_aes_gcm(master_key, enc_val)
+        else:
+            try:
+                val = _dpapi_decrypt(enc_val).decode("utf-8", errors="replace")
+            except Exception:
+                val = None
+        if val is not None:
+            result[name] = val
+
+    return result
+
+
 def _show_fetch_options_dialog(parent, url: str, headers: dict, search_path: str = None) -> None:
     """Open a pop-out dialog that fetches and displays drawing form options."""
     if not _DRAWING_SEARCH_AVAILABLE:
@@ -4836,7 +5087,10 @@ class CtrlRoomDeskEditDialog(tk.Toplevel):
             ttk.Label(f, text=label).grid(row=i, column=0, sticky="e", padx=(0, 6), pady=3)
             var = tk.StringVar(value=d.get(key, ""))
             self._vars[key] = var
-            ttk.Entry(f, textvariable=var, width=40).grid(row=i, column=1, sticky="ew", pady=3)
+            ent = ttk.Entry(f, textvariable=var, width=40)
+            ent.grid(row=i, column=1, sticky="ew", pady=3)
+            if key.startswith("phone"):
+                ent.bind("<FocusOut>", lambda _e, v=var: v.set(_fmt_phone(v.get())))
 
         r = len(fields)
         ttk.Label(f, text="Stations:").grid(row=r, column=0, sticky="ne", padx=(0, 6), pady=(8, 3))
@@ -4987,6 +5241,90 @@ class CtrlRoomDesksManagerDialog(tk.Toplevel):
             self._load()
 
 
+class _BrowserCookieDialog(tk.Toplevel):
+    """Extract cookies from Edge/Chrome for a given domain and inject them into a headers widget."""
+
+    def __init__(self, parent, domain: str, headers_widget):
+        super().__init__(parent)
+        self.title("Grab Cookies from Browser")
+        self.resizable(False, False)
+        self._headers_widget = headers_widget
+        self._vars: dict = {}
+        self._cookies: dict = {}
+
+        self._build(domain)
+        _center_window(self)
+        self.grab_set()
+        threading.Thread(target=self._fetch, args=(domain,), daemon=True).start()
+        self.wait_window()
+
+    def _build(self, domain):
+        body = tk.Frame(self, bg="white")
+        body.pack(fill="both", expand=True, padx=20, pady=14)
+
+        tk.Label(body, text="Grab Cookies from Edge / Chrome",
+                 bg="white", font=("", 11, "bold"), fg="#1c2833").pack(anchor="w")
+        tk.Label(body, text=f"Domain: {domain}",
+                 bg="white", fg="#5d6d7e", font=("", 9)).pack(anchor="w", pady=(2, 10))
+
+        self._status_lbl = tk.Label(body, text="Searching...",
+                                    bg="white", fg="#2980b9", font=("", 9))
+        self._status_lbl.pack(anchor="w")
+
+        self._cookie_frame = tk.Frame(body, bg="white")
+        self._cookie_frame.pack(fill="x", pady=(6, 0))
+
+        sep = tk.Frame(self, bg="#d5d8dc", height=1)
+        sep.pack(fill="x", side="bottom")
+        bf = tk.Frame(self, bg="#eaecee")
+        bf.pack(fill="x", side="bottom")
+        ttk.Button(bf, text="Cancel", command=self.destroy).pack(side="right", padx=(6, 12), pady=8)
+        self._apply_btn = ttk.Button(bf, text="Apply Selected",
+                                     state="disabled", command=self._apply)
+        self._apply_btn.pack(side="right", pady=8)
+
+    def _fetch(self, domain):
+        try:
+            cookies = _grab_browser_cookies(domain)
+            self.after(0, self._show_results, cookies)
+        except Exception as exc:
+            self.after(0, self._show_error, str(exc))
+
+    def _show_results(self, cookies: dict):
+        self._cookies = cookies
+        if not cookies:
+            self._status_lbl.config(text="No cookies found for this domain.", fg="#e74c3c")
+            return
+        self._status_lbl.config(
+            text=f"Found {len(cookies)} cookie(s) — select which to apply:", fg="#1a7a30")
+        for name, val in cookies.items():
+            row = tk.Frame(self._cookie_frame, bg="white")
+            row.pack(fill="x", pady=1)
+            var = tk.BooleanVar(value=True)
+            self._vars[name] = var
+            tk.Checkbutton(row, variable=var, bg="white").pack(side="left")
+            preview = val[:48] + "..." if len(val) > 48 else val
+            tk.Label(row, text=f"{name}  =  {preview}",
+                     bg="white", font=("Courier", 8), anchor="w").pack(side="left")
+        self._apply_btn.config(state="normal")
+        _center_window(self)
+
+    def _show_error(self, msg: str):
+        self._status_lbl.config(text=f"Error: {msg}", fg="#e74c3c", wraplength=420)
+
+    def _apply(self):
+        selected = {n: self._cookies[n] for n, v in self._vars.items() if v.get()}
+        if not selected:
+            messagebox.showwarning("Nothing selected",
+                                   "Select at least one cookie.", parent=self)
+            return
+        raw     = self._headers_widget.get("1.0", "end")
+        updated = _update_cookie_in_headers(raw, selected)
+        self._headers_widget.delete("1.0", "end")
+        self._headers_widget.insert("1.0", updated)
+        self.destroy()
+
+
 class SoftwareSetupDialog(tk.Toplevel):
     """First-time global setup: collect base URLs."""
     def __init__(self, parent, app_config):
@@ -5060,6 +5398,16 @@ class SoftwareSetupDialog(tk.Toplevel):
         self._headers_txt = scrolledtext.ScrolledText(auth_body, height=3, font=("Courier", 9), wrap="none")
         self._headers_txt.pack(fill="x", padx=4, pady=(2, 0))
         self._headers_txt.insert("1.0", cfg.get("request_headers", ""))
+        grab_row = tk.Frame(auth_body, bg="white"); grab_row.pack(anchor="w", padx=4, pady=(4, 0))
+        tk.Button(
+            grab_row, text="🍪 Grab from Browser",
+            command=lambda: self._grab_cookies(self._headers_txt),
+            bg="#1a7a30", fg="white", relief="flat", font=("", 8),
+            cursor="hand2", activebackground="#229954", activeforeground="white",
+            padx=8, pady=3).pack(side="left")
+        tk.Label(grab_row,
+                 text="Reads cookies directly from your running Edge / Chrome session.",
+                 bg="white", fg="#7f8c8d", font=("", 8)).pack(side="left", padx=8)
         # Engineering Standards Headers (optional per-server override)
         eng_hdr_row = tk.Frame(body, bg="white"); eng_hdr_row.pack(fill="x", pady=(6, 4))
         tk.Frame(eng_hdr_row, bg="#2980b9", width=3).pack(side="left", fill="y")
@@ -5129,6 +5477,18 @@ class SoftwareSetupDialog(tk.Toplevel):
         raw  = self._headers_txt.get("1.0", "end") if self._headers_txt else ""
         headers = _parse_request_headers_raw(raw)
         _show_fetch_options_dialog(self, url, headers)
+
+    def _grab_cookies(self, headers_widget):
+        url = self._cfg_vars.get("drawing_search_url", tk.StringVar()).get().strip()
+        if not url:
+            url = self._cfg_vars.get("base_drawing_url", tk.StringVar()).get().strip()
+        domain = _domain_from_url(url) if url else ""
+        if not domain:
+            messagebox.showwarning("No URL",
+                "Set a Drawing Search URL (or Base Drawing URL) first so the domain is known.",
+                parent=self)
+            return
+        _BrowserCookieDialog(self, domain, headers_widget)
 
     def _skip(self):
         self.result = {}; self.destroy()
@@ -6287,6 +6647,7 @@ class RedLineApp(tk.Tk):
         self.tree.bind("<<TreeviewSelect>>", self._on_select)
         self.tree.bind("<Double-1>", lambda _: self._edit_job())
         self.tree.bind("<Button-1>", self._on_tree_click)
+        self.tree.bind("<Delete>", lambda _: self._delete_job())
 
         # ── Right pane: Job Preview ─────────────────────────────────
         pf = ttk.LabelFrame(pw, text="Job Preview", padding=4); pw.add(pf, weight=2)
@@ -6304,28 +6665,32 @@ class RedLineApp(tk.Tk):
         ttk.Button(tb, text="⬇ Download All",  command=self._download_drawings).pack(side="left", padx=(10,2))
         ttk.Button(tb, text="🖨 Print Selected", command=self._print_selected_drawings).pack(side="left", padx=2)
         ttk.Button(tb, text="🖨 Print All",      command=self._print_all_drawings).pack(side="left", padx=2)
-        ttk.Label(tb, text="Drawing names entered in any job are added here automatically.  Ctrl+click a row to open its URL.",
+        ttk.Label(tb, text="Click to open  ·  Ctrl+click to force web  ·  Double-click to edit",
                   foreground="grey").pack(side="left", padx=8)
         frame = ttk.Frame(parent); frame.pack(fill="both", expand=True, padx=4, pady=(0,4))
-        cols = ("Drawing","Title","Revision","URL","Notes")
+        cols = ("Drawing","Title","Revision","Local","URL","Notes")
         self.drawings_tree = ttk.Treeview(frame, columns=cols, show="headings")
         self.drawings_tree.heading("Drawing",text="Drawing"); self.drawings_tree.heading("Title",text="Title")
-        self.drawings_tree.heading("Revision",text="Revision")
+        self.drawings_tree.heading("Revision",text="Rev")
+        self.drawings_tree.heading("Local",text="Local")
         self.drawings_tree.heading("URL",text="Drawing URL"); self.drawings_tree.heading("Notes",text="Notes")
         self.drawings_tree.column("Drawing",width=140,stretch=False); self.drawings_tree.column("Title",width=160,stretch=False)
-        self.drawings_tree.column("Revision",width=68,stretch=False)
-        self.drawings_tree.column("URL",width=300); self.drawings_tree.column("Notes",width=160)
+        self.drawings_tree.column("Revision",width=44,stretch=False)
+        self.drawings_tree.column("Local",width=60,stretch=False,anchor="center")
+        self.drawings_tree.column("URL",width=280); self.drawings_tree.column("Notes",width=160)
+        self.drawings_tree.tag_configure("downloaded", foreground="#1a7a30")
         vsb = ttk.Scrollbar(frame, orient="vertical", command=self.drawings_tree.yview)
         self.drawings_tree.configure(yscrollcommand=vsb.set)
         self.drawings_tree.pack(side="left", fill="both", expand=True); vsb.pack(side="right", fill="y")
+        self.drawings_tree.bind("<Button-1>", self._on_drawings_click)
         self.drawings_tree.bind("<Double-1>", lambda _: self._edit_drawing())
-        self.drawings_tree.bind("<Control-Button-1>", self._on_drawings_ctrl_click)
 
     # ── Drawing registry CRUD ─────────────────────────────────────
 
     def _search_drawings(self):
         dlg = DrawingSearchDialog(self, self.app_config, multi_select=True,
-                                  proj_cache=self._drawing_cache)
+                                  proj_cache=self._drawing_cache,
+                                  persist_fn=self._save_app_config)
         for r in dlg.selected:
             if r.drawing_number not in self.drawing_registry:
                 self.drawing_registry[r.drawing_number] = {
@@ -6341,8 +6706,12 @@ class RedLineApp(tk.Tk):
         for iid in self.drawings_tree.get_children(): self.drawings_tree.delete(iid)
         for name in sorted(self.drawing_registry.keys()):
             info = self.drawing_registry[name]
-            self.drawings_tree.insert("","end",iid=name,
-                values=(name,info.get("title",""),info.get("rev",""),info.get("url",""),info.get("notes","")))
+            downloaded = bool(self._find_drawing_files({name}))
+            local_lbl = "✓ local" if downloaded else "—"
+            tags = ("downloaded",) if downloaded else ()
+            self.drawings_tree.insert("","end",iid=name, tags=tags,
+                values=(name,info.get("title",""),info.get("rev",""),
+                        local_lbl,info.get("url",""),info.get("notes","")))
 
     def _add_drawing(self):
         dlg = DrawingEditDialog(self, base_url=self.app_config.get("base_drawing_url",""),
@@ -6393,12 +6762,22 @@ class RedLineApp(tk.Tk):
         self._scan_jobs_for_drawings(); self._refresh_drawings_list()
         self.status_var.set(f"Registry updated — {len(self.drawing_registry)} drawing(s).")
 
-    def _on_drawings_ctrl_click(self, event):
+    def _on_drawings_click(self, event):
+        if self.drawings_tree.identify_region(event.x, event.y) != "cell":
+            return
         row = self.drawings_tree.identify_row(event.y)
         if not row:
             return
+        ctrl = bool(event.state & 0x4)
         url = self.drawing_registry.get(row, {}).get("url", "").strip()
-        if url:
+        files = self._find_drawing_files({row})
+        if ctrl:
+            # Force-open web version
+            if url:
+                webbrowser.open(url)
+        elif files:
+            _open_file(files[0][1])
+        elif url:
             webbrowser.open(url)
 
     def _show_drawing_index(self):
@@ -6893,6 +7272,25 @@ class RedLineApp(tk.Tk):
         headers_txt = scrolledtext.ScrolledText(auth_lf, height=4, font=("Courier", 9), wrap="none")
         headers_txt.pack(fill="x")
         headers_txt.insert("1.0", self.app_config.get("request_headers", ""))
+
+        def _do_grab_cookies():
+            url = cfg_vars.get("drawing_search_url", tk.StringVar()).get().strip()
+            if not url:
+                url = cfg_vars.get("base_drawing_url", tk.StringVar()).get().strip()
+            domain = _domain_from_url(url) if url else ""
+            if not domain:
+                messagebox.showwarning("No URL",
+                    "Set a Drawing Search URL (or Base Drawing URL) first so the domain is known.",
+                    parent=dlg)
+                return
+            _BrowserCookieDialog(dlg, domain, headers_txt)
+
+        grab_row = ttk.Frame(auth_lf); grab_row.pack(anchor="w", pady=(4, 0))
+        ttk.Button(grab_row, text="🍪 Grab from Browser",
+                   command=_do_grab_cookies).pack(side="left")
+        ttk.Label(grab_row,
+                  text="Reads cookies directly from your running Edge / Chrome session.",
+                  foreground="grey", font=("", 8)).pack(side="left", padx=8)
 
         eng_hdrs_lf = ttk.LabelFrame(f, text="Engineering Standards Headers (optional override)", padding=8)
         eng_hdrs_lf.pack(fill="x", pady=(0, 8))
@@ -8814,7 +9212,8 @@ class RedLineApp(tk.Tk):
                         settings=self._get_settings(),
                         maintenance_standards=self.maintenance_standards_registry,
                         engineering_standards=self.engineering_standards_registry,
-                        ctrl_desks=self._app_db.get_ctrl_desks())
+                        ctrl_desks=self._app_db.get_ctrl_desks(),
+                        crows=self.title_page.get("crows", []))
         if dlg.result:
             self._collect_history(dlg.result)
             self.jobs.append(dlg.result); self._refresh_list(); self._refresh_drawings_list()
@@ -8828,7 +9227,8 @@ class RedLineApp(tk.Tk):
                         ep_history=self.ep_history, jobs=self.jobs, settings=self._get_settings(),
                         maintenance_standards=self.maintenance_standards_registry,
                         engineering_standards=self.engineering_standards_registry,
-                        ctrl_desks=self._app_db.get_ctrl_desks())
+                        ctrl_desks=self._app_db.get_ctrl_desks(),
+                        crows=self.title_page.get("crows", []))
         if dlg.result:
             self._collect_history(dlg.result)
             self.jobs[idx]=dlg.result; self._refresh_list(); self._refresh_drawings_list()
@@ -8847,7 +9247,7 @@ class RedLineApp(tk.Tk):
         msg = f"Delete {len(idxs)} selected jobs?" if len(idxs)>1 else f"Delete Job #{idxs[0]+1}?"
         if messagebox.askyesno("Delete",msg):
             for idx in reversed(idxs): self.jobs.pop(idx)
-            self._refresh_list()
+            self._refresh_list(); self._refresh_drawings_list()
             self.preview.configure(state="normal"); self.preview.delete("1.0","end"); self.preview.configure(state="disabled")
 
     def _move_up(self):
