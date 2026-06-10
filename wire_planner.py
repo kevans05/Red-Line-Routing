@@ -154,7 +154,7 @@ def empty_job(job_type="REMOVE"):
     if job_type in ("TESTING", "ISOLATION"):
         return {"type": job_type, "description": "", "notes": ""}
     if job_type == "CR_PROT":
-        return {"type": "CR_PROT", "description": "", "desks": [], "notes": ""}
+        return {"type": "CR_PROT", "description": "", "desks": [], "crows": [], "notes": ""}
     if job_type in ("DEVICE ADD", "DEVICE REMOVE"):
         return {"type": job_type, "description": "",
                 "endpoint": empty_endpoint(), "notes": ""}
@@ -875,7 +875,7 @@ class JobDialog(tk.Toplevel):
     def __init__(self, parent, job_type, existing=None, registry=None,
                  history=None, ep_history=None, jobs=None, settings=None,
                  maintenance_standards=None, engineering_standards=None,
-                 ctrl_desks=None):
+                 ctrl_desks=None, crows=None):
         super().__init__(parent)
         self.title(f"{'Edit' if existing else 'Add'} — {job_type}")
         self.result = None
@@ -888,6 +888,7 @@ class JobDialog(tk.Toplevel):
         self.maintenance_standards = maintenance_standards if maintenance_standards is not None else {}
         self.engineering_standards = engineering_standards if engineering_standards is not None else {}
         self.ctrl_desks = ctrl_desks if ctrl_desks is not None else []
+        self.crows = crows if crows is not None else []
         self.resizable(True, True)
         self._build(existing)
         self.grab_set()
@@ -1080,38 +1081,69 @@ class JobDialog(tk.Toplevel):
         elif self.job_type == "CR_PROT":
             self._section_label(f, row, "── CONTROL ROOM PROTECTION ──", color); row += 2
 
-            # Desk selection
-            ttk.Label(f, text="Desks:").grid(row=row, column=0, sticky="ne", padx=(0, 6), pady=2)
-            desk_outer = ttk.Frame(f)
-            desk_outer.grid(row=row, column=1, sticky="ew", pady=2)
-            desk_outer.columnconfigure(0, weight=1)
+            def _make_checklist(parent_frame, items, checked_ids, label_fn):
+                """Return (frame, {id: BooleanVar}) for a bordered checklist."""
+                border = tk.Frame(parent_frame, bg="#d5d8dc", padx=1, pady=1)
+                border.columnconfigure(0, weight=1)
+                inner = tk.Frame(border, bg="white")
+                inner.pack(fill="both", expand=True)
+                vars_ = {}
+                if items:
+                    for item in items:
+                        iid = item["desk_id"] if "desk_id" in item else item["outage_number"]
+                        var = tk.BooleanVar(value=(iid in checked_ids))
+                        vars_[iid] = var
+                        ttk.Checkbutton(inner, text=label_fn(item), variable=var).pack(
+                            anchor="w", padx=6, pady=2)
+                return border, vars_
 
-            # Checklist frame
-            ck_border = tk.Frame(desk_outer, bg="#d5d8dc", padx=1, pady=1)
-            ck_border.grid(row=0, column=0, sticky="ew")
-            ck_border.columnconfigure(0, weight=1)
-            ck_inner = tk.Frame(ck_border, bg="white")
-            ck_inner.pack(fill="both", expand=True)
+            # ── Desks ────────────────────────────────────────────────
+            ttk.Label(f, text="Desks to call:").grid(row=row, column=0, sticky="ne",
+                                                      padx=(0, 6), pady=2)
+            selected_desk_ids = {d["desk_id"] for d in ex.get("desks", [])}
+            self._cr_desk_vars = {}
 
-            self._cr_desk_vars = {}  # desk_id -> BooleanVar
-            selected_ids = {d["desk_id"] for d in ex.get("desks", [])}
             if self.ctrl_desks:
-                for desk in self.ctrl_desks:
-                    var = tk.BooleanVar(value=(desk["desk_id"] in selected_ids))
-                    self._cr_desk_vars[desk["desk_id"]] = var
-                    cb_text = desk["desk_name"]
-                    if desk["desk_type"]:
-                        cb_text += f"  ({desk['desk_type']})"
-                    ttk.Checkbutton(ck_inner, text=cb_text, variable=var).pack(
-                        anchor="w", padx=6, pady=2)
+                desk_border, self._cr_desk_vars = _make_checklist(
+                    f, self.ctrl_desks, selected_desk_ids,
+                    lambda d: d["desk_name"] + (f"  ({d['desk_type']})" if d.get("desk_type") else ""))
+                desk_border.grid(row=row, column=1, sticky="ew", pady=2)
             else:
-                tk.Label(ck_inner, text="No desks configured. Use File → Control Room Desks to add desks.",
-                         bg="white", fg="#7f8c8d", font=("", 8), justify="left",
-                         wraplength=350).pack(padx=8, pady=8)
+                tk.Label(f, text="No desks configured — use File → Control Room Desks.",
+                         fg="#7f8c8d", font=("", 8)).grid(row=row, column=1, sticky="w", pady=2)
+
+            # Live description update when desks are toggled
+            def _update_desc(*_):
+                sel_names = [d["desk_name"] for d in self.ctrl_desks
+                             if self._cr_desk_vars.get(d["desk_id"], tk.BooleanVar()).get()]
+                if sel_names and not self.desc_var.get().strip():
+                    self.desc_var.set("Call: " + ", ".join(sel_names))
+                elif sel_names:
+                    self.desc_var.set("Call: " + ", ".join(sel_names))
+
+            for var in self._cr_desk_vars.values():
+                var.trace_add("write", _update_desc)
 
             row += 1
 
-            # Notes
+            # ── CROWs ────────────────────────────────────────────────
+            ttk.Label(f, text="Associated CROWs:").grid(row=row, column=0, sticky="ne",
+                                                         padx=(0, 6), pady=2)
+            selected_crow_nums = set(ex.get("crows", []))
+            self._cr_crow_vars = {}
+
+            if self.crows:
+                crow_border, self._cr_crow_vars = _make_checklist(
+                    f, self.crows, selected_crow_nums,
+                    lambda c: c["outage_number"])
+                crow_border.grid(row=row, column=1, sticky="ew", pady=2)
+            else:
+                tk.Label(f, text="No CROWs registered for this project.",
+                         fg="#7f8c8d", font=("", 8)).grid(row=row, column=1, sticky="w", pady=2)
+
+            row += 1
+
+            # ── Notes ────────────────────────────────────────────────
             ttk.Label(f, text="Notes:").grid(row=row, column=0, sticky="ne", padx=(0, 6), pady=2)
             cr_txt = tk.Text(f, width=58, height=4, wrap="word", font=("", 9))
             cr_txt.grid(row=row, column=0, columnspan=2, sticky="ew", pady=2)
@@ -1119,50 +1151,53 @@ class JobDialog(tk.Toplevel):
             self._test_notes_widget = cr_txt
             row += 1
 
-        # Standards — shown for every job type
-        ttk.Separator(f, orient="horizontal").grid(row=row, column=0, columnspan=2, sticky="ew", pady=(8,4)); row+=1
-        self._section_label(f, row, "── STANDARDS ──", "#5d6d7e"); row+=2
+        self._maint_lb = self._eng_lb = None
 
-        def _std_list_widget(parent, grid_row, label, all_ids, existing_vals):
-            """Inline list+combobox widget for multi-select standards. Returns the Listbox."""
-            ttk.Label(parent, text=label).grid(row=grid_row, column=0, sticky="ne", padx=(0,6), pady=2)
-            holder = ttk.Frame(parent)
-            holder.grid(row=grid_row, column=1, sticky="ew", pady=2)
-            holder.columnconfigure(0, weight=1)
-            lb = tk.Listbox(holder, height=3, selectmode="single", font=("",9),
-                            relief="flat", bd=1, highlightthickness=1,
-                            highlightbackground="#d5d8dc", highlightcolor="#2980b9",
-                            bg="white", exportselection=False)
-            lb.grid(row=0, column=0, sticky="ew")
-            for v in existing_vals:
-                lb.insert("end", v)
-            btn_f = ttk.Frame(holder); btn_f.grid(row=0, column=1, sticky="ns", padx=(4,0))
-            pick_var = tk.StringVar()
-            cb = ttk.Combobox(holder, textvariable=pick_var, values=all_ids, width=28, state="readonly")
-            cb.grid(row=1, column=0, sticky="ew", pady=(2,0))
-            def _add():
-                val = pick_var.get().strip()
-                if val and val not in lb.get(0, "end"):
-                    lb.insert("end", val)
-            def _remove():
-                sel = lb.curselection()
-                if sel: lb.delete(sel[0])
-            ttk.Button(btn_f, text="Add",    command=_add,    width=7).pack(pady=(0,2))
-            ttk.Button(btn_f, text="Remove", command=_remove, width=7).pack()
-            return lb
+        if self.job_type != "CR_PROT":
+            # Standards — shown for all job types except CR_PROT
+            ttk.Separator(f, orient="horizontal").grid(row=row, column=0, columnspan=2, sticky="ew", pady=(8,4)); row+=1
+            self._section_label(f, row, "── STANDARDS ──", "#5d6d7e"); row+=2
 
-        def _load_std_list(job, key):
-            val = job.get(key, [])
-            if isinstance(val, str):
-                return [val] if val else []
-            return list(val)
+            def _std_list_widget(parent, grid_row, label, all_ids, existing_vals):
+                """Inline list+combobox widget for multi-select standards. Returns the Listbox."""
+                ttk.Label(parent, text=label).grid(row=grid_row, column=0, sticky="ne", padx=(0,6), pady=2)
+                holder = ttk.Frame(parent)
+                holder.grid(row=grid_row, column=1, sticky="ew", pady=2)
+                holder.columnconfigure(0, weight=1)
+                lb = tk.Listbox(holder, height=3, selectmode="single", font=("",9),
+                                relief="flat", bd=1, highlightthickness=1,
+                                highlightbackground="#d5d8dc", highlightcolor="#2980b9",
+                                bg="white", exportselection=False)
+                lb.grid(row=0, column=0, sticky="ew")
+                for v in existing_vals:
+                    lb.insert("end", v)
+                btn_f = ttk.Frame(holder); btn_f.grid(row=0, column=1, sticky="ns", padx=(4,0))
+                pick_var = tk.StringVar()
+                cb = ttk.Combobox(holder, textvariable=pick_var, values=all_ids, width=28, state="readonly")
+                cb.grid(row=1, column=0, sticky="ew", pady=(2,0))
+                def _add():
+                    val = pick_var.get().strip()
+                    if val and val not in lb.get(0, "end"):
+                        lb.insert("end", val)
+                def _remove():
+                    sel = lb.curselection()
+                    if sel: lb.delete(sel[0])
+                ttk.Button(btn_f, text="Add",    command=_add,    width=7).pack(pady=(0,2))
+                ttk.Button(btn_f, text="Remove", command=_remove, width=7).pack()
+                return lb
 
-        maint_ids = sorted(self.maintenance_standards.keys())
-        self._maint_lb = _std_list_widget(f, row, "Maintenance Standards:", maint_ids,
-                                          _load_std_list(ex, "maintenance_standards")); row+=1
-        eng_ids = sorted(self.engineering_standards.keys())
-        self._eng_lb   = _std_list_widget(f, row, "Engineering Standards:", eng_ids,
-                                          _load_std_list(ex, "engineering_standards")); row+=1
+            def _load_std_list(job, key):
+                val = job.get(key, [])
+                if isinstance(val, str):
+                    return [val] if val else []
+                return list(val)
+
+            maint_ids = sorted(self.maintenance_standards.keys())
+            self._maint_lb = _std_list_widget(f, row, "Maintenance Standards:", maint_ids,
+                                              _load_std_list(ex, "maintenance_standards")); row+=1
+            eng_ids = sorted(self.engineering_standards.keys())
+            self._eng_lb   = _std_list_widget(f, row, "Engineering Standards:", eng_ids,
+                                              _load_std_list(ex, "engineering_standards")); row+=1
 
         f.columnconfigure(0, weight=1)
         f.columnconfigure(1, weight=1)
@@ -1225,9 +1260,12 @@ class JobDialog(tk.Toplevel):
         elif self.job_type == "CR_PROT":
             selected_ids = {did for did, var in self._cr_desk_vars.items() if var.get()}
             job["desks"] = [d for d in self.ctrl_desks if d["desk_id"] in selected_ids]
+            job["crows"] = [num for num, var in self._cr_crow_vars.items() if var.get()]
             job["notes"] = self._test_notes_widget.get("1.0","end").strip()
-        job["maintenance_standards"] = list(self._maint_lb.get(0, "end"))
-        job["engineering_standards"] = list(self._eng_lb.get(0, "end"))
+        if self._maint_lb is not None:
+            job["maintenance_standards"] = list(self._maint_lb.get(0, "end"))
+        if self._eng_lb is not None:
+            job["engineering_standards"] = list(self._eng_lb.get(0, "end"))
         self.result = job
         self.destroy()
 
@@ -1397,6 +1435,9 @@ def format_job(index, job):
                 if phones:    lines.append(f"      Phones   : {phones}")
                 if d.get("stations"):
                     lines.append(f"      Stations : {', '.join(d['stations'])}")
+        crows = job.get("crows", [])
+        if crows:
+            lines += ["", "  CROW OUTAGES", *[f"    {c}" for c in crows]]
         if job.get("notes"):
             lines += ["", "  NOTES", *[f"    {ln}" for ln in job["notes"].splitlines()]]
     ms = _std_list(job, "maintenance_standards")
@@ -1776,6 +1817,9 @@ def _ew_work_orders(jobs, drawing_registry, mode, css_class="page-content"):
                 if stations: part += f"<br><small>Stations: {_esc(stations)}</small>"
                 desk_parts.append(part)
             cell = "<br>".join(desk_parts)
+            crows = job.get("crows", [])
+            if crows:
+                cell += ("<br>" if cell else "") + "<small><b>CROWs:</b> " + _esc(", ".join(crows)) + "</small>"
             if job.get("notes"):
                 cell += ("<br>" if cell else "") + f"<em>{_esc(job['notes'])}</em>"
             rows += _tr("CR_PROT", tl.get("CR_PROT", "CR Protection"), cell, "", "")
@@ -2558,6 +2602,9 @@ def _pdf_work_orders(bld, jobs, drw_reg, size="11x17 Landscape"):
                 d.get("desk_name","") + (f" ({d['desk_type']})" if d.get("desk_type") else "")
                 for d in desks
             )
+            crows = job.get("crows", [])
+            if crows:
+                desk_str += (" | " if desk_str else "") + "CROWs: " + ", ".join(crows)
             if job.get("notes"):
                 desk_str += (" | " if desk_str else "") + job["notes"]
             draw_row("CR_PROT", desc, desk_str, "", "")
@@ -6276,6 +6323,7 @@ class RedLineApp(tk.Tk):
         self.tree.bind("<<TreeviewSelect>>", self._on_select)
         self.tree.bind("<Double-1>", lambda _: self._edit_job())
         self.tree.bind("<Button-1>", self._on_tree_click)
+        self.tree.bind("<Delete>", lambda _: self._delete_job())
 
         # ── Right pane: Job Preview ─────────────────────────────────
         pf = ttk.LabelFrame(pw, text="Job Preview", padding=4); pw.add(pf, weight=2)
@@ -8803,7 +8851,8 @@ class RedLineApp(tk.Tk):
                         settings=self._get_settings(),
                         maintenance_standards=self.maintenance_standards_registry,
                         engineering_standards=self.engineering_standards_registry,
-                        ctrl_desks=self._app_db.get_ctrl_desks())
+                        ctrl_desks=self._app_db.get_ctrl_desks(),
+                        crows=self.title_page.get("crows", []))
         if dlg.result:
             self._collect_history(dlg.result)
             self.jobs.append(dlg.result); self._refresh_list(); self._refresh_drawings_list()
@@ -8817,7 +8866,8 @@ class RedLineApp(tk.Tk):
                         ep_history=self.ep_history, jobs=self.jobs, settings=self._get_settings(),
                         maintenance_standards=self.maintenance_standards_registry,
                         engineering_standards=self.engineering_standards_registry,
-                        ctrl_desks=self._app_db.get_ctrl_desks())
+                        ctrl_desks=self._app_db.get_ctrl_desks(),
+                        crows=self.title_page.get("crows", []))
         if dlg.result:
             self._collect_history(dlg.result)
             self.jobs[idx]=dlg.result; self._refresh_list(); self._refresh_drawings_list()
@@ -8836,7 +8886,7 @@ class RedLineApp(tk.Tk):
         msg = f"Delete {len(idxs)} selected jobs?" if len(idxs)>1 else f"Delete Job #{idxs[0]+1}?"
         if messagebox.askyesno("Delete",msg):
             for idx in reversed(idxs): self.jobs.pop(idx)
-            self._refresh_list()
+            self._refresh_list(); self._refresh_drawings_list()
             self.preview.configure(state="normal"); self.preview.delete("1.0","end"); self.preview.configure(state="disabled")
 
     def _move_up(self):
