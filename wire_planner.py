@@ -28,6 +28,7 @@ import glob
 import shutil
 import sqlite3
 import tempfile
+import zipfile
 import ctypes
 import ctypes.wintypes
 import base64
@@ -2067,6 +2068,122 @@ def _ew_embedded_files(project_folder, subfolder, mode, css_class="page-content"
     return f'<section class="{css_class}">{"".join(items)}</section>\n'
 
 
+# ──────────────────────────────────────────────────────────────────
+# Tablet zip package
+# ──────────────────────────────────────────────────────────────────
+
+# (section key, project subfolder, recurse) — folders bundled into the
+# tablet zip when the matching section mode is "print"
+_TABLET_SECTION_DIRS = [
+    ("drawings",    "Drawings",                                   True),
+    ("relay",       "Relay Settings",                             False),
+    ("maintenance", "Maintenance Standards",                      False),
+    ("engineering", "Engineering Standards",                      False),
+    ("tailboards",  os.path.join("Tailboards", "Completed"),      False),
+    ("safety",      os.path.join("Safety Documents", "Completed"), False),
+    ("other",       "Other Documents",                            False),
+]
+
+_TABLET_PKG_FORMAT  = "redline-tablet-package"
+_TABLET_PKG_VERSION = 1
+
+
+def _build_tablet_zip(app, html, folder, inc, sections, project, date_s):
+    """Package the tablet export as a single zip for transfer to a tablet.
+
+    Zip layout (stable contract for external reader apps):
+        manifest.json     – package description: format/version, project name,
+                            export timestamp, section modes, file inventory
+        index.html        – the tablet HTML; relative links resolve in-place
+                            once the zip is extracted
+        project.redline   – full project JSON, same format as a saved project
+        <subfolders>/…    – documents for every section set to "print",
+                            plus CROW Outage attachments (always on the cover)
+
+    Returns the path of the written zip.
+    """
+    def _files_under(sub, recurse):
+        base = os.path.join(folder, sub)
+        out = []
+        if not os.path.isdir(base):
+            return out
+        if recurse:
+            for root, dirs, files in os.walk(base):
+                dirs[:] = sorted(d for d in dirs if d.lower() != "archive")
+                for f in sorted(files):
+                    if f.startswith("."):
+                        continue
+                    full = os.path.join(root, f)
+                    out.append((full, os.path.relpath(full, folder).replace("\\", "/")))
+        else:
+            for f in sorted(os.listdir(base)):
+                if f.startswith("."):
+                    continue
+                full = os.path.join(base, f)
+                if os.path.isfile(full):
+                    out.append((full, os.path.join(sub, f).replace("\\", "/")))
+        return out
+
+    file_entries = []                      # (full_path, rel_path, section_key)
+    for key, sub, rec in _TABLET_SECTION_DIRS:
+        if inc.get(key) != "print":
+            continue
+        for full, rel in _files_under(sub, rec):
+            file_entries.append((full, rel, key))
+    # CROW attachments are linked from the cover page regardless of sections
+    for full, rel in _files_under("CROW Outage", False):
+        file_entries.append((full, rel, "crow"))
+
+    # Project JSON — identical structure to a saved .redline file so the
+    # tablet app can share a parser with the desktop format
+    tp = dict(app.title_page)
+    try:
+        tp["notes"] = app.title_notes.get("1.0", "end").strip()
+    except Exception:
+        pass
+    project_json = json.dumps({
+        "project":               project,
+        "title_page":            tp,
+        "drawing_registry":      app.drawing_registry,
+        "relay_settings":        app.relay_registry,    # key kept for file compatibility
+        "maintenance_standards": app.maintenance_standards_registry,
+        "engineering_standards": app.engineering_standards_registry,
+        "history":               app.history,
+        "jobs":                  app.jobs,
+    }, indent=2)
+
+    manifest = json.dumps({
+        "format":         _TABLET_PKG_FORMAT,
+        "format_version": _TABLET_PKG_VERSION,
+        "generator":      "Red-Line-Routing Wire Planner",
+        "project":        project,
+        "exported":       datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "entry_html":     "index.html",
+        "entry_project":  "project.redline",
+        "sections": [
+            {"key": k, "label": lbl, "mode": inc.get(k, "skip")}
+            for k, lbl in sections
+        ],
+        "files": [
+            {"path": rel, "section": sec, "size": os.path.getsize(full)}
+            for full, rel, sec in file_entries
+        ],
+    }, indent=2)
+
+    zpath = os.path.join(folder, f"Tablet_{date_s}.zip")
+    with zipfile.ZipFile(zpath, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("manifest.json", manifest)
+        zf.writestr("index.html", html)
+        zf.writestr("project.redline", project_json)
+        seen = set()
+        for full, rel, _sec in file_entries:
+            if rel in seen:
+                continue
+            seen.add(rel)
+            zf.write(full, rel)
+    return zpath
+
+
 # ══════════════════════════════════════════════════════════════════
 # PDF Package generation
 # ══════════════════════════════════════════════════════════════════
@@ -3105,8 +3222,8 @@ class ExportWizard(tk.Toplevel):
              "Screen-optimised with live hyperlinks.\n"
              "Open in browser → Ctrl+P → Save as PDF."),
             (self._v_tablet,  "📱  Tablet (iPad)",
-             "Large-text HTML for Safari. Downloaded files linked locally;\n"
-             "remaining documents linked by URL."),
+             "Zip package for transfer to a tablet: large-text HTML, all\n"
+             "downloaded documents, project data and a manifest in one file."),
         ]
         for var, title_text, desc in cards:
             card = tk.Frame(f, bd=1, relief="solid", padx=14, pady=10,
@@ -3307,10 +3424,16 @@ class ExportWizard(tk.Toplevel):
                         app.maintenance_standards_registry,
                         app.engineering_standards_registry,
                     )
-                    suffix = {"digital": "Digital", "tablet": "Tablet"}[mode]
-                    fpath  = os.path.join(folder, f"{suffix}_{date_s}.html")
-                    with open(fpath, "w", encoding="utf-8") as fh:
-                        fh.write(html)
+                    if mode == "tablet":
+                        # Tablet ships as a zip package (HTML + documents +
+                        # manifest + project JSON) for transfer to a tablet app
+                        fpath = _build_tablet_zip(
+                            app, html, folder, inc, self._SECTIONS,
+                            project, date_s)
+                    else:
+                        fpath = os.path.join(folder, f"Digital_{date_s}.html")
+                        with open(fpath, "w", encoding="utf-8") as fh:
+                            fh.write(html)
                     generated.append(fpath)
             except Exception as exc:
                 errors.append(f"{mode}: {exc}")
@@ -3322,7 +3445,7 @@ class ExportWizard(tk.Toplevel):
         if generated:
             self.destroy()
             for path in generated:
-                if path.lower().endswith(".pdf"):
+                if path.lower().endswith((".pdf", ".zip")):
                     _reveal_file(path)
                 else:
                     _open_file(path)

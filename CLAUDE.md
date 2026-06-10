@@ -111,7 +111,7 @@ Three output formats, selectable in step 1:
 |---|---|
 | **PDF Package** | Single merged PDF (`Package_<date>.pdf`): cover page + TOC, colour-coded work-orders table, registry tables, then every downloaded PDF from the project subfolders appended via pypdf. Falls back to print-ready HTML when pypdf is unavailable. |
 | **HTML / PDF (digital)** | Screen-optimised HTML with live hyperlinks. |
-| **Tablet** | Large-text HTML for Safari/iPad; downloaded files linked by relative local path. |
+| **Tablet** | Zip package (`Tablet_<date>.zip`, built by `_build_tablet_zip`): `manifest.json` (format `redline-tablet-package` v1, section modes, file inventory) + `index.html` (large-text HTML with relative links) + `project.redline` (same JSON as a saved project) + the documents of every section set to "print" plus CROW attachments. Designed to be consumed by a future iOS reader app. |
 
 Step 2 picks sections; each optional section (Drawings, Relay Settings, Maintenance Standards, Engineering Standards) has a three-state mode:
 
