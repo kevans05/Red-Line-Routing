@@ -3970,12 +3970,13 @@ def _styled_header(parent, title, subtitle=None, bg="#1c2833"):
 class DrawingSearchDialog(tk.Toplevel):
     """Reusable drawing search UI backed by DrawingSearchClient."""
 
-    def __init__(self, parent, app_config: dict, multi_select=True, proj_cache=None):
+    def __init__(self, parent, app_config: dict, multi_select=True, proj_cache=None, persist_fn=None):
         super().__init__(parent)
         self.title("Search Drawings")
         self.resizable(True, True)
         self.app_config = app_config
         self.multi_select = multi_select
+        self._persist_fn = persist_fn
         self.selected: list = []  # list[DrawingResult]
         self._page = 0
         self._last_paged = None   # most recent PagedResults
@@ -4118,12 +4119,22 @@ class DrawingSearchDialog(tk.Toplevel):
         base_url = self.app_config.get("drawing_search_url", "").strip()
         if not base_url:
             return None
+        path     = self.app_config.get("drawing_search_path", "").strip() or None
         raw_hdrs = self.app_config.get("request_headers", "")
         cookies  = _parse_cookies_from_headers(raw_hdrs)
         extra    = _parse_request_headers_raw(raw_hdrs)
         extra.pop("Cookie", None)
-        return DrawingSearchClient(base_url=base_url, cookies=cookies,
-                                   extra_headers=extra or None)
+        cache = DrawingSearchCache() if _DRAWING_SEARCH_AVAILABLE else None
+
+        def _on_cookie_update(updated: dict):
+            raw = self.app_config.get("request_headers", "")
+            self.app_config["request_headers"] = _update_cookie_in_headers(raw, updated)
+            if self._persist_fn:
+                self._persist_fn()
+
+        return DrawingSearchClient(base_url=base_url, cookies=cookies, cache=cache,
+                                   search_path=path, extra_headers=extra or None,
+                                   on_cookie_update=_on_cookie_update)
 
     def _get_params(self, page=0):
         # Parse code from "CODE — Label" or raw code
@@ -4780,6 +4791,23 @@ def _parse_cookies_from_headers(raw_headers: str) -> dict:
             k, _, v = part.partition("=")
             cookies[k.strip()] = v.strip()
     return cookies
+
+
+def _update_cookie_in_headers(raw_headers: str, new_cookies: dict) -> str:
+    """Rebuild the Cookie: line in raw_headers with updated values; preserve other lines."""
+    new_val = "; ".join(f"{k}={v}" for k, v in new_cookies.items())
+    lines_out = []
+    replaced = False
+    for line in raw_headers.splitlines():
+        if line.lower().startswith("cookie:"):
+            if not replaced:
+                lines_out.append(f"Cookie: {new_val}")
+                replaced = True
+        else:
+            lines_out.append(line)
+    if not replaced and new_cookies:
+        lines_out.append(f"Cookie: {new_val}")
+    return "\n".join(lines_out)
 
 
 def _show_fetch_options_dialog(parent, url: str, headers: dict, search_path: str = None) -> None:
@@ -6415,7 +6443,8 @@ class RedLineApp(tk.Tk):
 
     def _search_drawings(self):
         dlg = DrawingSearchDialog(self, self.app_config, multi_select=True,
-                                  proj_cache=self._drawing_cache)
+                                  proj_cache=self._drawing_cache,
+                                  persist_fn=self._save_app_config)
         for r in dlg.selected:
             if r.drawing_number not in self.drawing_registry:
                 self.drawing_registry[r.drawing_number] = {
