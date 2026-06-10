@@ -153,6 +153,8 @@ def empty_job(job_type="REMOVE"):
         return {"type": job_type, "description": "", "protection": empty_protection()}
     if job_type in ("TESTING", "ISOLATION"):
         return {"type": job_type, "description": "", "notes": ""}
+    if job_type == "CR_PROT":
+        return {"type": "CR_PROT", "description": "", "desks": [], "notes": ""}
     if job_type in ("DEVICE ADD", "DEVICE REMOVE"):
         return {"type": job_type, "description": "",
                 "endpoint": empty_endpoint(), "notes": ""}
@@ -881,11 +883,13 @@ class ProtectionFrame(ttk.LabelFrame):
 class JobDialog(tk.Toplevel):
     TYPE_COLOR = {"REMOVE":"#c0392b","ADD":"#27ae60","MOVE":"#2980b9",
                   "BLOCK":"#d35400","UNBLOCK":"#16a085","TESTING":"#6c3483",
-                  "ISOLATION":"#1a6b8a","DEVICE ADD":"#117a65","DEVICE REMOVE":"#784212"}
+                  "ISOLATION":"#1a6b8a","CR_PROT":"#1a5276",
+                  "DEVICE ADD":"#117a65","DEVICE REMOVE":"#784212"}
 
     def __init__(self, parent, job_type, existing=None, registry=None,
                  history=None, ep_history=None, jobs=None, settings=None,
-                 maintenance_standards=None, engineering_standards=None):
+                 maintenance_standards=None, engineering_standards=None,
+                 ctrl_desks=None):
         super().__init__(parent)
         self.title(f"{'Edit' if existing else 'Add'} — {job_type}")
         self.result = None
@@ -897,6 +901,7 @@ class JobDialog(tk.Toplevel):
         self.settings  = settings   if settings   is not None else {}
         self.maintenance_standards = maintenance_standards if maintenance_standards is not None else {}
         self.engineering_standards = engineering_standards if engineering_standards is not None else {}
+        self.ctrl_desks = ctrl_desks if ctrl_desks is not None else []
         self.resizable(True, True)
         self._build(existing)
         self.grab_set()
@@ -937,7 +942,7 @@ class JobDialog(tk.Toplevel):
         ttk.Button(btn_row, text="Cancel", command=self.destroy).pack(side="right", padx=2)
         ttk.Button(btn_row, text="Save",   command=self._save).pack(side="right", padx=2)
 
-        if self.job_type in ("BLOCK","UNBLOCK","TESTING","ISOLATION","DEVICE ADD","DEVICE REMOVE"):
+        if self.job_type in ("BLOCK","UNBLOCK","TESTING","ISOLATION","CR_PROT","DEVICE ADD","DEVICE REMOVE"):
             self.geometry("660x560")
         else:
             self.geometry("960x640")
@@ -1086,6 +1091,48 @@ class JobDialog(tk.Toplevel):
             self._test_notes_widget = iso_txt
             row += 1
 
+        elif self.job_type == "CR_PROT":
+            self._section_label(f, row, "── CONTROL ROOM PROTECTION ──", color); row += 2
+
+            # Desk selection
+            ttk.Label(f, text="Desks:").grid(row=row, column=0, sticky="ne", padx=(0, 6), pady=2)
+            desk_outer = ttk.Frame(f)
+            desk_outer.grid(row=row, column=1, sticky="ew", pady=2)
+            desk_outer.columnconfigure(0, weight=1)
+
+            # Checklist frame
+            ck_border = tk.Frame(desk_outer, bg="#d5d8dc", padx=1, pady=1)
+            ck_border.grid(row=0, column=0, sticky="ew")
+            ck_border.columnconfigure(0, weight=1)
+            ck_inner = tk.Frame(ck_border, bg="white")
+            ck_inner.pack(fill="both", expand=True)
+
+            self._cr_desk_vars = {}  # desk_id -> BooleanVar
+            selected_ids = {d["desk_id"] for d in ex.get("desks", [])}
+            if self.ctrl_desks:
+                for desk in self.ctrl_desks:
+                    var = tk.BooleanVar(value=(desk["desk_id"] in selected_ids))
+                    self._cr_desk_vars[desk["desk_id"]] = var
+                    cb_text = desk["desk_name"]
+                    if desk["desk_type"]:
+                        cb_text += f"  ({desk['desk_type']})"
+                    ttk.Checkbutton(ck_inner, text=cb_text, variable=var).pack(
+                        anchor="w", padx=6, pady=2)
+            else:
+                tk.Label(ck_inner, text="No desks configured. Use File → Control Room Desks to add desks.",
+                         bg="white", fg="#7f8c8d", font=("", 8), justify="left",
+                         wraplength=350).pack(padx=8, pady=8)
+
+            row += 1
+
+            # Notes
+            ttk.Label(f, text="Notes:").grid(row=row, column=0, sticky="ne", padx=(0, 6), pady=2)
+            cr_txt = tk.Text(f, width=58, height=4, wrap="word", font=("", 9))
+            cr_txt.grid(row=row, column=0, columnspan=2, sticky="ew", pady=2)
+            cr_txt.insert("1.0", ex.get("notes", ""))
+            self._test_notes_widget = cr_txt
+            row += 1
+
         # Standards — shown for every job type
         ttk.Separator(f, orient="horizontal").grid(row=row, column=0, columnspan=2, sticky="ew", pady=(8,4)); row+=1
         self._section_label(f, row, "── STANDARDS ──", "#5d6d7e"); row+=2
@@ -1163,7 +1210,7 @@ class JobDialog(tk.Toplevel):
             loc = self.ep_device.vars.get("location", tk.StringVar()).get().strip()
             verb = "Install" if jt == "DEVICE ADD" else "Remove"
             desc = f"{verb} device {d}" + (f" at {loc}" if loc else "")
-        elif jt in ("TESTING", "ISOLATION"):
+        elif jt in ("TESTING", "ISOLATION", "CR_PROT"):
             return  # no auto-fill for free-form notes
         else:
             return
@@ -1188,6 +1235,10 @@ class JobDialog(tk.Toplevel):
             job["endpoint"] = self.ep_device.get()
             job["notes"]    = self._dev_notes_widget.get("1.0","end").strip()
         elif self.job_type in ("TESTING", "ISOLATION"):
+            job["notes"] = self._test_notes_widget.get("1.0","end").strip()
+        elif self.job_type == "CR_PROT":
+            selected_ids = {did for did, var in self._cr_desk_vars.items() if var.get()}
+            job["desks"] = [d for d in self.ctrl_desks if d["desk_id"] in selected_ids]
             job["notes"] = self._test_notes_widget.get("1.0","end").strip()
         job["maintenance_standards"] = list(self._maint_lb.get(0, "end"))
         job["engineering_standards"] = list(self._eng_lb.get(0, "end"))
@@ -1320,7 +1371,8 @@ def format_job(index, job):
     jtype = job["type"]
     labels = {"REMOVE":"REMOVE WIRE","ADD":"ADD WIRE","MOVE":"MOVE WIRE",
               "BLOCK":"BLOCK PROTECTION","UNBLOCK":"UNBLOCK PROTECTION","TESTING":"TESTING / NOTE",
-              "ISOLATION":"ISOLATION","DEVICE ADD":"INSTALL DEVICE","DEVICE REMOVE":"REMOVE DEVICE"}
+              "ISOLATION":"ISOLATION","CR_PROT":"CONTROL ROOM PROTECTION",
+              "DEVICE ADD":"INSTALL DEVICE","DEVICE REMOVE":"REMOVE DEVICE"}
     lines = [_bar(), f"  JOB #{index+1}   [{labels.get(jtype,jtype)}]", _bar()]
     if job.get("description"):
         lines += ["","  DESCRIPTION", f"    {job['description']}"]
@@ -1347,6 +1399,20 @@ def format_job(index, job):
     elif jtype in ("TESTING", "ISOLATION"):
         if job.get("notes"):
             lines += ["","  NOTES", *[f"    {ln}" for ln in job["notes"].splitlines()]]
+    elif jtype == "CR_PROT":
+        desks = job.get("desks", [])
+        if desks:
+            lines += ["", "  CONTROL ROOM DESKS"]
+            for d in desks:
+                phones = "  /  ".join(filter(None, [d.get("phone_int",""),
+                                                     d.get("phone_local",""),
+                                                     d.get("phone_toll","")]))
+                lines.append(f"    {d.get('desk_name','')}  [{d.get('desk_type','')}]")
+                if phones:    lines.append(f"      Phones   : {phones}")
+                if d.get("stations"):
+                    lines.append(f"      Stations : {', '.join(d['stations'])}")
+        if job.get("notes"):
+            lines += ["", "  NOTES", *[f"    {ln}" for ln in job["notes"].splitlines()]]
     ms = _std_list(job, "maintenance_standards")
     es = _std_list(job, "engineering_standards")
     if ms or es:
@@ -1369,6 +1435,7 @@ _ROW_STYLE = {
     "UNBLOCK":     ("background:#e6f6f3","color:#0e6655;font-weight:bold"),
     "TESTING":     ("background:#f5eef8","color:#6c3483;font-weight:bold"),
     "ISOLATION":   ("background:#e8f4f8","color:#1a6b8a;font-weight:bold"),
+    "CR_PROT":     ("background:#e8f1f8","color:#1a5276;font-weight:bold"),
 }
 
 _ROW_BORDER = {
@@ -1380,6 +1447,7 @@ _ROW_BORDER = {
     "UNBLOCK":     "#148f77",
     "TESTING":     "#7d3c98",
     "ISOLATION":   "#1a6b8a",
+    "CR_PROT":     "#1a5276",
 }
 
 def _esc(t):
@@ -1657,7 +1725,7 @@ def _ew_work_orders(jobs, drawing_registry, mode, css_class="page-content"):
     tl = {
         "REMOVE":"Remove Wire","ADD":"Add Wire","MOVE":"Move Wire",
         "BLOCK":"Block Protection","UNBLOCK":"Unblock Protection","TESTING":"Testing",
-        "ISOLATION":"Isolation",
+        "ISOLATION":"Isolation","CR_PROT":"CR Protection",
     }
     rows = ""
     seq  = 1
@@ -1708,6 +1776,23 @@ def _ew_work_orders(jobs, drawing_registry, mode, css_class="page-content"):
         elif jt == "ISOLATION":
             rows += _tr("ISOLATION", tl.get("ISOLATION", "Isolation"),
                         _esc(job.get("notes", "")), "", "")
+        elif jt == "CR_PROT":
+            desks = job.get("desks", [])
+            desk_parts = []
+            for d in desks:
+                phones = " / ".join(filter(None, [d.get("phone_int",""),
+                                                   d.get("phone_local",""),
+                                                   d.get("phone_toll","")]))
+                stations = ", ".join(d.get("stations",[]))
+                part = f"<b>{_esc(d.get('desk_name',''))}</b>"
+                if d.get("desk_type"): part += f" ({_esc(d['desk_type'])})"
+                if phones:   part += f"<br><small>&#128222; {_esc(phones)}</small>"
+                if stations: part += f"<br><small>Stations: {_esc(stations)}</small>"
+                desk_parts.append(part)
+            cell = "<br>".join(desk_parts)
+            if job.get("notes"):
+                cell += ("<br>" if cell else "") + f"<em>{_esc(job['notes'])}</em>"
+            rows += _tr("CR_PROT", tl.get("CR_PROT", "CR Protection"), cell, "", "")
 
     return (
         f'<section class="{css_class}">'
@@ -2039,6 +2124,7 @@ class _PDFPage:
         "UNBLOCK":     (230, 246, 243),
         "TESTING":     (245, 238, 248),
         "ISOLATION":   (232, 244, 248),
+        "CR_PROT":     (232, 241, 248),
     }
     ROW_ACC = {
         "REMOVE":      (192,  57,  43),
@@ -2049,6 +2135,7 @@ class _PDFPage:
         "UNBLOCK":     ( 20, 143, 119),
         "TESTING":     (125,  60, 152),
         "ISOLATION":   ( 26, 107, 138),
+        "CR_PROT":     ( 26,  82, 118),
     }
     TYPE_LBL = {
         "REMOVE":      "Remove Wire",
@@ -2059,6 +2146,7 @@ class _PDFPage:
         "UNBLOCK":     "Unblock",
         "TESTING":     "Testing",
         "ISOLATION":   "Isolation",
+        "CR_PROT":     "CR Protection",
     }
     # Font indices: F1=Helvetica, F2=Helvetica-Bold, F3=Courier
     FR = 1; FB = 2; FM = 3
@@ -2478,6 +2566,15 @@ def _pdf_work_orders(bld, jobs, drw_reg, size="11x17 Landscape"):
             draw_row(jt, desc, _prot_flat(job.get("protection",{})), "", "")
         elif jt in ("TESTING", "ISOLATION"):
             draw_row(jt, desc, job.get("notes",""), "", "")
+        elif jt == "CR_PROT":
+            desks = job.get("desks", [])
+            desk_str = "; ".join(
+                d.get("desk_name","") + (f" ({d['desk_type']})" if d.get("desk_type") else "")
+                for d in desks
+            )
+            if job.get("notes"):
+                desk_str += (" | " if desk_str else "") + job["notes"]
+            draw_row("CR_PROT", desc, desk_str, "", "")
 
 
 def _pdf_drawings_reg(bld, reg, size="Letter Portrait"):
@@ -4288,6 +4385,14 @@ class _AppDB:
                     cache_key TEXT PRIMARY KEY,
                     results   TEXT NOT NULL,
                     cached_at REAL NOT NULL);
+                CREATE TABLE IF NOT EXISTS control_room_desks(
+                    desk_id     TEXT PRIMARY KEY,
+                    desk_name   TEXT NOT NULL DEFAULT '',
+                    desk_type   TEXT NOT NULL DEFAULT '',
+                    phone_int   TEXT NOT NULL DEFAULT '',
+                    phone_local TEXT NOT NULL DEFAULT '',
+                    phone_toll  TEXT NOT NULL DEFAULT '',
+                    stations    TEXT NOT NULL DEFAULT '[]');
             """)
         self._migrate_legacy_json()
 
@@ -4416,6 +4521,40 @@ class _AppDB:
                     (key,)).fetchone()
             if row is None or row[0] < ts:
                 self.cache_put(key, results, cached_at=ts)
+
+    # ── control room desks ────────────────────────────────────────
+
+    def get_ctrl_desks(self) -> list:
+        """Return all control room desks ordered by name."""
+        try:
+            with self._conn() as c:
+                rows = c.execute(
+                    "SELECT desk_id,desk_name,desk_type,phone_int,phone_local,phone_toll,stations "
+                    "FROM control_room_desks ORDER BY desk_name"
+                ).fetchall()
+            return [{"desk_id": r[0], "desk_name": r[1], "desk_type": r[2],
+                     "phone_int": r[3], "phone_local": r[4], "phone_toll": r[5],
+                     "stations": json.loads(r[6])} for r in rows]
+        except (sqlite3.Error, json.JSONDecodeError):
+            return []
+
+    def put_ctrl_desk(self, desk: dict):
+        with self._conn() as c:
+            c.execute(
+                "INSERT INTO control_room_desks"
+                "(desk_id,desk_name,desk_type,phone_int,phone_local,phone_toll,stations) "
+                "VALUES(?,?,?,?,?,?,?) "
+                "ON CONFLICT(desk_id) DO UPDATE SET "
+                "desk_name=excluded.desk_name, desk_type=excluded.desk_type, "
+                "phone_int=excluded.phone_int, phone_local=excluded.phone_local, "
+                "phone_toll=excluded.phone_toll, stations=excluded.stations",
+                (desk["desk_id"], desk.get("desk_name",""), desk.get("desk_type",""),
+                 desk.get("phone_int",""), desk.get("phone_local",""),
+                 desk.get("phone_toll",""), json.dumps(desk.get("stations",[]))))
+
+    def delete_ctrl_desk(self, desk_id: str):
+        with self._conn() as c:
+            c.execute("DELETE FROM control_room_desks WHERE desk_id=?", (desk_id,))
 
 
 class _GlobalDrawingCache:
@@ -4660,6 +4799,192 @@ def _show_fetch_options_dialog(parent, url: str, headers: dict, search_path: str
 
     threading.Thread(target=_run, daemon=True).start()
     _center_window(dlg, 520, 480)
+
+
+# ──────────────────────────────────────────────────────────────────
+# Control Room Desks dialogs
+# ──────────────────────────────────────────────────────────────────
+
+class CtrlRoomDeskEditDialog(tk.Toplevel):
+    """Create or edit a single control room desk entry."""
+
+    def __init__(self, parent, existing=None):
+        super().__init__(parent)
+        self.title("Edit Desk" if existing else "Add Control Room Desk")
+        self.resizable(True, False)
+        self.result = None
+        self._desk_id = (existing or {}).get("desk_id")
+        self._build(existing or {})
+        _center_window(self)
+        self.grab_set()
+        self.wait_window()
+
+    def _build(self, d):
+        f = tk.Frame(self, bg="white", padx=16, pady=12)
+        f.pack(fill="both", expand=True)
+        f.columnconfigure(1, weight=1)
+
+        fields = [
+            ("desk_name",  "Desk Name:"),
+            ("desk_type",  "Desk Type:"),
+            ("phone_int",  "Internal Phone:"),
+            ("phone_local","Local Phone:"),
+            ("phone_toll", "Toll Free:"),
+        ]
+        self._vars = {}
+        for i, (key, label) in enumerate(fields):
+            ttk.Label(f, text=label).grid(row=i, column=0, sticky="e", padx=(0, 6), pady=3)
+            var = tk.StringVar(value=d.get(key, ""))
+            self._vars[key] = var
+            ttk.Entry(f, textvariable=var, width=40).grid(row=i, column=1, sticky="ew", pady=3)
+
+        r = len(fields)
+        ttk.Label(f, text="Stations:").grid(row=r, column=0, sticky="ne", padx=(0, 6), pady=(8, 3))
+        st_f = ttk.Frame(f)
+        st_f.grid(row=r, column=1, sticky="ew", pady=(8, 3))
+        st_f.columnconfigure(0, weight=1)
+
+        self._stations_lb = tk.Listbox(st_f, height=5, selectmode="single", font=("", 9),
+                                       bg="white", relief="flat", bd=1,
+                                       highlightthickness=1, highlightbackground="#d5d8dc",
+                                       exportselection=False)
+        self._stations_lb.grid(row=0, column=0, sticky="ew")
+        for s in d.get("stations", []):
+            self._stations_lb.insert("end", s)
+
+        btn_col = ttk.Frame(st_f)
+        btn_col.grid(row=0, column=1, sticky="ns", padx=(4, 0))
+        ttk.Button(btn_col, text="Remove",
+                   command=lambda: self._stations_lb.delete(
+                       self._stations_lb.curselection()[0])
+                   if self._stations_lb.curselection() else None,
+                   width=7).pack()
+
+        add_row = ttk.Frame(st_f)
+        add_row.grid(row=1, column=0, sticky="ew", pady=(3, 0))
+        add_row.columnconfigure(0, weight=1)
+        st_var = tk.StringVar()
+        ttk.Entry(add_row, textvariable=st_var, width=28).grid(row=0, column=0, sticky="ew")
+
+        def _add_station(e=None):
+            s = st_var.get().strip()
+            if s and s not in self._stations_lb.get(0, "end"):
+                self._stations_lb.insert("end", s)
+                st_var.set("")
+
+        ttk.Button(add_row, text="Add", command=_add_station,
+                   width=6).grid(row=0, column=1, padx=(4, 0))
+        ttk.Entry(add_row, textvariable=st_var).bind("<Return>", _add_station)
+
+        sep = tk.Frame(self, bg="#d5d8dc", height=1); sep.pack(fill="x", side="bottom")
+        bf = tk.Frame(self, bg="#eaecee"); bf.pack(fill="x", side="bottom")
+        ttk.Button(bf, text="Cancel", command=self.destroy).pack(side="right", padx=(6, 12), pady=8)
+        ttk.Button(bf, text="Save", command=self._save).pack(side="right", pady=8)
+
+    def _save(self):
+        name = self._vars["desk_name"].get().strip()
+        if not name:
+            messagebox.showwarning("Name Required", "Please enter a desk name.", parent=self)
+            return
+        import uuid as _uuid
+        self.result = {
+            "desk_id":    self._desk_id or f"desk_{_uuid.uuid4().hex[:8]}",
+            "desk_name":  name,
+            "desk_type":  self._vars["desk_type"].get().strip(),
+            "phone_int":  self._vars["phone_int"].get().strip(),
+            "phone_local": self._vars["phone_local"].get().strip(),
+            "phone_toll": self._vars["phone_toll"].get().strip(),
+            "stations":   list(self._stations_lb.get(0, "end")),
+        }
+        self.destroy()
+
+
+class CtrlRoomDesksManagerDialog(tk.Toplevel):
+    """List, add, edit and delete control room desks stored in the global DB."""
+
+    def __init__(self, parent, app_db):
+        super().__init__(parent)
+        self.title("Control Room Desks")
+        self.resizable(True, True)
+        self._db = app_db
+        self._build()
+        _center_window(self, 860, 400)
+        self.grab_set()
+        self.wait_window()
+
+    def _build(self):
+        _styled_header(self, "Control Room Desks",
+                       "Configure desks for protection requests and returns")
+
+        body = tk.Frame(self, bg="white"); body.pack(fill="both", expand=True, padx=12, pady=8)
+
+        tb = ttk.Frame(body); tb.pack(fill="x", pady=(0, 4))
+        ttk.Button(tb, text="+ Add Desk",  command=self._add).pack(side="left", padx=2)
+        ttk.Button(tb, text="Edit",        command=self._edit).pack(side="left", padx=2)
+        ttk.Button(tb, text="Delete",      command=self._delete).pack(side="left", padx=2)
+
+        cols = ("name", "type", "phone_int", "phone_local", "phone_toll", "stations")
+        self._tree = ttk.Treeview(body, columns=cols, show="headings", height=14)
+        for col, hdr, w in [
+            ("name",       "Desk Name",       160),
+            ("type",       "Type",            110),
+            ("phone_int",  "Internal Phone",  120),
+            ("phone_local","Local Phone",     120),
+            ("phone_toll", "Toll Free",       120),
+            ("stations",   "Associated Stations", 220),
+        ]:
+            self._tree.heading(col, text=hdr)
+            self._tree.column(col, width=w, minwidth=60)
+
+        vsb = ttk.Scrollbar(body, orient="vertical", command=self._tree.yview)
+        self._tree.configure(yscrollcommand=vsb.set)
+        self._tree.pack(side="left", fill="both", expand=True)
+        vsb.pack(side="right", fill="y")
+        self._tree.bind("<Double-1>", lambda _: self._edit())
+
+        sep = tk.Frame(self, bg="#d5d8dc", height=1); sep.pack(fill="x", side="bottom")
+        bf = tk.Frame(self, bg="#eaecee"); bf.pack(fill="x", side="bottom")
+        ttk.Button(bf, text="Close", command=self.destroy).pack(side="right", padx=12, pady=8)
+
+        self._load()
+
+    def _load(self):
+        for iid in self._tree.get_children():
+            self._tree.delete(iid)
+        for d in self._db.get_ctrl_desks():
+            self._tree.insert("", "end", iid=d["desk_id"], values=(
+                d["desk_name"], d["desk_type"],
+                d["phone_int"], d["phone_local"], d["phone_toll"],
+                ", ".join(d["stations"]),
+            ))
+
+    def _add(self):
+        dlg = CtrlRoomDeskEditDialog(self)
+        if dlg.result:
+            self._db.put_ctrl_desk(dlg.result)
+            self._load()
+
+    def _edit(self):
+        sel = self._tree.selection()
+        if not sel:
+            messagebox.showinfo("Select a Desk", "Please select a desk to edit.", parent=self)
+            return
+        desks = {d["desk_id"]: d for d in self._db.get_ctrl_desks()}
+        desk = desks.get(sel[0])
+        if desk:
+            dlg = CtrlRoomDeskEditDialog(self, existing=desk)
+            if dlg.result:
+                self._db.put_ctrl_desk(dlg.result)
+                self._load()
+
+    def _delete(self):
+        sel = self._tree.selection()
+        if not sel:
+            return
+        name = self._tree.item(sel[0], "values")[0]
+        if messagebox.askyesno("Delete Desk", f'Delete desk "{name}"?', parent=self):
+            self._db.delete_ctrl_desk(sel[0])
+            self._load()
 
 
 class SoftwareSetupDialog(tk.Toplevel):
@@ -5603,7 +5928,8 @@ class ProjectWizard(tk.Toplevel):
 class RedLineApp(tk.Tk):
     TYPE_FG = {"REMOVE":"#c0392b","ADD":"#1a7a3c","MOVE":"#1a5a99",
                "BLOCK":"#d35400","UNBLOCK":"#16a085","TESTING":"#6c3483",
-               "ISOLATION":"#1a6b8a","DEVICE ADD":"#117a65","DEVICE REMOVE":"#784212"}
+               "ISOLATION":"#1a6b8a","CR_PROT":"#1a5276",
+               "DEVICE ADD":"#117a65","DEVICE REMOVE":"#784212"}
 
     def __init__(self):
         super().__init__()
@@ -5817,7 +6143,8 @@ class RedLineApp(tk.Tk):
         fm.add_separator()
         fm.add_command(label="Export Wizard…",         command=self._open_export_wizard, accelerator="Ctrl+E")
         fm.add_separator()
-        fm.add_command(label="Software Settings…",     command=self._open_software_settings)
+        fm.add_command(label="Software Settings…",       command=self._open_software_settings)
+        fm.add_command(label="Control Room Desks…",      command=self._open_ctrl_room_desks)
         fm.add_separator()
         fm.add_command(label="Quit",command=self.quit, accelerator="Ctrl+Q")
         mb.add_cascade(label="File",menu=fm)
@@ -5897,7 +6224,8 @@ class RedLineApp(tk.Tk):
                 ("+ Remove Device", "DEVICE REMOVE", "#784212"),
                 ("+ Block", "BLOCK", "#d35400"), ("+ Unblock", "UNBLOCK", "#16a085"),
                 ("+ Testing", "TESTING", "#6c3483"),
-                ("+ Isolation", "ISOLATION", "#1a6b8a")]:
+                ("+ Isolation", "ISOLATION", "#1a6b8a"),
+                ("+ CR Protection", "CR_PROT", "#1a5276")]:
             tk.Button(tb1, text=label, fg="white", bg=color, relief="flat", padx=7, pady=3,
                       cursor="hand2", command=lambda t=jtype: self._add_job(t)).pack(side="left", padx=2)
         nf = ttk.Frame(tb1); nf.pack(side="right")
@@ -6602,6 +6930,9 @@ class RedLineApp(tk.Tk):
             dlg.destroy()
 
         ttk.Button(bf, text="Save", command=_save).pack(side="right")
+
+    def _open_ctrl_room_desks(self):
+        CtrlRoomDesksManagerDialog(self, self._app_db)
 
     # ── Title page tab ────────────────────────────────────────────
 
@@ -7607,7 +7938,7 @@ class RedLineApp(tk.Tk):
         self.impl_tree.tag_configure("TAILBOARD", foreground="#e67e22", font=("", 9, "bold"))
         disp = {"REMOVE":"REMOVE","ADD":"ADD","MOVE":"MOVE",
                 "BLOCK":"BLOCK PROT.","UNBLOCK":"UNBLOCK PROT.","TESTING":"TESTING",
-                "ISOLATION":"ISOLATION",
+                "ISOLATION":"ISOLATION","CR_PROT":"CR PROTECTION",
                 "DEVICE ADD":"INSTALL DEVICE","DEVICE REMOVE":"REMOVE DEVICE"}
         self.impl_tree.tag_configure("MB_WARN", foreground="#e59866")
         for i, job in enumerate(self.jobs):
@@ -8424,6 +8755,7 @@ class RedLineApp(tk.Tk):
         for iid in self.tree.get_children(): self.tree.delete(iid)
         disp = {"REMOVE":"REMOVE","ADD":"ADD","MOVE":"MOVE","BLOCK":"BLOCK PROT.",
                 "UNBLOCK":"UNBLOCK PROT.","TESTING":"TESTING","ISOLATION":"ISOLATION",
+                "CR_PROT":"CR PROTECTION",
                 "DEVICE ADD":"INSTALL DEVICE","DEVICE REMOVE":"REMOVE DEVICE"}
         for i,job in enumerate(self.jobs):
             done = job.get("completed", False)
@@ -8481,7 +8813,8 @@ class RedLineApp(tk.Tk):
                         history=self.history, ep_history=self.ep_history, jobs=self.jobs,
                         settings=self._get_settings(),
                         maintenance_standards=self.maintenance_standards_registry,
-                        engineering_standards=self.engineering_standards_registry)
+                        engineering_standards=self.engineering_standards_registry,
+                        ctrl_desks=self._app_db.get_ctrl_desks())
         if dlg.result:
             self._collect_history(dlg.result)
             self.jobs.append(dlg.result); self._refresh_list(); self._refresh_drawings_list()
@@ -8494,7 +8827,8 @@ class RedLineApp(tk.Tk):
                         registry=self.drawing_registry, history=self.history,
                         ep_history=self.ep_history, jobs=self.jobs, settings=self._get_settings(),
                         maintenance_standards=self.maintenance_standards_registry,
-                        engineering_standards=self.engineering_standards_registry)
+                        engineering_standards=self.engineering_standards_registry,
+                        ctrl_desks=self._app_db.get_ctrl_desks())
         if dlg.result:
             self._collect_history(dlg.result)
             self.jobs[idx]=dlg.result; self._refresh_list(); self._refresh_drawings_list()
