@@ -151,8 +151,8 @@ def empty_protection():
 def empty_job(job_type="REMOVE"):
     if job_type in ("BLOCK", "UNBLOCK"):
         return {"type": job_type, "description": "", "protection": empty_protection()}
-    if job_type == "TESTING":
-        return {"type": "TESTING", "description": "", "notes": ""}
+    if job_type in ("TESTING", "ISOLATION"):
+        return {"type": job_type, "description": "", "notes": ""}
     if job_type in ("DEVICE ADD", "DEVICE REMOVE"):
         return {"type": job_type, "description": "",
                 "endpoint": empty_endpoint(), "notes": ""}
@@ -881,7 +881,7 @@ class ProtectionFrame(ttk.LabelFrame):
 class JobDialog(tk.Toplevel):
     TYPE_COLOR = {"REMOVE":"#c0392b","ADD":"#27ae60","MOVE":"#2980b9",
                   "BLOCK":"#d35400","UNBLOCK":"#16a085","TESTING":"#6c3483",
-                  "DEVICE ADD":"#117a65","DEVICE REMOVE":"#784212"}
+                  "ISOLATION":"#1a6b8a","DEVICE ADD":"#117a65","DEVICE REMOVE":"#784212"}
 
     def __init__(self, parent, job_type, existing=None, registry=None,
                  history=None, ep_history=None, jobs=None, settings=None,
@@ -937,7 +937,7 @@ class JobDialog(tk.Toplevel):
         ttk.Button(btn_row, text="Cancel", command=self.destroy).pack(side="right", padx=2)
         ttk.Button(btn_row, text="Save",   command=self._save).pack(side="right", padx=2)
 
-        if self.job_type in ("BLOCK","UNBLOCK","TESTING","DEVICE ADD","DEVICE REMOVE"):
+        if self.job_type in ("BLOCK","UNBLOCK","TESTING","ISOLATION","DEVICE ADD","DEVICE REMOVE"):
             self.geometry("660x560")
         else:
             self.geometry("960x640")
@@ -1077,6 +1077,15 @@ class JobDialog(tk.Toplevel):
             self._test_notes_widget = notes_txt
             row += 1
 
+        elif self.job_type == "ISOLATION":
+            self._section_label(f, row, "── ISOLATION ──", color); row += 2
+            ttk.Label(f, text="Notes:").grid(row=row, column=0, sticky="ne", padx=(0,6), pady=2)
+            iso_txt = tk.Text(f, width=58, height=6, wrap="word", font=("",9))
+            iso_txt.grid(row=row, column=0, columnspan=2, sticky="ew", pady=2)
+            iso_txt.insert("1.0", ex.get("notes",""))
+            self._test_notes_widget = iso_txt
+            row += 1
+
         # Standards — shown for every job type
         ttk.Separator(f, orient="horizontal").grid(row=row, column=0, columnspan=2, sticky="ew", pady=(8,4)); row+=1
         self._section_label(f, row, "── STANDARDS ──", "#5d6d7e"); row+=2
@@ -1154,7 +1163,7 @@ class JobDialog(tk.Toplevel):
             loc = self.ep_device.vars.get("location", tk.StringVar()).get().strip()
             verb = "Install" if jt == "DEVICE ADD" else "Remove"
             desc = f"{verb} device {d}" + (f" at {loc}" if loc else "")
-        elif jt == "TESTING":
+        elif jt in ("TESTING", "ISOLATION"):
             return  # no auto-fill for free-form notes
         else:
             return
@@ -1178,7 +1187,7 @@ class JobDialog(tk.Toplevel):
         elif self.job_type in ("DEVICE ADD","DEVICE REMOVE"):
             job["endpoint"] = self.ep_device.get()
             job["notes"]    = self._dev_notes_widget.get("1.0","end").strip()
-        elif self.job_type == "TESTING":
+        elif self.job_type in ("TESTING", "ISOLATION"):
             job["notes"] = self._test_notes_widget.get("1.0","end").strip()
         job["maintenance_standards"] = list(self._maint_lb.get(0, "end"))
         job["engineering_standards"] = list(self._eng_lb.get(0, "end"))
@@ -1311,7 +1320,7 @@ def format_job(index, job):
     jtype = job["type"]
     labels = {"REMOVE":"REMOVE WIRE","ADD":"ADD WIRE","MOVE":"MOVE WIRE",
               "BLOCK":"BLOCK PROTECTION","UNBLOCK":"UNBLOCK PROTECTION","TESTING":"TESTING / NOTE",
-              "DEVICE ADD":"INSTALL DEVICE","DEVICE REMOVE":"REMOVE DEVICE"}
+              "ISOLATION":"ISOLATION","DEVICE ADD":"INSTALL DEVICE","DEVICE REMOVE":"REMOVE DEVICE"}
     lines = [_bar(), f"  JOB #{index+1}   [{labels.get(jtype,jtype)}]", _bar()]
     if job.get("description"):
         lines += ["","  DESCRIPTION", f"    {job['description']}"]
@@ -1335,7 +1344,7 @@ def format_job(index, job):
         lines += ["", _ep_block(job.get("endpoint", {}), "DEVICE / LOCATION")]
         if job.get("notes"):
             lines += ["", "  NOTES", *[f"    {ln}" for ln in job["notes"].splitlines()]]
-    elif jtype == "TESTING":
+    elif jtype in ("TESTING", "ISOLATION"):
         if job.get("notes"):
             lines += ["","  NOTES", *[f"    {ln}" for ln in job["notes"].splitlines()]]
     ms = _std_list(job, "maintenance_standards")
@@ -1359,6 +1368,7 @@ _ROW_STYLE = {
     "BLOCK":       ("background:#fef3e6","color:#a04000;font-weight:bold"),
     "UNBLOCK":     ("background:#e6f6f3","color:#0e6655;font-weight:bold"),
     "TESTING":     ("background:#f5eef8","color:#6c3483;font-weight:bold"),
+    "ISOLATION":   ("background:#e8f4f8","color:#1a6b8a;font-weight:bold"),
 }
 
 _ROW_BORDER = {
@@ -1369,6 +1379,7 @@ _ROW_BORDER = {
     "BLOCK":       "#ca6f1e",
     "UNBLOCK":     "#148f77",
     "TESTING":     "#7d3c98",
+    "ISOLATION":   "#1a6b8a",
 }
 
 def _esc(t):
@@ -1646,6 +1657,7 @@ def _ew_work_orders(jobs, drawing_registry, mode, css_class="page-content"):
     tl = {
         "REMOVE":"Remove Wire","ADD":"Add Wire","MOVE":"Move Wire",
         "BLOCK":"Block Protection","UNBLOCK":"Unblock Protection","TESTING":"Testing",
+        "ISOLATION":"Isolation",
     }
     rows = ""
     seq  = 1
@@ -1692,6 +1704,9 @@ def _ew_work_orders(jobs, drawing_registry, mode, css_class="page-content"):
             rows += _tr(jt, tl[jt], prot_r(job.get("protection", {})), "", "")
         elif jt == "TESTING":
             rows += _tr("TESTING", tl.get("TESTING", "Testing"),
+                        _esc(job.get("notes", "")), "", "")
+        elif jt == "ISOLATION":
+            rows += _tr("ISOLATION", tl.get("ISOLATION", "Isolation"),
                         _esc(job.get("notes", "")), "", "")
 
     return (
@@ -2023,6 +2038,7 @@ class _PDFPage:
         "BLOCK":       (254, 243, 230),
         "UNBLOCK":     (230, 246, 243),
         "TESTING":     (245, 238, 248),
+        "ISOLATION":   (232, 244, 248),
     }
     ROW_ACC = {
         "REMOVE":      (192,  57,  43),
@@ -2032,6 +2048,7 @@ class _PDFPage:
         "BLOCK":       (202, 111,  30),
         "UNBLOCK":     ( 20, 143, 119),
         "TESTING":     (125,  60, 152),
+        "ISOLATION":   ( 26, 107, 138),
     }
     TYPE_LBL = {
         "REMOVE":      "Remove Wire",
@@ -2041,6 +2058,7 @@ class _PDFPage:
         "BLOCK":       "Block",
         "UNBLOCK":     "Unblock",
         "TESTING":     "Testing",
+        "ISOLATION":   "Isolation",
     }
     # Font indices: F1=Helvetica, F2=Helvetica-Bold, F3=Courier
     FR = 1; FB = 2; FM = 3
@@ -2458,8 +2476,8 @@ def _pdf_work_orders(bld, jobs, drw_reg, size="11x17 Landscape"):
                      _ep_flat(job.get("add_end",{})))
         elif jt in ("BLOCK","UNBLOCK"):
             draw_row(jt, desc, _prot_flat(job.get("protection",{})), "", "")
-        elif jt == "TESTING":
-            draw_row("TESTING", desc, job.get("notes",""), "", "")
+        elif jt in ("TESTING", "ISOLATION"):
+            draw_row(jt, desc, job.get("notes",""), "", "")
 
 
 def _pdf_drawings_reg(bld, reg, size="Letter Portrait"):
@@ -2533,6 +2551,7 @@ def _merge_pdfs_bytes(pdf_bytes_list: list) -> bytes:
     if not _PYPDF_AVAILABLE:
         return pdf_bytes_list[0] if pdf_bytes_list else b""
     import io
+    from pypdf.generic import RectangleObject, NameObject
     writer = _PdfWriter()
     for data in pdf_bytes_list:
         if not data:
@@ -2540,6 +2559,17 @@ def _merge_pdfs_bytes(pdf_bytes_list: list) -> bytes:
         try:
             reader = _PdfReader(io.BytesIO(data))
             for page in reader.pages:
+                # Ensure MediaBox is explicitly on each page dict (not just
+                # inherited from a parent /Pages node) so it survives clone().
+                if "/MediaBox" not in page:
+                    try:
+                        mb = page.mediabox
+                        page[NameObject("/MediaBox")] = RectangleObject(
+                            (float(mb.left), float(mb.bottom),
+                             float(mb.right), float(mb.top))
+                        )
+                    except Exception:
+                        pass
                 writer.add_page(page)
         except Exception:
             pass
@@ -5573,7 +5603,7 @@ class ProjectWizard(tk.Toplevel):
 class RedLineApp(tk.Tk):
     TYPE_FG = {"REMOVE":"#c0392b","ADD":"#1a7a3c","MOVE":"#1a5a99",
                "BLOCK":"#d35400","UNBLOCK":"#16a085","TESTING":"#6c3483",
-               "DEVICE ADD":"#117a65","DEVICE REMOVE":"#784212"}
+               "ISOLATION":"#1a6b8a","DEVICE ADD":"#117a65","DEVICE REMOVE":"#784212"}
 
     def __init__(self):
         super().__init__()
@@ -5866,7 +5896,8 @@ class RedLineApp(tk.Tk):
                 ("+ Install Device", "DEVICE ADD", "#117a65"),
                 ("+ Remove Device", "DEVICE REMOVE", "#784212"),
                 ("+ Block", "BLOCK", "#d35400"), ("+ Unblock", "UNBLOCK", "#16a085"),
-                ("+ Testing", "TESTING", "#6c3483")]:
+                ("+ Testing", "TESTING", "#6c3483"),
+                ("+ Isolation", "ISOLATION", "#1a6b8a")]:
             tk.Button(tb1, text=label, fg="white", bg=color, relief="flat", padx=7, pady=3,
                       cursor="hand2", command=lambda t=jtype: self._add_job(t)).pack(side="left", padx=2)
         nf = ttk.Frame(tb1); nf.pack(side="right")
@@ -7576,6 +7607,7 @@ class RedLineApp(tk.Tk):
         self.impl_tree.tag_configure("TAILBOARD", foreground="#e67e22", font=("", 9, "bold"))
         disp = {"REMOVE":"REMOVE","ADD":"ADD","MOVE":"MOVE",
                 "BLOCK":"BLOCK PROT.","UNBLOCK":"UNBLOCK PROT.","TESTING":"TESTING",
+                "ISOLATION":"ISOLATION",
                 "DEVICE ADD":"INSTALL DEVICE","DEVICE REMOVE":"REMOVE DEVICE"}
         self.impl_tree.tag_configure("MB_WARN", foreground="#e59866")
         for i, job in enumerate(self.jobs):
@@ -8391,7 +8423,7 @@ class RedLineApp(tk.Tk):
     def _refresh_list(self):
         for iid in self.tree.get_children(): self.tree.delete(iid)
         disp = {"REMOVE":"REMOVE","ADD":"ADD","MOVE":"MOVE","BLOCK":"BLOCK PROT.",
-                "UNBLOCK":"UNBLOCK PROT.","TESTING":"TESTING",
+                "UNBLOCK":"UNBLOCK PROT.","TESTING":"TESTING","ISOLATION":"ISOLATION",
                 "DEVICE ADD":"INSTALL DEVICE","DEVICE REMOVE":"REMOVE DEVICE"}
         for i,job in enumerate(self.jobs):
             done = job.get("completed", False)
