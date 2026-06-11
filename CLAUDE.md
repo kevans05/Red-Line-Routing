@@ -70,6 +70,7 @@ self.relay_registry                 # {device_id: {title, revision, engineer, co
 self.maintenance_standards_registry # {standard_id: {title, revision, url_telecom, url_transmission, notes}}
 self.engineering_standards_registry # {standard_id: {title, revision, standard_type, url, notes}}
 self.title_page                     # {notes: str, crows: [{outage_number, url, files: [str]}]}
+self.tailboard_refs                 # {tailboard/hbr/loa/safety_regs: {url}} – living reference docs (see _empty_tailboard_refs())
 self.history                        # {device/location/pin/panel/wire: [str, …]}  – autocomplete pool
 ```
 
@@ -93,6 +94,17 @@ Job types: `REMOVE`, `ADD`, `MOVE`, `BLOCK`, `UNBLOCK` (displays as **RESTORE**)
 `BLOCK`/`UNBLOCK` carry a `protection` sub-dict; `MOVE` carries both `start/end` and `add_start/add_end` endpoint pairs; `DEVICE ADD`/`DEVICE REMOVE` carry a single `endpoint`. The `UNBLOCK` key is kept in saved files for backwards compatibility — all display labels come from `JOB_TYPE_SHORT` and say "RESTORE".
 
 `title_page` also carries the tailboard and safety state: `tailboard_signons`/`tailboard_done` and `safety_signons`/`safety_done`. The safety template path is global (`app_config["safety_template_path"]`).
+
+### Tailboards tab and living-document revision control
+
+The Tailboards tab (`_build_tailboards_tab`, `_TB_REF_DOCS`/`_TB_REF_NAMES`) manages four living reference documents (Tailboard Template, HBR, LOA, Safety Practice Regulations). Each has a per-project URL in `self.tailboard_refs`, downloads with `extra_headers=self._build_tailboard_headers()` (`tailboard_request_headers` setting, falls back to master `request_headers`), and saves under a canonical filename (`_TB_REF_NAMES`) so 👁 Open and `_tailboard_template_path()` can find it. `_tailboard_template_path()` prefers the project's `Tailboards/Tailboard_Template.*` over `tailboard-template.pdf` beside the script.
+
+Two archiving helpers exist — don't confuse them:
+
+- `_archive_existing(folder, name)` — moves every file whose stem starts with *name* into `Archive/` **unrenamed**. Used by the drawings download path (`organize=True`).
+- `_archive_revision(folder, fname)` — moves one exact file into `Archive/` **renamed with a timestamp** (`stem_YYYY-MM-DD_HH-MM-SS.ext`, counter on collision), so several same-day revisions coexist. Used by `_upload_docs_to` (all document-tab uploads), `_tb_upload_ref`, and `_download_with_progress(archive_revisions=True)`.
+
+`_iter_project_files()` skips `archive/` dirs when recursing and `_refresh_doc_listbox` lists files only, so archived revisions stay out of exports and listboxes automatically.
 
 ### JSON key names vs Python attribute names
 
@@ -192,10 +204,12 @@ RedLineApp.__init__
   Maintenance Standards/       ← downloaded maintenance standard files
   Engineering Standards/       ← downloaded engineering standard files
   CROW Outage/                 ← CROW-related files + attached documents
-  Tailboards/
+  Tailboards/                  ← reference docs (Tailboard_Template/HBR/LOA/…) + uploads
+    Archive/                   ← timestamped superseded revisions (created on demand)
     Completed/                 ← timestamped tailboard records
   Safety Documents/
     Completed/                 ← timestamped safety records + uploads
-  Other Documents/             ← free-form uploads
+      Archive/                 ← timestamped superseded revisions (created on demand)
+  Other Documents/             ← free-form uploads (Archive/ on demand)
   Other/
 ```
