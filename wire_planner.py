@@ -2790,14 +2790,20 @@ def _pdf_work_orders(bld, jobs, drw_reg, size="11x17 Landscape"):
             draw_row(jt, desc_n, _ep_flat(job.get("start",{})),
                      job.get("wire",""), _ep_flat(job.get("end",{})))
         elif jt == "MOVE":
-            draw_row("MOVE-REMOVE", desc,
+            notes = job.get("notes", "").strip()
+            desc_n = desc + (" | " + notes if notes else "")
+            draw_row("MOVE-REMOVE", desc_n,
                      _ep_flat(job.get("start",{})), job.get("wire",""),
                      _ep_flat(job.get("end",{})))
             draw_row("MOVE-ADD", "",
                      _ep_flat(job.get("add_start",{})), job.get("add_wire",""),
                      _ep_flat(job.get("add_end",{})))
         elif jt in ("BLOCK","UNBLOCK"):
-            draw_row(jt, desc, _prot_flat(job.get("protection",{})), "", "")
+            notes = job.get("notes", "").strip()
+            prot_s = _prot_flat(job.get("protection", {}))
+            if notes:
+                prot_s += (" | " if prot_s else "") + notes
+            draw_row(jt, desc, prot_s, "", "")
         elif jt == "TESTING":
             draw_row(jt, desc, job.get("notes",""), "", "")
         elif jt == "ISOLATION":
