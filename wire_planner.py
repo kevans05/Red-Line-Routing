@@ -2,9 +2,34 @@
 """
 Red-Line-Routing
 ----------------
-All-in-one electrical job planner: work orders, drawings, relay settings, CROWs.
-Save/load plans as project folders with .redline JSON and organised subfolders.
-Export Wizard builds print-ready PDF packages, hyperlinked HTML, and tablet output.
+All-in-one electrical job planner: work orders, drawings, relay settings, CROWs,
+tailboards, safety documents.  Save/load plans as project folders with .redline
+JSON and organised subfolders.  Export Wizard builds print-ready PDF packages,
+hyperlinked HTML, and zip packages for tablets.
+
+Single-file application — layers in dependency order, top to bottom:
+
+  1. Module data factories & UI helpers   empty_job(), JOB_TYPE_SHORT,
+                                          combobox search/filter bindings
+  2. Reusable widgets & job dialogs       DrawingAwareFrame, EndpointFrame,
+                                          JobDialog, protection dialogs
+  3. Job-preview formatting & theme       format_job(), _ROW_STYLE, _esc()
+  4. Export Wizard HTML generators        _ew_* functions (no GUI)
+  5. Tablet zip package                   _iter_project_files(), _build_tablet_zip()
+  6. PDF package generation               _SimplePDFBuilder, _PDFPage, _pdf_*,
+                                          _collect_pdfs(), _build_print_pdf()
+  7. ExportWizard dialog                  3-step export wizard
+  8. Registry dialogs & drawing search    DrawingSearchDialog, download helpers,
+                                          browser cookie grabber
+  9. Global app database                  _AppDB (~/.redlinerouting.db),
+                                          _GlobalDrawingCache
+ 10. Startup flow & project wizard        SoftwareSetupDialog, LandingDialog,
+                                          ProjectWizard
+ 11. RedLineApp                           the main tk.Tk window
+
+Companion packages (must stay next to this file):
+  drawing_search/   corporate drawing search client (parser, cache, HTTP)
+  pypdf/            vendored pypdf with local patches — see CLAUDE.md
 """
 
 # stdlib
@@ -187,6 +212,23 @@ def _get_prot_drawings(prot):
                      "drawing_url":  prot.get("drawing_url", ""),
                      "drawing_cell": prot.get("drawing_cell", "")}]
     return drawings
+
+
+# Short job-type labels used in the Work Order and Implementation treeviews.
+# Single source of truth — the internal type key "UNBLOCK" is kept for
+# backwards compatibility with saved .redline files, but displays as RESTORE.
+JOB_TYPE_SHORT = {
+    "REMOVE":        "REMOVE",
+    "ADD":           "ADD",
+    "MOVE":          "MOVE",
+    "BLOCK":         "BLOCK PROT.",
+    "UNBLOCK":       "RESTORE PROT.",
+    "TESTING":       "TESTING",
+    "ISOLATION":     "ISOLATION",
+    "CR_PROT":       "CR PROTECTION",
+    "DEVICE ADD":    "INSTALL DEVICE",
+    "DEVICE REMOVE": "REMOVE DEVICE",
+}
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -2008,6 +2050,38 @@ _DOC_EXTS  = {".doc", ".docx"}
 _EMBED_EXTS = _PDF_EXTS | _DOC_EXTS
 
 
+def _iter_project_files(project_folder, subfolder, recurse=False, exts=None):
+    """Yield (full_path, rel_path) for files in <project_folder>/<subfolder>.
+
+    Shared scanner for every export path (PDF package, HTML embeds, tablet
+    zip) so they all apply the same rules:
+      - hidden files (leading dot) are skipped
+      - when recursing, any directory named "archive" is skipped
+      - rel_path always uses forward slashes (HTML / zip friendly)
+      - exts: optional set of lowercase extensions (".pdf") to keep;
+        None keeps every file
+    """
+    base = os.path.join(project_folder, subfolder)
+    if not os.path.isdir(base):
+        return
+    def _want(name):
+        if name.startswith("."):
+            return False
+        return exts is None or os.path.splitext(name)[1].lower() in exts
+    if recurse:
+        for root, dirs, files in os.walk(base):
+            dirs[:] = sorted(d for d in dirs if d.lower() != "archive")
+            for f in sorted(files):
+                if _want(f):
+                    full = os.path.join(root, f)
+                    yield full, os.path.relpath(full, project_folder).replace("\\", "/")
+    else:
+        for f in sorted(os.listdir(base)):
+            full = os.path.join(base, f)
+            if os.path.isfile(full) and _want(f):
+                yield full, os.path.join(subfolder, f).replace("\\", "/")
+
+
 def _ew_embedded_files(project_folder, subfolder, mode, css_class="page-content",
                        recurse=False, crow_files=None):
     """Append embedded/linked local documents after a registry section.
@@ -2028,24 +2102,10 @@ def _ew_embedded_files(project_folder, subfolder, mode, css_class="page-content"
             if os.path.isfile(fpath):
                 rel = os.path.join(subfolder, fname).replace("\\", "/")
                 found.append((fname, rel))
-    elif os.path.isdir(full_dir):
-        found = []
-        if recurse:
-            for root, dirs, files in os.walk(full_dir):
-                dirs[:] = sorted(d for d in dirs if d.lower() != "archive")
-                for f in sorted(files):
-                    if os.path.splitext(f)[1].lower() in _EMBED_EXTS:
-                        full = os.path.join(root, f)
-                        rel  = os.path.relpath(full, project_folder).replace("\\", "/")
-                        found.append((f, rel))
-        else:
-            for f in sorted(os.listdir(full_dir)):
-                fpath = os.path.join(full_dir, f)
-                if os.path.isfile(fpath) and os.path.splitext(f)[1].lower() in _EMBED_EXTS:
-                    rel = os.path.join(subfolder, f).replace("\\", "/")
-                    found.append((f, rel))
     else:
-        return ""
+        found = [(os.path.basename(full), rel)
+                 for full, rel in _iter_project_files(
+                     project_folder, subfolder, recurse=recurse, exts=_EMBED_EXTS)]
 
     if not found:
         return ""
@@ -2107,36 +2167,14 @@ def _build_tablet_zip(app, html, folder, inc, sections, project, date_s):
 
     Returns the path of the written zip.
     """
-    def _files_under(sub, recurse):
-        base = os.path.join(folder, sub)
-        out = []
-        if not os.path.isdir(base):
-            return out
-        if recurse:
-            for root, dirs, files in os.walk(base):
-                dirs[:] = sorted(d for d in dirs if d.lower() != "archive")
-                for f in sorted(files):
-                    if f.startswith("."):
-                        continue
-                    full = os.path.join(root, f)
-                    out.append((full, os.path.relpath(full, folder).replace("\\", "/")))
-        else:
-            for f in sorted(os.listdir(base)):
-                if f.startswith("."):
-                    continue
-                full = os.path.join(base, f)
-                if os.path.isfile(full):
-                    out.append((full, os.path.join(sub, f).replace("\\", "/")))
-        return out
-
     file_entries = []                      # (full_path, rel_path, section_key)
     for key, sub, rec in _TABLET_SECTION_DIRS:
         if inc.get(key) != "print":
             continue
-        for full, rel in _files_under(sub, rec):
+        for full, rel in _iter_project_files(folder, sub, recurse=rec):
             file_entries.append((full, rel, key))
     # CROW attachments are linked from the cover page regardless of sections
-    for full, rel in _files_under("CROW Outage", False):
+    for full, rel in _iter_project_files(folder, "CROW Outage"):
         file_entries.append((full, rel, "crow"))
 
     # Project JSON — identical structure to a saved .redline file so the
@@ -3029,28 +3067,11 @@ def _collect_pdfs(folder, subfolder, recurse=False):
     Collects .pdf files directly; converts .txt, .docx, .doc to PDF.
     """
     result = []
-    full = os.path.join(folder, subfolder)
-    if not os.path.isdir(full):
-        return result
-
-    def _try_file(fpath):
-        ext = os.path.splitext(fpath)[1].lower()
-        if ext not in _CONVERTIBLE_EXTS:
-            return
+    for fpath, _rel in _iter_project_files(folder, subfolder, recurse=recurse,
+                                           exts=_CONVERTIBLE_EXTS):
         data, _ = _convert_file_to_pdf(fpath)
         if data:
             result.append(data)
-
-    if recurse:
-        for root, dirs, files in os.walk(full):
-            dirs[:] = sorted(d for d in dirs if d.lower() != "archive")
-            for f in sorted(files):
-                _try_file(os.path.join(root, f))
-    else:
-        for f in sorted(os.listdir(full)):
-            fpath = os.path.join(full, f)
-            if os.path.isfile(fpath):
-                _try_file(fpath)
     return result
 
 
@@ -5099,12 +5120,8 @@ def _grab_browser_cookies(domain: str) -> dict:
     except OSError:
         profiles = []
     for profile in ["Default"] + [p for p in profiles if p.startswith("Profile")]:
-        for rel in ("Network", ""):
-            p = os.path.join(browser_dir, profile,
-                             "Network" if rel == "Network" else "", "Cookies").rstrip(os.sep)
-            # Normalise: join properly rather than relying on string ops
-            p = os.path.join(browser_dir, profile, "Network", "Cookies") if rel == "Network" \
-                else os.path.join(browser_dir, profile, "Cookies")
+        for p in (os.path.join(browser_dir, profile, "Network", "Cookies"),
+                  os.path.join(browser_dir, profile, "Cookies")):
             if os.path.isfile(p):
                 cookies_path = p
                 break
@@ -5117,8 +5134,8 @@ def _grab_browser_cookies(domain: str) -> dict:
 
     domain_clean = domain.lstrip(".")
 
-    def _query_cookies_db(path: str) -> list:
-        conn = sqlite3.connect(path)
+    def _query_cookies_db(path: str, uri: bool = False) -> list:
+        conn = sqlite3.connect(path, uri=uri)
         try:
             return conn.execute(
                 "SELECT name, encrypted_value FROM cookies"
@@ -5133,18 +5150,9 @@ def _grab_browser_cookies(domain: str) -> dict:
     # ── Try 1: SQLite immutable URI (bypasses WAL/lock files)
     # Windows absolute paths need three slashes: file:///C:/path/…
     path_fwd = cookies_path.replace("\\", "/")
-    if len(path_fwd) >= 2 and path_fwd[1] == ":":
-        uri = "file:///" + path_fwd + "?immutable=1"
-    else:
-        uri = "file://" + path_fwd + "?immutable=1"
+    prefix   = "file:///" if len(path_fwd) >= 2 and path_fwd[1] == ":" else "file://"
     try:
-        conn = sqlite3.connect(uri, uri=True)
-        rows = conn.execute(
-            "SELECT name, encrypted_value FROM cookies"
-            " WHERE host_key LIKE ? OR host_key LIKE ?",
-            (f"%{domain_clean}%", f"%.{domain_clean}%"),
-        ).fetchall()
-        conn.close()
+        rows = _query_cookies_db(prefix + path_fwd + "?immutable=1", uri=True)
     except Exception:
         pass
 
@@ -8591,10 +8599,7 @@ class RedLineApp(tk.Tk):
             tags=("SAFETY", "COMPLETED") if saf_done else ("SAFETY",))
         self.impl_tree.tag_configure("SAFETY", foreground="#1a7a30", font=("", 9, "bold"))
 
-        disp = {"REMOVE":"REMOVE","ADD":"ADD","MOVE":"MOVE",
-                "BLOCK":"BLOCK PROT.","UNBLOCK":"RESTORE PROT.","TESTING":"TESTING",
-                "ISOLATION":"ISOLATION","CR_PROT":"CR PROTECTION",
-                "DEVICE ADD":"INSTALL DEVICE","DEVICE REMOVE":"REMOVE DEVICE"}
+        disp = JOB_TYPE_SHORT
         self.impl_tree.tag_configure("MB_WARN", foreground="#e59866")
         for i, job in enumerate(self.jobs):
             done   = job.get("completed", False)
@@ -9522,6 +9527,89 @@ class RedLineApp(tk.Tk):
 
     # ── Safety Documents planning tab ─────────────────────────────
 
+    # ── Generic document-folder helpers ────────────────────────────
+    # The Safety Documents and Other Documents tabs are both a toolbar +
+    # Listbox view over one project subfolder.  These helpers hold the single
+    # implementation; each tab's named methods are thin delegates (same
+    # pattern as _print_selected/_print_all on the registry tabs).
+
+    def _make_doc_listbox(self, parent, frame_label, open_handler):
+        """Build LabelFrame + scrollable Listbox; return the Listbox."""
+        lf = ttk.LabelFrame(parent, text=frame_label, padding=4)
+        lf.pack(fill="both", expand=True, padx=6, pady=4)
+        lb_f = ttk.Frame(lf); lb_f.pack(fill="both", expand=True)
+        lb = tk.Listbox(lb_f, selectmode="browse", font=("Courier", 9),
+                        activestyle="none", relief="flat", borderwidth=0)
+        vsb = ttk.Scrollbar(lb_f, orient="vertical", command=lb.yview)
+        lb.configure(yscrollcommand=vsb.set)
+        lb.pack(side="left", fill="both", expand=True)
+        vsb.pack(side="right", fill="y")
+        lb.bind("<Double-1>", open_handler)
+        return lb
+
+    def _refresh_doc_listbox(self, lb, dirpath, newest_first=False):
+        """Reload a Listbox with the visible files of *dirpath*."""
+        lb.delete(0, "end")
+        if not (dirpath and os.path.isdir(dirpath)):
+            return
+        for fn in sorted(
+                (f for f in os.listdir(dirpath)
+                 if os.path.isfile(os.path.join(dirpath, f))
+                 and not f.startswith(".")),
+                reverse=newest_first):
+            lb.insert("end", fn)
+
+    def _open_doc_from_listbox(self, lb, dirpath):
+        """Open the file selected in *lb* with the OS default handler."""
+        sel = lb.curselection()
+        if not (sel and dirpath):
+            return
+        path = os.path.join(dirpath, lb.get(sel[0]))
+        if os.path.exists(path):
+            _open_file(path)
+
+    def _upload_docs_to(self, subparts, title, after=()):
+        """Browse for documents, copy them into a project subfolder.
+
+        subparts: path components under the project folder
+        after:    callbacks run once the copies finish (refreshers)
+        """
+        if not self.project_folder:
+            messagebox.showinfo("Save Project First",
+                "Save the project before uploading documents.")
+            return
+        paths = filedialog.askopenfilenames(
+            title=title,
+            filetypes=[("PDF / Word / Text", "*.pdf *.docx *.doc *.txt"),
+                       ("All files", "*.*")])
+        if not paths:
+            return
+        dest = os.path.join(self.project_folder, *subparts)
+        os.makedirs(dest, exist_ok=True)
+        for src in paths:
+            try:
+                shutil.copy2(src, os.path.join(dest, os.path.basename(src)))
+            except Exception as exc:
+                messagebox.showwarning("Copy Failed",
+                    f"Could not copy {os.path.basename(src)}:\n{exc}")
+        for cb in after:
+            cb()
+
+    def _reveal_project_subfolder(self, *parts):
+        """Open a project subfolder in the OS file manager (created if needed)."""
+        if not self.project_folder:
+            messagebox.showinfo("Save Project First", "Save the project first.")
+            return
+        d = os.path.join(self.project_folder, *parts)
+        os.makedirs(d, exist_ok=True)
+        _reveal_file(d)
+
+    # ── Safety Documents tab ───────────────────────────────────────
+
+    def _saf_completed_dir(self):
+        saf = self._safety_dir()
+        return os.path.join(saf, "Completed") if saf else None
+
     def _build_safety_tab(self, parent):
         """Safety Documents management tab in the planning notebook."""
         tb = ttk.Frame(parent, padding=(4, 4, 4, 2)); tb.pack(fill="x")
@@ -9531,67 +9619,27 @@ class RedLineApp(tk.Tk):
                    command=self._open_safety_folder).pack(side="left", padx=(6, 0))
         ttk.Label(tb, text="  double-click to open",
                   foreground="grey", font=("", 8)).pack(side="left", padx=8)
-
-        lf = ttk.LabelFrame(parent, text="Safety Documents / Completed", padding=4)
-        lf.pack(fill="both", expand=True, padx=6, pady=4)
-        lb_f = ttk.Frame(lf); lb_f.pack(fill="both", expand=True)
-        self._saf_tab_lb = tk.Listbox(lb_f, selectmode="browse",
-                                       font=("Courier", 9), activestyle="none",
-                                       relief="flat", borderwidth=0)
-        vsb = ttk.Scrollbar(lb_f, orient="vertical", command=self._saf_tab_lb.yview)
-        self._saf_tab_lb.configure(yscrollcommand=vsb.set)
-        self._saf_tab_lb.pack(side="left", fill="both", expand=True)
-        vsb.pack(side="right", fill="y")
-        self._saf_tab_lb.bind("<Double-1>", self._saf_tab_open)
+        self._saf_tab_lb = self._make_doc_listbox(
+            parent, "Safety Documents / Completed", self._saf_tab_open)
         self._refresh_safety_tab()
 
     def _refresh_safety_tab(self):
-        if not hasattr(self, "_saf_tab_lb"): return
-        self._saf_tab_lb.delete(0, "end")
-        saf_dir = self._safety_dir()
-        completed_dir = os.path.join(saf_dir, "Completed") if saf_dir else None
-        if not (completed_dir and os.path.isdir(completed_dir)):
-            return
-        for fn in sorted(
-                (f for f in os.listdir(completed_dir) if not f.startswith(".")),
-                reverse=True):
-            self._saf_tab_lb.insert("end", fn)
+        if hasattr(self, "_saf_tab_lb"):
+            self._refresh_doc_listbox(self._saf_tab_lb, self._saf_completed_dir(),
+                                      newest_first=True)
 
     def _saf_tab_open(self, _=None):
-        sel = self._saf_tab_lb.curselection()
-        if not sel: return
-        saf_dir = self._safety_dir()
-        if not saf_dir: return
-        path = os.path.join(saf_dir, "Completed", self._saf_tab_lb.get(sel[0]))
-        if os.path.exists(path): _open_file(path)
+        self._open_doc_from_listbox(self._saf_tab_lb, self._saf_completed_dir())
 
     def _upload_safety_doc(self):
-        if not self.project_folder:
-            messagebox.showinfo("Save Project First",
-                "Save the project before uploading documents."); return
-        paths = filedialog.askopenfilenames(
-            title="Upload Safety Documents",
-            filetypes=[("PDF / Word / Text", "*.pdf *.docx *.doc *.txt"),
-                       ("All files", "*.*")])
-        if not paths: return
-        dest = os.path.join(self.project_folder, "Safety Documents", "Completed")
-        os.makedirs(dest, exist_ok=True)
-        for src in paths:
-            try:
-                shutil.copy2(src, os.path.join(dest, os.path.basename(src)))
-            except Exception as exc:
-                messagebox.showwarning("Copy Failed",
-                    f"Could not copy {os.path.basename(src)}:\n{exc}")
-        self._refresh_safety_tab()
-        self._refresh_saf_revisions() if hasattr(self, "_saf_rev_lb") else None
+        after = [self._refresh_safety_tab]
+        if hasattr(self, "_saf_rev_lb"):
+            after.append(self._refresh_saf_revisions)
+        self._upload_docs_to(("Safety Documents", "Completed"),
+                             "Upload Safety Documents", after)
 
     def _open_safety_folder(self):
-        if not self.project_folder:
-            messagebox.showinfo("Save Project First",
-                "Save the project first."); return
-        d = os.path.join(self.project_folder, "Safety Documents")
-        os.makedirs(d, exist_ok=True)
-        _reveal_file(d)
+        self._reveal_project_subfolder("Safety Documents")
 
     # ── Other Documents tab ────────────────────────────────────────
 
@@ -9601,7 +9649,7 @@ class RedLineApp(tk.Tk):
         return os.path.join(self.project_folder, "Other Documents")
 
     def _build_other_docs_tab(self, parent):
-        """Other Documents tab — simple file upload and management."""
+        """Other Documents tab — plain file upload and management."""
         tb = ttk.Frame(parent, padding=(4, 4, 4, 2)); tb.pack(fill="x")
         ttk.Button(tb, text="⬆ Upload Document(s)",
                    command=self._upload_other_doc).pack(side="left")
@@ -9611,77 +9659,37 @@ class RedLineApp(tk.Tk):
                    command=self._remove_other_doc).pack(side="left", padx=(6, 0))
         ttk.Label(tb, text="  double-click to open",
                   foreground="grey", font=("", 8)).pack(side="left", padx=8)
-
-        lf = ttk.LabelFrame(parent, text="Uploaded Documents", padding=4)
-        lf.pack(fill="both", expand=True, padx=6, pady=4)
-        lb_f = ttk.Frame(lf); lb_f.pack(fill="both", expand=True)
-        self._other_docs_lb = tk.Listbox(lb_f, selectmode="browse",
-                                          font=("Courier", 9), activestyle="none",
-                                          relief="flat", borderwidth=0)
-        vsb = ttk.Scrollbar(lb_f, orient="vertical", command=self._other_docs_lb.yview)
-        self._other_docs_lb.configure(yscrollcommand=vsb.set)
-        self._other_docs_lb.pack(side="left", fill="both", expand=True)
-        vsb.pack(side="right", fill="y")
-        self._other_docs_lb.bind("<Double-1>", self._other_doc_open)
+        self._other_docs_lb = self._make_doc_listbox(
+            parent, "Uploaded Documents", self._other_doc_open)
         self._refresh_other_docs_tab()
 
     def _refresh_other_docs_tab(self):
-        if not hasattr(self, "_other_docs_lb"): return
-        self._other_docs_lb.delete(0, "end")
-        d = self._other_docs_dir()
-        if not (d and os.path.isdir(d)): return
-        for fn in sorted(f for f in os.listdir(d)
-                         if os.path.isfile(os.path.join(d, f)) and not f.startswith(".")):
-            self._other_docs_lb.insert("end", fn)
+        if hasattr(self, "_other_docs_lb"):
+            self._refresh_doc_listbox(self._other_docs_lb, self._other_docs_dir())
 
     def _other_doc_open(self, _=None):
-        sel = self._other_docs_lb.curselection()
-        if not sel: return
-        d = self._other_docs_dir()
-        if not d: return
-        path = os.path.join(d, self._other_docs_lb.get(sel[0]))
-        if os.path.exists(path): _open_file(path)
+        self._open_doc_from_listbox(self._other_docs_lb, self._other_docs_dir())
 
     def _upload_other_doc(self):
-        if not self.project_folder:
-            messagebox.showinfo("Save Project First",
-                "Save the project before uploading documents."); return
-        paths = filedialog.askopenfilenames(
-            title="Upload Other Documents",
-            filetypes=[("PDF / Word / Text", "*.pdf *.docx *.doc *.txt"),
-                       ("All files", "*.*")])
-        if not paths: return
-        dest = self._other_docs_dir()
-        os.makedirs(dest, exist_ok=True)
-        for src in paths:
-            try:
-                shutil.copy2(src, os.path.join(dest, os.path.basename(src)))
-            except Exception as exc:
-                messagebox.showwarning("Copy Failed",
-                    f"Could not copy {os.path.basename(src)}:\n{exc}")
-        self._refresh_other_docs_tab()
+        self._upload_docs_to(("Other Documents",), "Upload Other Documents",
+                             (self._refresh_other_docs_tab,))
 
     def _remove_other_doc(self):
         sel = self._other_docs_lb.curselection()
-        if not sel: return
+        d   = self._other_docs_dir()
+        if not (sel and d):
+            return
         fn = self._other_docs_lb.get(sel[0])
-        d  = self._other_docs_dir()
-        if not d: return
-        path = os.path.join(d, fn)
         if not messagebox.askyesno("Remove", f"Delete  {fn}  from Other Documents?"):
             return
         try:
-            os.remove(path)
+            os.remove(os.path.join(d, fn))
         except Exception as exc:
             messagebox.showerror("Error", str(exc)); return
         self._refresh_other_docs_tab()
 
     def _open_other_docs_folder(self):
-        if not self.project_folder:
-            messagebox.showinfo("Save Project First", "Save the project first."); return
-        d = self._other_docs_dir()
-        os.makedirs(d, exist_ok=True)
-        _reveal_file(d)
+        self._reveal_project_subfolder("Other Documents")
 
     def _show_impl_prep(self):
         """Generate the project briefing shown when the PREP row is selected."""
@@ -9788,10 +9796,7 @@ class RedLineApp(tk.Tk):
 
     def _refresh_list(self):
         for iid in self.tree.get_children(): self.tree.delete(iid)
-        disp = {"REMOVE":"REMOVE","ADD":"ADD","MOVE":"MOVE","BLOCK":"BLOCK PROT.",
-                "UNBLOCK":"UNBLOCK PROT.","TESTING":"TESTING","ISOLATION":"ISOLATION",
-                "CR_PROT":"CR PROTECTION",
-                "DEVICE ADD":"INSTALL DEVICE","DEVICE REMOVE":"REMOVE DEVICE"}
+        disp = JOB_TYPE_SHORT
         for i,job in enumerate(self.jobs):
             done = job.get("completed", False)
             tags = (job["type"], "COMPLETED") if done else (job["type"],)
