@@ -19,13 +19,16 @@ python3 -c "import ast; ast.parse(open('wire_planner.py').read()); print('OK')"
 ## Repository layout
 
 ```
-wire_planner.py   # main application (~8 300 lines)
+wire_planner.py   # main application (~10 200 lines)
 drawing_search/   # drawing search client package (parser, cache, HTTP client)
 pypdf/            # vendored pypdf 6.13.1 (patched — see below)
+README.md         # user-facing documentation
 .gitignore        # ignores __pycache__ and *.pyc
 ```
 
 No tests, no CI config, no requirements file.
+
+`wire_planner.py` and `drawing_search/` must be updated together: the import block detects an older `drawing_search` at runtime (`_DSC_HAS_COOKIE_CB`) and degrades gracefully rather than crashing, but features silently disable.
 
 ### Vendored pypdf patches
 
@@ -42,15 +45,19 @@ Reading top-to-bottom follows the dependency order:
 
 | Lines (approx) | Layer |
 |---|---|
-| 1 – 215 | Module-level data factories and UI helpers |
-| 219 – 1250 | Reusable widget classes and job/protection dialogs (`DrawingAwareFrame`, `EndpointFrame`, `JobDialog`, …) |
-| 1250 – 1390 | Job-preview text formatting (`format_job`) and shared colour theme (`_ROW_STYLE`, `_ROW_BORDER`, `_esc`) |
-| 1395 – 1895 | Export Wizard HTML generators (`_ew_*` functions, no GUI) |
-| 1897 – 2740 | PDF package generation (`_SimplePDFBuilder`, `_PDFPage`, `_pdf_*` section builders, `_build_print_pdf`) |
-| 2741 – 3150 | `ExportWizard` dialog |
-| 3152 – 4310 | Registry dialogs, drawing search, download helpers |
-| 4313 – 5250 | Startup flow dialogs and the project wizard |
-| 5251 – end | `RedLineApp` — the main `tk.Tk` window |
+| 1 – 260 | Module-level data factories and UI helpers (`empty_job`, `JOB_TYPE_SHORT`, combobox search bindings) |
+| 261 – 1460 | Reusable widget classes and job/protection dialogs (`DrawingAwareFrame`, `EndpointFrame`, `JobDialog`, …) |
+| 1462 – 1715 | Job-preview text formatting (`format_job`) and shared colour theme (`_ROW_STYLE`, `_ROW_BORDER`, `_esc`) |
+| 1717 – 2150 | Export Wizard HTML generators (`_ew_*` functions, no GUI) + shared file scanner `_iter_project_files` |
+| 2156 – 2435 | Tablet zip package (`_build_tablet_zip`, `_TABLET_SECTION_DIRS`) |
+| 2437 – 3165 | PDF package generation (`_SimplePDFBuilder`, `_PDFPage`, `_pdf_*` section builders, `_collect_pdfs`, `_build_print_pdf`) |
+| 3169 – 4170 | `ExportWizard` dialog |
+| 4176 – 4655 | Registry dialogs, drawing search, download helpers, browser cookie grabber |
+| 4660 – 5570 | `_AppDB` global database + `_GlobalDrawingCache` |
+| 5575 – 6530 | Startup flow dialogs and the project wizard |
+| 6535 – end | `RedLineApp` — the main `tk.Tk` window |
+
+Shared module-level constants worth knowing: `JOB_TYPE_SHORT` (single source for treeview type labels — RESTORE displays for the `UNBLOCK` key), `_iter_project_files()` (one scanner used by PDF export, HTML embeds and the tablet zip — skips hidden files and `archive/` dirs).
 
 ## Key data model
 
@@ -82,8 +89,10 @@ Standards library flow: `_remember_standard()` captures entries as they're added
 
 Drawing cache freshness: `_schedule_drawing_cache_refresh()` starts a timer in `__init__` that checks every 15 minutes (`_CACHE_CHECK_INTERVAL_MS`) and re-fetches entries older than 4 hours (`drawing_cache_refresh_hours` app setting overrides the default). Project open triggers the same stale-only refresh; the search dialog additionally revalidates in the background on every cache hit. A `_cache_refresh_running` flag prevents overlapping refresh runs.
 
-Job types: `REMOVE`, `ADD`, `MOVE`, `BLOCK`, `UNBLOCK`, `TESTING`.  
-`BLOCK`/`UNBLOCK` carry a `protection` sub-dict; `MOVE` carries both `start/end` and `add_start/add_end` endpoint pairs.
+Job types: `REMOVE`, `ADD`, `MOVE`, `BLOCK`, `UNBLOCK` (displays as **RESTORE**), `TESTING`, `ISOLATION`, `CR_PROT`, `DEVICE ADD`, `DEVICE REMOVE`.  
+`BLOCK`/`UNBLOCK` carry a `protection` sub-dict; `MOVE` carries both `start/end` and `add_start/add_end` endpoint pairs; `DEVICE ADD`/`DEVICE REMOVE` carry a single `endpoint`. The `UNBLOCK` key is kept in saved files for backwards compatibility — all display labels come from `JOB_TYPE_SHORT` and say "RESTORE".
+
+`title_page` also carries the tailboard and safety state: `tailboard_signons`/`tailboard_done` and `safety_signons`/`safety_done`. The safety template path is global (`app_config["safety_template_path"]`).
 
 ### JSON key names vs Python attribute names
 
@@ -113,13 +122,15 @@ Three output formats, selectable in step 1:
 | **HTML / PDF (digital)** | Screen-optimised HTML with live hyperlinks. |
 | **Tablet** | Zip package (`Tablet_<date>.zip`, built by `_build_tablet_zip`): `manifest.json` (format `redline-tablet-package` v1, section modes, file inventory) + `index.html` (large-text HTML with relative links) + `project.redline` (same JSON as a saved project) + the documents of every section set to "print" plus CROW attachments. Designed to be consumed by a future iOS reader app. |
 
-Step 2 picks sections; each optional section (Drawings, Relay Settings, Maintenance Standards, Engineering Standards) has a three-state mode:
+Step 2 picks sections; each optional section (`ExportWizard._SECTIONS`: Drawings, Relay Settings, Maintenance Standards, Engineering Standards, Tailboards, Safety Documents, Other Documents) has a three-state mode:
 
 - **Skip** — not included
-- **Print** — section table + downloaded documents included
+- **Print** — section table + downloaded documents included (Tailboards/Safety/Other have no generated table — documents only)
 - **TOC only** — listed on the cover page TOC as "printed separately" but no pages generated (for documents the user already has printed)
 
-Step 3 picks a paper size per section (Letter Portrait/Landscape, 11×17 Portrait/Landscape). The size names use the Unicode `×` in UI strings; `_SimplePDFBuilder.SIZES` carries both `x` and `×` key variants — keep both when editing.
+Step 2's optional-section list lives in a scrollable canvas and the wizard nav bar is packed `side="bottom"` first — keep both when adding sections, or the buttons vanish on small screens.
+
+Step 3 picks a paper size per generated section (Letter Portrait/Landscape, 11×17 Portrait/Landscape). Document-only sections don't appear in step 3. The size names use the Unicode `×` in UI strings; `_SimplePDFBuilder.SIZES` carries both `x` and `×` key variants — keep both when editing.
 
 ### PDF generation internals
 
@@ -148,6 +159,10 @@ Walks the full widget tree under `frame` and binds `<Enter>`/`<Leave>` to swap b
 ### Generic print helpers
 
 `_print_selected(tree, subfolder, label)` and `_print_all(subfolder)` are the single implementation for all eight "Print Selected / Print All" toolbar buttons across the four registry tabs (Drawings, Relay Settings, Maintenance Standards, Engineering Standards). Each tab's named method is a one-line delegate.
+
+### Generic document-folder helpers
+
+The Safety Documents and Other Documents tabs share one implementation: `_make_doc_listbox` (LabelFrame + scrollable Listbox), `_refresh_doc_listbox`, `_open_doc_from_listbox`, `_upload_docs_to(subparts, title, after)` and `_reveal_project_subfolder(*parts)`. Tab-specific methods are thin delegates — extend the helpers rather than re-implementing the pattern for new document tabs.
 
 ### Opening generated files
 
@@ -178,6 +193,9 @@ RedLineApp.__init__
   Engineering Standards/       ← downloaded engineering standard files
   CROW Outage/                 ← CROW-related files + attached documents
   Tailboards/
-    Completed/
+    Completed/                 ← timestamped tailboard records
+  Safety Documents/
+    Completed/                 ← timestamped safety records + uploads
+  Other Documents/             ← free-form uploads
   Other/
 ```
