@@ -184,6 +184,32 @@ def _empty_tailboard_refs():
             "safety_regs": {"url": ""}}
 
 
+def _snapshot_file(folder, fname):
+    """Copy *folder*/*fname* into *folder*/Archive/ with a timestamp suffix.
+
+    Unlike _archive_revision the original file is NOT removed — this records
+    the pre-edit state while leaving the file in place for the user to edit.
+    Returns the snapshot path, or None if the source file doesn't exist.
+    """
+    src = os.path.join(folder, fname)
+    if not os.path.isfile(src):
+        return None
+    archive_dir = os.path.join(folder, "Archive")
+    stem, ext = os.path.splitext(fname)
+    stamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    try:
+        os.makedirs(archive_dir, exist_ok=True)
+        dest = os.path.join(archive_dir, f"{stem}_{stamp}{ext}")
+        n = 1
+        while os.path.exists(dest):
+            dest = os.path.join(archive_dir, f"{stem}_{stamp}_{n}{ext}")
+            n += 1
+        shutil.copy2(src, dest)
+        return dest
+    except OSError:
+        return None
+
+
 def _file_url_to_path(url: str) -> str:
     """Convert a file:// URL to a local filesystem path.
 
@@ -9727,6 +9753,24 @@ class RedLineApp(tk.Tk):
         os.makedirs(d, exist_ok=True)
         _reveal_file(d)
 
+    def _open_for_editing(self, lb, dirpath):
+        """Snapshot the selected file then open it for editing.
+
+        Saves a pre-edit copy into Archive/ (timestamped, original kept
+        in place) so the state before this editing session is preserved,
+        then opens the file with the OS default application.
+        """
+        sel = lb.curselection()
+        if not (sel and dirpath):
+            return
+        fname = lb.get(sel[0])
+        fpath = os.path.join(dirpath, fname)
+        if not os.path.isfile(fpath):
+            messagebox.showinfo("File Not Found", f"{fname} was not found in the project folder.", parent=self)
+            return
+        _snapshot_file(dirpath, fname)
+        _open_file(fpath)
+
     # ── Safety Documents tab ───────────────────────────────────────
 
     def _saf_completed_dir(self):
@@ -9777,11 +9821,15 @@ class RedLineApp(tk.Tk):
         tb = ttk.Frame(parent, padding=(8, 4, 8, 2)); tb.pack(fill="x")
         ttk.Button(tb, text="⬆ Upload Document",
                    command=self._upload_tailboard_doc).pack(side="left")
+        ttk.Button(tb, text="✏ Edit Selected",
+                   command=self._tb_edit_doc).pack(side="left", padx=(6, 0))
+        ttk.Button(tb, text="📋 Save to Completed",
+                   command=self._tb_save_completed).pack(side="left", padx=(6, 0))
         ttk.Button(tb, text="⊞ Open Folder",
                    command=lambda: self._reveal_project_subfolder("Tailboards")).pack(side="left", padx=(6, 0))
         ttk.Button(tb, text="🗂 Old Revisions",
                    command=lambda: self._reveal_project_subfolder("Tailboards", "Archive")).pack(side="left", padx=(6, 0))
-        ttk.Label(tb, text="  double-click to open",
+        ttk.Label(tb, text="  ✏ Edit snapshots the current version before opening",
                   foreground="grey", font=("", 8)).pack(side="left", padx=8)
         self._tb_lb = self._make_doc_listbox(parent, "Tailboard Files", self._tb_open_doc)
         self._refresh_tailboards_tab()
@@ -9877,6 +9925,35 @@ class RedLineApp(tk.Tk):
             tb_dir = os.path.join(self.project_folder, "Tailboards") if self.project_folder else ""
             self._refresh_doc_listbox(self._tb_lb, tb_dir)
 
+    def _tb_edit_doc(self):
+        if hasattr(self, "_tb_lb") and self.project_folder:
+            self._open_for_editing(self._tb_lb,
+                                   os.path.join(self.project_folder, "Tailboards"))
+
+    def _tb_save_completed(self):
+        """Copy the selected tailboard file to Tailboards/Completed/ as a timestamped record."""
+        if not (hasattr(self, "_tb_lb") and self.project_folder):
+            return
+        sel = self._tb_lb.curselection()
+        if not sel:
+            messagebox.showinfo("Nothing Selected", "Select a file from the Tailboard Files list first.", parent=self)
+            return
+        fname = self._tb_lb.get(sel[0])
+        src = os.path.join(self.project_folder, "Tailboards", fname)
+        if not os.path.isfile(src):
+            return
+        completed = os.path.join(self.project_folder, "Tailboards", "Completed")
+        os.makedirs(completed, exist_ok=True)
+        stem, ext = os.path.splitext(fname)
+        stamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        dest_name = f"{stem}_{stamp}{ext}"
+        try:
+            shutil.copy2(src, os.path.join(completed, dest_name))
+        except Exception as exc:
+            messagebox.showerror("Save Failed", str(exc), parent=self); return
+        messagebox.showinfo("Saved",
+            f"Saved to  Tailboards/Completed/{dest_name}", parent=self)
+
     def _upload_tailboard_doc(self):
         self._upload_docs_to(("Tailboards",), "Upload Tailboard Document",
                              after=(self._refresh_tailboards_tab,))
@@ -9893,12 +9970,14 @@ class RedLineApp(tk.Tk):
         tb = ttk.Frame(parent, padding=(4, 4, 4, 2)); tb.pack(fill="x")
         ttk.Button(tb, text="⬆ Upload Document",
                    command=self._upload_safety_doc).pack(side="left")
+        ttk.Button(tb, text="✏ Edit Selected",
+                   command=self._saf_edit_doc).pack(side="left", padx=(6, 0))
         ttk.Button(tb, text="⊞ Open Folder",
                    command=self._open_safety_folder).pack(side="left", padx=(6, 0))
         ttk.Button(tb, text="🗂 Old Revisions",
                    command=lambda: self._reveal_project_subfolder(
                        "Safety Documents", "Completed", "Archive")).pack(side="left", padx=(6, 0))
-        ttk.Label(tb, text="  double-click to open — re-uploading a file archives the old revision",
+        ttk.Label(tb, text="  ✏ Edit snapshots before opening; re-uploading archives the old revision",
                   foreground="grey", font=("", 8)).pack(side="left", padx=8)
         self._saf_tab_lb = self._make_doc_listbox(
             parent, "Safety Documents / Completed", self._saf_tab_open)
@@ -9911,6 +9990,10 @@ class RedLineApp(tk.Tk):
 
     def _saf_tab_open(self, _=None):
         self._open_doc_from_listbox(self._saf_tab_lb, self._saf_completed_dir())
+
+    def _saf_edit_doc(self):
+        if hasattr(self, "_saf_tab_lb"):
+            self._open_for_editing(self._saf_tab_lb, self._saf_completed_dir())
 
     def _upload_safety_doc(self):
         after = [self._refresh_safety_tab]
@@ -9934,11 +10017,13 @@ class RedLineApp(tk.Tk):
         tb = ttk.Frame(parent, padding=(4, 4, 4, 2)); tb.pack(fill="x")
         ttk.Button(tb, text="⬆ Upload Document(s)",
                    command=self._upload_other_doc).pack(side="left")
+        ttk.Button(tb, text="✏ Edit Selected",
+                   command=self._other_doc_edit).pack(side="left", padx=(6, 0))
         ttk.Button(tb, text="⊞ Open Folder",
                    command=self._open_other_docs_folder).pack(side="left", padx=(6, 0))
         ttk.Button(tb, text="✕ Remove Selected",
                    command=self._remove_other_doc).pack(side="left", padx=(6, 0))
-        ttk.Label(tb, text="  double-click to open",
+        ttk.Label(tb, text="  ✏ Edit snapshots before opening",
                   foreground="grey", font=("", 8)).pack(side="left", padx=8)
         self._other_docs_lb = self._make_doc_listbox(
             parent, "Uploaded Documents", self._other_doc_open)
@@ -9950,6 +10035,10 @@ class RedLineApp(tk.Tk):
 
     def _other_doc_open(self, _=None):
         self._open_doc_from_listbox(self._other_docs_lb, self._other_docs_dir())
+
+    def _other_doc_edit(self):
+        if hasattr(self, "_other_docs_lb"):
+            self._open_for_editing(self._other_docs_lb, self._other_docs_dir())
 
     def _upload_other_doc(self):
         self._upload_docs_to(("Other Documents",), "Upload Other Documents",
