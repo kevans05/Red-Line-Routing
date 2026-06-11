@@ -6585,6 +6585,7 @@ class RedLineApp(tk.Tk):
         self.relay_registry = {}          # keyed by device_id
         self.maintenance_standards_registry = {}  # keyed by standard_id
         self.engineering_standards_registry = {}  # keyed by standard_id
+        self.tailboard_refs = {"hbr": {"url": ""}, "loa": {"url": ""}, "safety_regs": {"url": ""}}
         self._app_db = _AppDB()           # ~/.redlinerouting.db — settings, standards library, drawing cache
         self._drawing_cache = _GlobalDrawingCache(self._app_db)
         self.app_config = self._load_app_config()
@@ -6634,6 +6635,7 @@ class RedLineApp(tk.Tk):
             "notes": result.get("notes", ""),
             "crows": result.get("crows", []),
         }
+        self.tailboard_refs = {"hbr": {"url": ""}, "loa": {"url": ""}, "safety_regs": {"url": ""}}
 
         proj = result["project_name"]
         safe = "".join(c if c not in r'<>:"/\|?*' else "_" for c in proj) if proj else "RedLine_Plan"
@@ -6838,6 +6840,7 @@ class RedLineApp(tk.Tk):
         mt = ttk.Frame(nb); nb.add(mt, text="  Maintenance Standards  "); self._build_maintenance_tab(mt)
         et = ttk.Frame(nb); nb.add(et, text="  Engineering Standards  "); self._build_engineering_tab(et)
         ct = ttk.Frame(nb); nb.add(ct, text="  CROW  ");             self._build_title_tab(ct)
+        tbt = ttk.Frame(nb); nb.add(tbt, text="  Tailboards  ");      self._build_tailboards_tab(tbt)
         sdt = ttk.Frame(nb); nb.add(sdt, text="  Safety Documents  "); self._build_safety_tab(sdt)
         odt = ttk.Frame(nb); nb.add(odt, text="  Other Documents  ");  self._build_other_docs_tab(odt)
 
@@ -7229,7 +7232,7 @@ class RedLineApp(tk.Tk):
                 headers[key] = value
         return headers
 
-    def _download_with_progress(self, title, targets, dest_dir, organize=False, extra_headers=None):
+    def _download_with_progress(self, title, targets, dest_dir, organize=False, extra_headers=None, on_complete=None):
         """Shared download engine with thread-safe progress dialog.
 
         Uses a queue.Queue so the worker thread never touches tkinter directly —
@@ -7289,7 +7292,11 @@ class RedLineApp(tk.Tk):
         # Footer
         tk.Frame(dlg, bg="#d5d8dc", height=1).pack(fill="x")
         bf = ttk.Frame(dlg, padding=(14, 8)); bf.pack(fill="x")
-        close_btn = ttk.Button(bf, text="Close", state="disabled", command=dlg.destroy)
+        def _on_close():
+            dlg.destroy()
+            if on_complete:
+                on_complete()
+        close_btn = ttk.Button(bf, text="Close", state="disabled", command=_on_close)
         close_btn.pack(side="right")
         cancel_flag = [False]
         ttk.Button(bf, text="Cancel",
@@ -9629,6 +9636,111 @@ class RedLineApp(tk.Tk):
         saf = self._safety_dir()
         return os.path.join(saf, "Completed") if saf else None
 
+    # ── Tailboards tab ────────────────────────────────────────────
+
+    _TB_REF_DOCS = [
+        ("hbr",         "Hazard Barrier Reference (HBR)"),
+        ("loa",         "Limits of Approach (LOA)"),
+        ("safety_regs", "Safety Practice Regulations"),
+    ]
+    _TB_REF_NAMES = {
+        "hbr":         "HBR",
+        "loa":         "LOA",
+        "safety_regs": "Safety_Practice_Regulations",
+    }
+
+    def _build_tailboards_tab(self, parent):
+        """Tailboard reference documents tab in the planning notebook."""
+        ref_lf = ttk.LabelFrame(parent, text="Reference Documents", padding=(8, 4, 8, 8))
+        ref_lf.pack(fill="x", padx=8, pady=(8, 4))
+        ttk.Label(ref_lf, text="Ctrl+click a URL field to open it in the browser.",
+                  foreground="grey", font=("", 8)).pack(anchor="w", pady=(0, 4))
+
+        self._tb_url_vars = {}
+        for key, label in self._TB_REF_DOCS:
+            row = ttk.Frame(ref_lf)
+            row.pack(fill="x", pady=3)
+            ttk.Label(row, text=label, width=34, anchor="w").pack(side="left")
+            var = tk.StringVar(value=self.tailboard_refs.get(key, {}).get("url", ""))
+            self._tb_url_vars[key] = var
+            e = ttk.Entry(row, textvariable=var)
+            e.pack(side="left", fill="x", expand=True, padx=(4, 4))
+            _bind_url_open(e, var)
+            ttk.Button(row, text="⬇ Download",
+                       command=lambda k=key, v=var: self._tb_download(k, v.get().strip())).pack(side="left", padx=(0, 4))
+            ttk.Button(row, text="👁 Open",
+                       command=lambda k=key: self._tb_open_local(k)).pack(side="left")
+            var.trace_add("write", lambda *_, k=key: self._tb_url_changed(k))
+
+        tb = ttk.Frame(parent, padding=(8, 4, 8, 2)); tb.pack(fill="x")
+        ttk.Button(tb, text="⬆ Upload Document",
+                   command=self._upload_tailboard_doc).pack(side="left")
+        ttk.Button(tb, text="⊞ Open Folder",
+                   command=lambda: self._reveal_project_subfolder("Tailboards")).pack(side="left", padx=(6, 0))
+        ttk.Label(tb, text="  double-click to open",
+                  foreground="grey", font=("", 8)).pack(side="left", padx=8)
+        self._tb_lb = self._make_doc_listbox(parent, "Tailboard Files", self._tb_open_doc)
+        self._refresh_tailboards_tab()
+
+    def _tb_url_changed(self, key):
+        if not hasattr(self, "_tb_url_vars"):
+            return
+        if key not in self.tailboard_refs:
+            self.tailboard_refs[key] = {}
+        self.tailboard_refs[key]["url"] = self._tb_url_vars[key].get().strip()
+
+    def _tb_download(self, key, url):
+        if not url:
+            messagebox.showinfo("No URL", "Enter a URL for this document first.", parent=self)
+            return
+        if not self.project_folder:
+            messagebox.showinfo("No Project", "Save the project first, then download.", parent=self)
+            return
+        dest = os.path.join(self.project_folder, "Tailboards")
+        self._download_with_progress(
+            "Downloading Reference Document",
+            [(self._TB_REF_NAMES.get(key, key), url)],
+            dest,
+            on_complete=self._refresh_tailboards_tab,
+        )
+
+    def _tb_open_local(self, key):
+        """Open the locally downloaded copy of a reference document."""
+        if not self.project_folder:
+            return
+        prefix = self._TB_REF_NAMES.get(key, key)
+        tb_dir = os.path.join(self.project_folder, "Tailboards")
+        if os.path.isdir(tb_dir):
+            for fname in sorted(os.listdir(tb_dir)):
+                if fname.startswith(prefix) and not fname.startswith("."):
+                    _open_file(os.path.join(tb_dir, fname))
+                    return
+        messagebox.showinfo(
+            "Not Downloaded",
+            f"{prefix} has not been downloaded yet.\n"
+            "Enter the URL above and click ⬇ Download.",
+            parent=self,
+        )
+
+    def _refresh_tailboards_tab(self):
+        if hasattr(self, "_tb_url_vars"):
+            for key, var in self._tb_url_vars.items():
+                var.set(self.tailboard_refs.get(key, {}).get("url", ""))
+        if hasattr(self, "_tb_lb"):
+            tb_dir = os.path.join(self.project_folder, "Tailboards") if self.project_folder else ""
+            self._refresh_doc_listbox(self._tb_lb, tb_dir)
+
+    def _upload_tailboard_doc(self):
+        self._upload_docs_to(("Tailboards",), "Upload Tailboard Document",
+                             after=(self._refresh_tailboards_tab,))
+
+    def _tb_open_doc(self, _=None):
+        if hasattr(self, "_tb_lb") and self.project_folder:
+            self._open_doc_from_listbox(
+                self._tb_lb, os.path.join(self.project_folder, "Tailboards"))
+
+    # ── Safety Documents tab ──────────────────────────────────────
+
     def _build_safety_tab(self, parent):
         """Safety Documents management tab in the planning notebook."""
         tb = ttk.Frame(parent, padding=(4, 4, 4, 2)); tb.pack(fill="x")
@@ -10030,6 +10142,8 @@ class RedLineApp(tk.Tk):
                 try: self._app_db.cache_merge_legacy(legacy_cache)
                 except sqlite3.Error: pass
             self.title_page = data.get("title_page", {"notes": "", "crows": []})
+            self.tailboard_refs = data.get("tailboard_refs",
+                {"hbr": {"url": ""}, "loa": {"url": ""}, "safety_regs": {"url": ""}})
             self.current_file = path
             self.project_folder = os.path.dirname(path)
             self._schedule_tailboard_check()
@@ -10040,6 +10154,7 @@ class RedLineApp(tk.Tk):
             self._refresh_list(); self._refresh_drawings_list()
             self._refresh_relay_list(); self._refresh_maintenance_list()
             self._refresh_engineering_list(); self._refresh_crows()
+            self._refresh_tailboards_tab()
             if self.mode_var.get() == "impl": self._refresh_file_tabs()
             proj = data.get("project","") or os.path.splitext(os.path.basename(path))[0]
             self.title(f"Red-Line-Routing — {proj}")
@@ -10087,6 +10202,7 @@ class RedLineApp(tk.Tk):
                            "relay_settings":self.relay_registry,           # key kept as "relay_settings" for file compatibility
                            "maintenance_standards":self.maintenance_standards_registry,
                            "engineering_standards":self.engineering_standards_registry,
+                           "tailboard_refs":self.tailboard_refs,
                            "history":self.history,
                            "jobs":self.jobs},fh,indent=2)
             proj = self.project_var.get().strip() or os.path.splitext(os.path.basename(path))[0]
