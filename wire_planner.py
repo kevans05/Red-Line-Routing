@@ -149,6 +149,41 @@ def _archive_existing(folder, drawing_name):
     return moved
 
 
+def _archive_revision(folder, fname):
+    """Move *folder*/*fname* into *folder*/Archive/ with a timestamp suffix.
+
+    Unlike _archive_existing, the archived copy is renamed with the
+    date and time it was superseded, so several revisions of the same
+    document can be retired on the same day without overwriting each
+    other. Returns the archived path, or None if the file didn't exist.
+    """
+    src = os.path.join(folder, fname)
+    if not os.path.isfile(src):
+        return None
+    archive_dir = os.path.join(folder, "Archive")
+    stem, ext = os.path.splitext(fname)
+    stamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    try:
+        os.makedirs(archive_dir, exist_ok=True)
+        dest = os.path.join(archive_dir, f"{stem}_{stamp}{ext}")
+        n = 1
+        while os.path.exists(dest):
+            dest = os.path.join(archive_dir, f"{stem}_{stamp}_{n}{ext}")
+            n += 1
+        shutil.move(src, dest)
+        return dest
+    except OSError:
+        return None
+
+
+def _empty_tailboard_refs():
+    """Per-project URLs of the living tailboard reference documents."""
+    return {"tailboard":   {"url": ""},
+            "hbr":         {"url": ""},
+            "loa":         {"url": ""},
+            "safety_regs": {"url": ""}}
+
+
 def _file_url_to_path(url: str) -> str:
     """Convert a file:// URL to a local filesystem path.
 
@@ -6585,7 +6620,7 @@ class RedLineApp(tk.Tk):
         self.relay_registry = {}          # keyed by device_id
         self.maintenance_standards_registry = {}  # keyed by standard_id
         self.engineering_standards_registry = {}  # keyed by standard_id
-        self.tailboard_refs = {"hbr": {"url": ""}, "loa": {"url": ""}, "safety_regs": {"url": ""}}
+        self.tailboard_refs = _empty_tailboard_refs()
         self._app_db = _AppDB()           # ~/.redlinerouting.db — settings, standards library, drawing cache
         self._drawing_cache = _GlobalDrawingCache(self._app_db)
         self.app_config = self._load_app_config()
@@ -6635,7 +6670,7 @@ class RedLineApp(tk.Tk):
             "notes": result.get("notes", ""),
             "crows": result.get("crows", []),
         }
-        self.tailboard_refs = {"hbr": {"url": ""}, "loa": {"url": ""}, "safety_regs": {"url": ""}}
+        self.tailboard_refs = _empty_tailboard_refs()
 
         proj = result["project_name"]
         safe = "".join(c if c not in r'<>:"/\|?*' else "_" for c in proj) if proj else "RedLine_Plan"
@@ -7232,11 +7267,14 @@ class RedLineApp(tk.Tk):
                 headers[key] = value
         return headers
 
-    def _download_with_progress(self, title, targets, dest_dir, organize=False, extra_headers=None, on_complete=None):
+    def _download_with_progress(self, title, targets, dest_dir, organize=False, extra_headers=None, on_complete=None, archive_revisions=False):
         """Shared download engine with thread-safe progress dialog.
 
         Uses a queue.Queue so the worker thread never touches tkinter directly —
         all widget updates happen on the main thread via after() polling.
+        archive_revisions: move an existing file of the same name into
+        Archive/ (timestamped) before the new copy is written, so living
+        documents keep their revision history.
         """
         os.makedirs(dest_dir, exist_ok=True)
 
@@ -7351,7 +7389,12 @@ class RedLineApp(tk.Tk):
                         _opener = urllib.request.build_opener(_StickyRedirectHandler())
                         with _opener.open(req, timeout=30) as resp:
                             data = resp.read()
-                    archived = _archive_existing(sub_dir, name) if organize else 0
+                    if organize:
+                        archived = _archive_existing(sub_dir, name)
+                    elif archive_revisions:
+                        archived = 1 if _archive_revision(sub_dir, os.path.basename(dest)) else 0
+                    else:
+                        archived = 0
                     with open(dest, "wb") as fh:
                         fh.write(data)
                     kb = len(data) // 1024
@@ -7519,7 +7562,7 @@ class RedLineApp(tk.Tk):
                 ("base_engineering_transmission_url", "Base URL (Transmission):", "Pre-fills Transmission URL when adding engineering standards"),
             ]),
             ("Tailboard", [
-                ("tailboard_url",  "Tailboard URL:",  "Reference URL only — place tailboard-template.pdf in the project root folder"),
+                ("tailboard_url",  "Tailboard URL:",  "Pre-fills the Tailboard Template URL on the Tailboards tab"),
                 ("crew_email",     "Crew Email(s):",  "Default recipients when emailing a completed tailboard (comma-separated)"),
             ]),
         ]
@@ -7580,6 +7623,40 @@ class RedLineApp(tk.Tk):
         eng_headers_txt.pack(fill="x")
         eng_headers_txt.insert("1.0", self.app_config.get("engineering_request_headers", ""))
 
+        tb_hdrs_lf = ttk.LabelFrame(f, text="Tailboard Site Headers (optional override)", padding=8)
+        tb_hdrs_lf.pack(fill="x", pady=(0, 8))
+        ttk.Label(tb_hdrs_lf,
+                  text="Auth for the internal site hosting the tailboard template, HBR, LOA and\n"
+                       "Safety Practice Regulations. Leave blank to use the master headers above.",
+                  foreground="grey", font=("", 8), justify="left").pack(anchor="w", pady=(0, 4))
+        tb_headers_txt = scrolledtext.ScrolledText(tb_hdrs_lf, height=3, font=("Courier", 9), wrap="none")
+        tb_headers_txt.pack(fill="x")
+        tb_headers_txt.insert("1.0", self.app_config.get("tailboard_request_headers", ""))
+
+        def _do_grab_tb_cookies():
+            url = cfg_vars.get("tailboard_url", tk.StringVar()).get().strip()
+            if not url:
+                # Fall back to any reference-document URL from the open project
+                for k in ("tailboard", "hbr", "loa", "safety_regs"):
+                    url = self.tailboard_refs.get(k, {}).get("url", "").strip()
+                    if url:
+                        break
+            domain = _domain_from_url(url) if url else ""
+            if not domain:
+                messagebox.showwarning("No URL",
+                    "Set the Tailboard URL above (or a reference document URL on the "
+                    "Tailboards tab) first so the domain is known.",
+                    parent=dlg)
+                return
+            _BrowserCookieDialog(dlg, domain, tb_headers_txt)
+
+        tb_grab_row = ttk.Frame(tb_hdrs_lf); tb_grab_row.pack(anchor="w", pady=(4, 0))
+        ttk.Button(tb_grab_row, text="🍪 Grab from Browser",
+                   command=_do_grab_tb_cookies).pack(side="left")
+        ttk.Label(tb_grab_row,
+                  text="Reads cookies for the tailboard site from your running Edge / Chrome session.",
+                  foreground="grey", font=("", 8)).pack(side="left", padx=8)
+
         drw_search_lf = ttk.LabelFrame(f, text="Drawing Search", padding=8)
         drw_search_lf.pack(fill="x", pady=(0, 8))
         ttk.Label(drw_search_lf,
@@ -7602,6 +7679,7 @@ class RedLineApp(tk.Tk):
             self.app_config.update({k: v.get().strip() for k, v in cfg_vars.items()})
             self.app_config["request_headers"] = headers_txt.get("1.0", "end").strip()
             self.app_config["engineering_request_headers"] = eng_headers_txt.get("1.0", "end").strip()
+            self.app_config["tailboard_request_headers"] = tb_headers_txt.get("1.0", "end").strip()
             self._save_app_config()
             dlg.destroy()
 
@@ -8999,7 +9077,20 @@ class RedLineApp(tk.Tk):
         return os.path.join(self.project_folder, "Tailboards")
 
     def _tailboard_template_path(self):
-        """Return path to tailboard-template.pdf beside the script, or None."""
+        """Return the tailboard template path.
+
+        Prefers the project's downloaded/uploaded copy
+        (Tailboards/Tailboard_Template.*) so the live version from the
+        tailboard site wins; falls back to tailboard-template.pdf beside
+        the script, or None if neither exists.
+        """
+        if self.project_folder:
+            tb_dir = os.path.join(self.project_folder, "Tailboards")
+            if os.path.isdir(tb_dir):
+                for fname in sorted(os.listdir(tb_dir)):
+                    if fname.startswith("Tailboard_Template") and \
+                       os.path.isfile(os.path.join(tb_dir, fname)):
+                        return os.path.join(tb_dir, fname)
         script_dir = os.path.dirname(os.path.abspath(__file__))
         p = os.path.join(script_dir, "tailboard-template.pdf")
         return p if os.path.exists(p) else None
@@ -9597,6 +9688,10 @@ class RedLineApp(tk.Tk):
     def _upload_docs_to(self, subparts, title, after=()):
         """Browse for documents, copy them into a project subfolder.
 
+        If a file of the same name already exists it is moved into
+        Archive/ with a timestamp first, so re-uploading an updated
+        document keeps the superseded revision.
+
         subparts: path components under the project folder
         after:    callbacks run once the copies finish (refreshers)
         """
@@ -9614,7 +9709,9 @@ class RedLineApp(tk.Tk):
         os.makedirs(dest, exist_ok=True)
         for src in paths:
             try:
-                shutil.copy2(src, os.path.join(dest, os.path.basename(src)))
+                base = os.path.basename(src)
+                _archive_revision(dest, base)
+                shutil.copy2(src, os.path.join(dest, base))
             except Exception as exc:
                 messagebox.showwarning("Copy Failed",
                     f"Could not copy {os.path.basename(src)}:\n{exc}")
@@ -9639,11 +9736,13 @@ class RedLineApp(tk.Tk):
     # ── Tailboards tab ────────────────────────────────────────────
 
     _TB_REF_DOCS = [
+        ("tailboard",   "Tailboard Template"),
         ("hbr",         "Hazard Barrier Reference (HBR)"),
         ("loa",         "Limits of Approach (LOA)"),
         ("safety_regs", "Safety Practice Regulations"),
     ]
     _TB_REF_NAMES = {
+        "tailboard":   "Tailboard_Template",
         "hbr":         "HBR",
         "loa":         "LOA",
         "safety_regs": "Safety_Practice_Regulations",
@@ -9651,9 +9750,10 @@ class RedLineApp(tk.Tk):
 
     def _build_tailboards_tab(self, parent):
         """Tailboard reference documents tab in the planning notebook."""
-        ref_lf = ttk.LabelFrame(parent, text="Reference Documents", padding=(8, 4, 8, 8))
+        ref_lf = ttk.LabelFrame(parent, text="Reference Documents (living — superseded copies are archived)", padding=(8, 4, 8, 8))
         ref_lf.pack(fill="x", padx=8, pady=(8, 4))
-        ttk.Label(ref_lf, text="Ctrl+click a URL field to open it in the browser.",
+        ttk.Label(ref_lf, text="Ctrl+click a URL field to open it in the browser. "
+                               "⬆ uploads a local copy as a backup when the site is unreachable.",
                   foreground="grey", font=("", 8)).pack(anchor="w", pady=(0, 4))
 
         self._tb_url_vars = {}
@@ -9668,6 +9768,8 @@ class RedLineApp(tk.Tk):
             _bind_url_open(e, var)
             ttk.Button(row, text="⬇ Download",
                        command=lambda k=key, v=var: self._tb_download(k, v.get().strip())).pack(side="left", padx=(0, 4))
+            ttk.Button(row, text="⬆ Upload",
+                       command=lambda k=key: self._tb_upload_ref(k)).pack(side="left", padx=(0, 4))
             ttk.Button(row, text="👁 Open",
                        command=lambda k=key: self._tb_open_local(k)).pack(side="left")
             var.trace_add("write", lambda *_, k=key: self._tb_url_changed(k))
@@ -9677,6 +9779,8 @@ class RedLineApp(tk.Tk):
                    command=self._upload_tailboard_doc).pack(side="left")
         ttk.Button(tb, text="⊞ Open Folder",
                    command=lambda: self._reveal_project_subfolder("Tailboards")).pack(side="left", padx=(6, 0))
+        ttk.Button(tb, text="🗂 Old Revisions",
+                   command=lambda: self._reveal_project_subfolder("Tailboards", "Archive")).pack(side="left", padx=(6, 0))
         ttk.Label(tb, text="  double-click to open",
                   foreground="grey", font=("", 8)).pack(side="left", padx=8)
         self._tb_lb = self._make_doc_listbox(parent, "Tailboard Files", self._tb_open_doc)
@@ -9688,6 +9792,16 @@ class RedLineApp(tk.Tk):
         if key not in self.tailboard_refs:
             self.tailboard_refs[key] = {}
         self.tailboard_refs[key]["url"] = self._tb_url_vars[key].get().strip()
+
+    def _build_tailboard_headers(self):
+        """Return extra HTTP headers for tailboard-site downloads.
+
+        Uses tailboard_request_headers if set; falls back to master headers.
+        """
+        raw = self.app_config.get("tailboard_request_headers", "").strip()
+        if raw:
+            return _parse_request_headers_raw(raw)
+        return self._parse_request_headers()
 
     def _tb_download(self, key, url):
         if not url:
@@ -9701,8 +9815,37 @@ class RedLineApp(tk.Tk):
             "Downloading Reference Document",
             [(self._TB_REF_NAMES.get(key, key), url)],
             dest,
+            extra_headers=self._build_tailboard_headers(),
+            archive_revisions=True,
             on_complete=self._refresh_tailboards_tab,
         )
+
+    def _tb_upload_ref(self, key):
+        """Upload a local copy of a reference document (backup for when the site is down)."""
+        if not self.project_folder:
+            messagebox.showinfo("No Project", "Save the project first, then upload.", parent=self)
+            return
+        label = dict(self._TB_REF_DOCS).get(key, key)
+        path = filedialog.askopenfilename(
+            title=f"Upload {label}",
+            filetypes=[("Documents", "*.pdf *.png *.jpg *.jpeg *.tif *.tiff"),
+                       ("All files", "*.*")])
+        if not path:
+            return
+        tb_dir = os.path.join(self.project_folder, "Tailboards")
+        os.makedirs(tb_dir, exist_ok=True)
+        prefix = self._TB_REF_NAMES.get(key, key)
+        # Retire any existing copy (any extension) into Archive/ first
+        for fname in sorted(os.listdir(tb_dir)):
+            if fname.startswith(prefix) and os.path.isfile(os.path.join(tb_dir, fname)):
+                _archive_revision(tb_dir, fname)
+        ext = os.path.splitext(path)[1].lower() or ".pdf"
+        try:
+            shutil.copy2(path, os.path.join(tb_dir, prefix + ext))
+        except Exception as exc:
+            messagebox.showerror("Upload Failed", str(exc), parent=self)
+            return
+        self._refresh_tailboards_tab()
 
     def _tb_open_local(self, key):
         """Open the locally downloaded copy of a reference document."""
@@ -9725,7 +9868,11 @@ class RedLineApp(tk.Tk):
     def _refresh_tailboards_tab(self):
         if hasattr(self, "_tb_url_vars"):
             for key, var in self._tb_url_vars.items():
-                var.set(self.tailboard_refs.get(key, {}).get("url", ""))
+                url = self.tailboard_refs.get(key, {}).get("url", "")
+                if not url and key == "tailboard":
+                    # Pre-fill from the global Tailboard URL setting
+                    url = self.app_config.get("tailboard_url", "")
+                var.set(url)
         if hasattr(self, "_tb_lb"):
             tb_dir = os.path.join(self.project_folder, "Tailboards") if self.project_folder else ""
             self._refresh_doc_listbox(self._tb_lb, tb_dir)
@@ -9748,7 +9895,10 @@ class RedLineApp(tk.Tk):
                    command=self._upload_safety_doc).pack(side="left")
         ttk.Button(tb, text="⊞ Open Folder",
                    command=self._open_safety_folder).pack(side="left", padx=(6, 0))
-        ttk.Label(tb, text="  double-click to open",
+        ttk.Button(tb, text="🗂 Old Revisions",
+                   command=lambda: self._reveal_project_subfolder(
+                       "Safety Documents", "Completed", "Archive")).pack(side="left", padx=(6, 0))
+        ttk.Label(tb, text="  double-click to open — re-uploading a file archives the old revision",
                   foreground="grey", font=("", 8)).pack(side="left", padx=8)
         self._saf_tab_lb = self._make_doc_listbox(
             parent, "Safety Documents / Completed", self._saf_tab_open)
@@ -10142,8 +10292,7 @@ class RedLineApp(tk.Tk):
                 try: self._app_db.cache_merge_legacy(legacy_cache)
                 except sqlite3.Error: pass
             self.title_page = data.get("title_page", {"notes": "", "crows": []})
-            self.tailboard_refs = data.get("tailboard_refs",
-                {"hbr": {"url": ""}, "loa": {"url": ""}, "safety_regs": {"url": ""}})
+            self.tailboard_refs = data.get("tailboard_refs", _empty_tailboard_refs())
             self.current_file = path
             self.project_folder = os.path.dirname(path)
             self._schedule_tailboard_check()

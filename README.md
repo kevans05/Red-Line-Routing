@@ -43,10 +43,12 @@ When you save or complete the wizard, a folder is created:
   Maintenance Standards/     ← auto-downloaded maintenance standard files
   Engineering Standards/     ← auto-downloaded engineering standard files
   CROW Outage/               ← CROW files and attached documents
-  Tailboards/
+  Tailboards/                ← reference documents (Tailboard_Template, HBR, LOA, …) and uploads
+    Archive/                 ← superseded revisions, timestamped (created when needed)
     Completed/               ← timestamped tailboard records
   Safety Documents/
     Completed/               ← timestamped safety records and uploads
+      Archive/               ← superseded revisions, timestamped (created when needed)
   Other Documents/           ← free-form uploads
   Other/
 ```
@@ -63,8 +65,13 @@ Open an existing project with **File → Open** and browse to the `.redline` fil
 | **Maintenance Standards** | Maintenance standard registry with telecom/transmission URLs and downloads. |
 | **Engineering Standards** | Engineering standard registry with downloads. |
 | **CROW** | Outage records (number + URL + attached documents) and project-level notes. |
+| **Tailboards** | Living reference documents — Tailboard Template, Hazard Barrier Reference (HBR), Limits of Approach (LOA), Safety Practice Regulations — each with a per-project URL, ⬇ Download (cookie-authenticated), ⬆ Upload (local backup) and 👁 Open buttons, plus a free-form file list for everything else in `Tailboards/`. A downloaded/uploaded Tailboard Template is used by Implementation mode in preference to `tailboard-template.pdf` beside the script. |
 | **Safety Documents** | Upload and manage safety documents; works with the safety panel in Implementation mode (template + sign-ons + timestamped saves). |
 | **Other Documents** | Free-form document uploads — anything that doesn't fit the other categories. |
+
+### Document revision control
+
+Living documents change — sometimes several times a day. Whenever a download or upload would replace an existing file (reference documents on the Tailboards tab, and any upload on the Tailboards / Safety Documents / Other Documents tabs), the old copy is moved into an `Archive/` subfolder next to it and renamed with the date and time it was superseded (`HBR_2026-06-11_14-30-05.pdf`), so no revision is ever lost. The **🗂 Old Revisions** button on the Tailboards and Safety Documents tabs opens the archive. Archived revisions are excluded from exports.
 
 ### Standards library
 
@@ -164,10 +171,13 @@ Stored in `~/.redlinerouting.db` alongside the standards library and the shared 
 | `base_drawing_url` | Pre-fills the URL field when adding a new drawing |
 | `drawing_search_url` | Corporate drawing search endpoint (enables 🔍 Search) |
 | `drawing_search_path` | Optional override of the search form path |
-| `request_headers` | Raw request headers (incl. Cookie) used to authenticate drawing search |
+| `request_headers` | Raw request headers (incl. Cookie) used to authenticate drawing search and downloads |
+| `engineering_request_headers` | Optional override headers for the engineering standards server |
+| `tailboard_request_headers` | Optional override headers for the tailboard site (Tailboard Template / HBR / LOA / Safety Practice Regulations) — has its own **Grab from Browser** button |
 | `aspen_url` | Pre-fills Aspen links on relay settings |
 | `base_crow_url` | Pre-fills the URL field when adding a CROW |
 | `base_relay_url` | Pre-fills the URL field when adding a relay setting |
+| `tailboard_url` | Pre-fills the Tailboard Template URL on the Tailboards tab |
 | `safety_template_path` | Safety document template used by the SAFETY DOCS panel |
 | `drawing_cache_refresh_hours` | Cache staleness threshold (default 4 hours) |
 
@@ -195,6 +205,12 @@ The `.redline` file is plain JSON and can be inspected or edited in any text edi
   },
   "maintenance_standards": {},
   "engineering_standards": {},
+  "tailboard_refs": {
+    "tailboard":   {"url": "https://..."},
+    "hbr":         {"url": "https://..."},
+    "loa":         {"url": "https://..."},
+    "safety_regs": {"url": "https://..."}
+  },
   "history": {"device": [], "location": [], "pin": [], "panel": [], "wire": []},
   "jobs": [
     {
