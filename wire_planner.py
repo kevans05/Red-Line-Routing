@@ -10392,7 +10392,7 @@ class RedLineApp(tk.Tk):
             self._refresh_list(); self._refresh_drawings_list()
             self._refresh_relay_list(); self._refresh_maintenance_list()
             self._refresh_engineering_list(); self._refresh_crows()
-            self._refresh_tailboards_tab()
+            self._refresh_tailboards_tab(); self._refresh_safety_tab(); self._refresh_other_docs_tab()
             if self.mode_var.get() == "impl": self._refresh_file_tabs()
             proj = data.get("project","") or os.path.splitext(os.path.basename(path))[0]
             self.title(f"Red-Line-Routing — {proj}")
