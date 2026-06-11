@@ -2811,10 +2811,18 @@ def _pdf_work_orders(bld, jobs, drw_reg, size="11x17 Landscape"):
             draw_row(jt, desc, detail, "", "")
         elif jt == "CR_PROT":
             desks = job.get("desks", [])
-            desk_str = "; ".join(
-                d.get("desk_name","") + (f" ({d['desk_type']})" if d.get("desk_type") else "")
-                for d in desks
-            )
+            desk_parts = []
+            for d in desks:
+                name_str = d.get("desk_name", "")
+                if d.get("desk_type"):
+                    name_str += f" ({d['desk_type']})"
+                phones = " / ".join(filter(None, [d.get("phone_int", ""),
+                                                   d.get("phone_local", ""),
+                                                   d.get("phone_toll", "")]))
+                if phones:
+                    name_str += f"  Ph: {phones}"
+                desk_parts.append(name_str)
+            desk_str = ";  ".join(desk_parts)
             crows = job.get("crows", [])
             if crows:
                 desk_str += (" | " if desk_str else "") + "CROWs: " + ", ".join(crows)
