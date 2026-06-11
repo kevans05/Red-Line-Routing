@@ -2291,37 +2291,42 @@ def _ptrunc(text, max_pts, size, bold=False):
 def _pwrap(text, max_pts, size, bold=False, max_lines=10):
     """Word-wrap text to fit max_pts wide; returns a list of lines.
 
+    Newlines in the input start a new output line (formatting is preserved).
     Overly long single words are hard-broken; output is capped at
     max_lines with an ellipsis on the final line.
     """
-    text = " ".join(str(text).split())
-    if not text:
-        return [""]
-    lines, cur = [], ""
-    for word in text.split(" "):
-        test = (cur + " " + word) if cur else word
-        if _ptw(test, size, bold) <= max_pts:
-            cur = test
+    all_lines = []
+    for para in str(text).split("\n"):
+        para = " ".join(para.split())
+        if not para:
+            all_lines.append("")
             continue
+        lines, cur = [], ""
+        for word in para.split(" "):
+            test = (cur + " " + word) if cur else word
+            if _ptw(test, size, bold) <= max_pts:
+                cur = test
+                continue
+            if cur:
+                lines.append(cur)
+            while _ptw(word, size, bold) > max_pts and len(word) > 1:
+                lo, hi = 1, len(word)
+                while lo < hi - 1:
+                    mid = (lo + hi) // 2
+                    if _ptw(word[:mid], size, bold) <= max_pts:
+                        lo = mid
+                    else:
+                        hi = mid
+                lines.append(word[:lo])
+                word = word[lo:]
+            cur = word
         if cur:
             lines.append(cur)
-        while _ptw(word, size, bold) > max_pts and len(word) > 1:
-            lo, hi = 1, len(word)
-            while lo < hi - 1:
-                mid = (lo + hi) // 2
-                if _ptw(word[:mid], size, bold) <= max_pts:
-                    lo = mid
-                else:
-                    hi = mid
-            lines.append(word[:lo])
-            word = word[lo:]
-        cur = word
-    if cur:
-        lines.append(cur)
-    if len(lines) > max_lines:
-        lines = lines[:max_lines]
-        lines[-1] = _ptrunc(lines[-1] + "...", max_pts, size, bold)
-    return lines or [""]
+        all_lines.extend(lines or [""])
+    if len(all_lines) > max_lines:
+        all_lines = all_lines[:max_lines]
+        all_lines[-1] = _ptrunc(all_lines[-1] + "...", max_pts, size, bold)
+    return all_lines or [""]
 
 
 def _penc(text):
@@ -2786,12 +2791,12 @@ def _pdf_work_orders(bld, jobs, drw_reg, size="11x17 Landscape"):
 
         if jt in ("REMOVE","ADD"):
             notes = job.get("notes","").strip()
-            desc_n = desc + (" | " + notes if notes else "")
+            desc_n = desc + ("\n" + notes if notes else "")
             draw_row(jt, desc_n, _ep_flat(job.get("start",{})),
                      job.get("wire",""), _ep_flat(job.get("end",{})))
         elif jt == "MOVE":
             notes = job.get("notes", "").strip()
-            desc_n = desc + (" | " + notes if notes else "")
+            desc_n = desc + ("\n" + notes if notes else "")
             draw_row("MOVE-REMOVE", desc_n,
                      _ep_flat(job.get("start",{})), job.get("wire",""),
                      _ep_flat(job.get("end",{})))
@@ -2802,7 +2807,7 @@ def _pdf_work_orders(bld, jobs, drw_reg, size="11x17 Landscape"):
             notes = job.get("notes", "").strip()
             prot_s = _prot_flat(job.get("protection", {}))
             if notes:
-                prot_s += (" | " if prot_s else "") + notes
+                prot_s += ("\n" if prot_s else "") + notes
             draw_row(jt, desc, prot_s, "", "")
         elif jt == "TESTING":
             draw_row(jt, desc, job.get("notes",""), "", "")
@@ -2813,7 +2818,7 @@ def _pdf_work_orders(bld, jobs, drw_reg, size="11x17 Landscape"):
                 + (f" Rev {d['drawing_rev']}" if d.get("drawing_rev") else "")
                 for d in drawings)
             if job.get("notes"):
-                detail += (" | " if detail else "") + job["notes"]
+                detail += ("\n" if detail else "") + job["notes"]
             draw_row(jt, desc, detail, "", "")
         elif jt == "CR_PROT":
             desks = job.get("desks", [])
@@ -2828,12 +2833,12 @@ def _pdf_work_orders(bld, jobs, drw_reg, size="11x17 Landscape"):
                 if phones:
                     name_str += f"  Ph: {phones}"
                 desk_parts.append(name_str)
-            desk_str = ";  ".join(desk_parts)
+            desk_str = "\n".join(desk_parts)
             crows = job.get("crows", [])
             if crows:
-                desk_str += (" | " if desk_str else "") + "CROWs: " + ", ".join(crows)
+                desk_str += ("\n" if desk_str else "") + "CROWs: " + ", ".join(crows)
             if job.get("notes"):
-                desk_str += (" | " if desk_str else "") + job["notes"]
+                desk_str += ("\n" if desk_str else "") + job["notes"]
             draw_row("CR_PROT", desc, desk_str, "", "")
 
 
