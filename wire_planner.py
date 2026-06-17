@@ -5274,6 +5274,56 @@ def _grab_browser_cookies(domain: str) -> dict:
     return result
 
 
+def _ps_grab_windows_cookies(url: str) -> dict:
+    """Fetch cookies via Windows Integrated Authentication (NTLM/Kerberos).
+
+    Uses PowerShell Invoke-WebRequest with -UseDefaultCredentials so the current
+    Windows domain account is used automatically — no password prompt required.
+    Returns {name: value}.  Raises RuntimeError on failure.
+    """
+    if sys.platform != "win32":
+        raise RuntimeError("Windows authentication cookie grab requires Windows.")
+    url_esc = url.replace("'", "''")
+    ps = (
+        "$ErrorActionPreference = 'Stop'; "
+        f"$url = '{url_esc}'; "
+        "$session = New-Object Microsoft.PowerShell.Commands.WebRequestSession; "
+        "$result = Invoke-WebRequest -Uri $url -UseDefaultCredentials -UseBasicParsing -SessionVariable session; "
+        "$obj = [PSCustomObject]@{ status = $result.StatusCode; cookies = $session.Cookies.GetCookies($url) }; "
+        "$obj | ConvertTo-Json -Depth 5 | Write-Host"
+    ).replace("\n", "")
+    flags = 0x08000000 if sys.platform == "win32" else 0  # CREATE_NO_WINDOW — suppress console flash
+    try:
+        r = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive",
+             "-ExecutionPolicy", "BYPASS", "-Command", ps],
+            capture_output=True, text=True, timeout=30,
+            creationflags=flags,
+        )
+    except FileNotFoundError:
+        raise RuntimeError("PowerShell not found.")
+    if r.returncode != 0:
+        raise RuntimeError(f"PowerShell error:\n{(r.stderr or r.stdout).strip()}")
+    try:
+        # Strip \r — PowerShell uses \r\n line endings which bleed into JSON string values
+        data = {k: v.replace("\r", "") if isinstance(v, str) else v
+                for k, v in json.loads(r.stdout).items()}
+    except (json.JSONDecodeError, AttributeError) as exc:
+        raise RuntimeError(
+            f"Could not parse PowerShell output:\n{exc}\n\nOutput: {r.stdout[:300]}"
+        ) from exc
+    raw = data.get("cookies") or []
+    if isinstance(raw, dict):
+        raw = [raw]
+    result = {}
+    for cookie in (raw if isinstance(raw, list) else []):
+        name  = cookie.get("Name") or cookie.get("name", "")
+        value = cookie.get("Value") if "Value" in cookie else cookie.get("value", "")
+        if name:
+            result[name] = (value or "").replace("\r", "")
+    return result
+
+
 def _show_fetch_options_dialog(parent, url: str, headers: dict, search_path: str = None) -> None:
     """Open a pop-out dialog that fetches and displays drawing form options."""
     if not _DRAWING_SEARCH_AVAILABLE:
@@ -5571,13 +5621,14 @@ class CtrlRoomDesksManagerDialog(tk.Toplevel):
 class _BrowserCookieDialog(tk.Toplevel):
     """Extract cookies from Edge/Chrome for a given domain and inject them into a headers widget."""
 
-    def __init__(self, parent, domain: str, headers_widget):
+    def __init__(self, parent, domain: str, headers_widget, cookies_fn=None):
         super().__init__(parent)
         self.title("Grab Cookies from Browser")
         self.resizable(False, False)
         self._headers_widget = headers_widget
         self._vars: dict = {}
         self._cookies: dict = {}
+        self._cookies_fn = cookies_fn if cookies_fn is not None else _grab_browser_cookies
 
         self._build(domain)
         _center_window(self)
@@ -5612,7 +5663,7 @@ class _BrowserCookieDialog(tk.Toplevel):
 
     def _fetch(self, domain):
         try:
-            cookies = _grab_browser_cookies(domain)
+            cookies = self._cookies_fn(domain)
             self.after(0, self._show_results, cookies)
         except Exception as exc:
             self.after(0, self._show_error, str(exc))
@@ -5679,8 +5730,10 @@ class SoftwareSetupDialog(tk.Toplevel):
                  bg="white", justify="left", fg="#566573", font=("", 9)).pack(anchor="w", pady=(0, 14))
 
         sections = [
-            ("Drawings",       [("base_drawing_url",    "Base Drawing URL"),
-                                 ("drawing_search_url",  "Drawing Search URL"),
+            ("Drawings",       [("base_drawing_url",     "Base Drawing URL"),      # legacy pre-fill; some paths map to drawing_download_url
+                                 ("drawing_search_url",   "Drawing Search URL"),
+                                 ("drawing_download_url", "Drawing Download URL"),  # new: direct download base URL
+                                 ("w3c_domain",           "W3C Domain"),            # new: intranet W3C domain
                                 ]),
             ("Aspen",          [("aspen_url",           "Aspen URL (future)")]),
             ("CROWs",          [("base_crow_url",       "Base CROW URL")]),
@@ -5732,8 +5785,14 @@ class SoftwareSetupDialog(tk.Toplevel):
             bg="#1a7a30", fg="white", relief="flat", font=("", 8),
             cursor="hand2", activebackground="#229954", activeforeground="white",
             padx=8, pady=3).pack(side="left")
+        tk.Button(
+            grab_row, text="🔑 Grab via Windows Auth",
+            command=lambda: self._grab_cookies_win_auth(self._headers_txt),
+            bg="#6c3483", fg="white", relief="flat", font=("", 8),
+            cursor="hand2", activebackground="#7d3c98", activeforeground="white",
+            padx=8, pady=3).pack(side="left", padx=(6, 0))
         tk.Label(grab_row,
-                 text="Reads cookies directly from your running Edge / Chrome session.",
+                 text="Browser: reads from Edge/Chrome.  Windows Auth: uses your domain login (requires all three Drawing URLs).",
                  bg="white", fg="#7f8c8d", font=("", 8)).pack(side="left", padx=8)
         # Engineering Standards Headers (optional per-server override)
         eng_hdr_row = tk.Frame(body, bg="white"); eng_hdr_row.pack(fill="x", pady=(6, 4))
@@ -5816,6 +5875,19 @@ class SoftwareSetupDialog(tk.Toplevel):
                 parent=self)
             return
         _BrowserCookieDialog(self, domain, headers_widget)
+
+    def _grab_cookies_win_auth(self, headers_widget):
+        url          = self._cfg_vars.get("drawing_search_url",   tk.StringVar()).get().strip()
+        download_url = self._cfg_vars.get("drawing_download_url", tk.StringVar()).get().strip()
+        w3c_domain   = self._cfg_vars.get("w3c_domain",           tk.StringVar()).get().strip()
+        if not (url and download_url and w3c_domain):
+            messagebox.showwarning("Incomplete Setup",
+                "Fill in Drawing Search URL, Drawing Download URL, and W3C Domain first.",
+                parent=self)
+            return
+        domain = _domain_from_url(url)
+        _BrowserCookieDialog(self, domain, headers_widget,
+                             cookies_fn=lambda _: _ps_grab_windows_cookies(url))
 
     def _skip(self):
         self.result = {}; self.destroy()
@@ -6647,6 +6719,8 @@ class RedLineApp(tk.Tk):
         self.maintenance_standards_registry = {}  # keyed by standard_id
         self.engineering_standards_registry = {}  # keyed by standard_id
         self.tailboard_refs = _empty_tailboard_refs()
+        self._dirty = False
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
         self._app_db = _AppDB()           # ~/.redlinerouting.db — settings, standards library, drawing cache
         self._drawing_cache = _GlobalDrawingCache(self._app_db)
         self.app_config = self._load_app_config()
@@ -6846,6 +6920,46 @@ class RedLineApp(tk.Tk):
         self.bind("<Control-s>", lambda _: self._save())
         self.bind("<Control-e>", lambda _: self._open_export_wizard())
         self.bind("<Control-q>", lambda _: self.quit())
+
+    # ── Unsaved-changes tracking ──────────────────────────────────
+
+    def _mark_dirty(self):
+        """Mark the project as having unsaved changes."""
+        if not self.project_folder:
+            return  # no project open yet — nothing to dirty
+        if not self._dirty:
+            self._dirty = True
+            t = self.title()
+            if not t.startswith("● "):
+                self.title("● " + t)
+
+    def _mark_clean(self):
+        """Clear the unsaved-changes flag."""
+        self._dirty = False
+        t = self.title()
+        if t.startswith("● "):
+            self.title(t[2:])
+
+    def _check_unsaved(self):
+        """If dirty, ask whether to save. Returns True to proceed, False to abort."""
+        if not self._dirty:
+            return True
+        ans = messagebox.askyesnocancel(
+            "Unsaved Changes",
+            "You have unsaved changes.\n\nSave before continuing?",
+            parent=self,
+        )
+        if ans is True:
+            self._save()
+            return not self._dirty   # abort if save itself was cancelled/failed
+        if ans is False:
+            return True              # discard changes and proceed
+        return False                 # Cancel — do nothing
+
+    def _on_close(self):
+        """WM_DELETE_WINDOW handler — prompt to save if needed."""
+        if self._check_unsaved():
+            self.destroy()
 
     def _build_ui(self):
         # ── Dark branded header bar ─────────────────────────────────
@@ -7047,6 +7161,7 @@ class RedLineApp(tk.Tk):
             self.drawings_tree.insert("","end",iid=name, tags=tags,
                 values=(name,info.get("title",""),info.get("rev",""),
                         local_lbl,info.get("url",""),info.get("notes","")))
+        self._mark_dirty()
 
     def _add_drawing(self):
         dlg = DrawingEditDialog(self, base_url=self.app_config.get("base_drawing_url",""),
@@ -7186,6 +7301,7 @@ class RedLineApp(tk.Tk):
                 info.get("url",      ""),
                 info.get("wo_device",""),
             ))
+        self._mark_dirty()
 
     def _wo_device_list(self):
         """Collect unique device names from all work order jobs."""
@@ -7567,8 +7683,10 @@ class RedLineApp(tk.Tk):
 
         sections = [
             ("Drawings", [
-                ("base_drawing_url",    "Base Drawing URL:",    "Used to pre-fill URLs when adding drawings"),
-                ("drawing_search_url",  "Drawing Search URL:",  "Base URL for the corporate drawing search server"),
+                ("base_drawing_url",     "Base Drawing URL:",     "Legacy pre-fill URL; some code paths map this to Drawing Download URL"),
+                ("drawing_search_url",   "Drawing Search URL:",   "Base URL for the corporate drawing search server"),
+                ("drawing_download_url", "Drawing Download URL:", "Direct download base URL for drawings"),
+                ("w3c_domain",           "W3C Domain:",           "Intranet W3C domain — required for Windows Auth cookie grab"),
             ]),
             ("Aspen", [
                 ("aspen_url",         "Aspen URL:",         "Base URL for Aspen (future use)"),
@@ -7632,11 +7750,26 @@ class RedLineApp(tk.Tk):
                 return
             _BrowserCookieDialog(dlg, domain, headers_txt)
 
+        def _do_win_auth_cookies():
+            url          = cfg_vars.get("drawing_search_url",   tk.StringVar()).get().strip()
+            download_url = cfg_vars.get("drawing_download_url", tk.StringVar()).get().strip()
+            w3c_domain   = cfg_vars.get("w3c_domain",           tk.StringVar()).get().strip()
+            if not (url and download_url and w3c_domain):
+                messagebox.showwarning("Incomplete Setup",
+                    "Fill in Drawing Search URL, Drawing Download URL, and W3C Domain first.",
+                    parent=dlg)
+                return
+            domain = _domain_from_url(url)
+            _BrowserCookieDialog(dlg, domain, headers_txt,
+                                 cookies_fn=lambda _: _ps_grab_windows_cookies(url))
+
         grab_row = ttk.Frame(auth_lf); grab_row.pack(anchor="w", pady=(4, 0))
         ttk.Button(grab_row, text="🍪 Grab from Browser",
                    command=_do_grab_cookies).pack(side="left")
+        ttk.Button(grab_row, text="🔑 Grab via Windows Auth",
+                   command=_do_win_auth_cookies).pack(side="left", padx=(6, 0))
         ttk.Label(grab_row,
-                  text="Reads cookies directly from your running Edge / Chrome session.",
+                  text="Browser: reads from Edge/Chrome.  Windows Auth: uses your domain login (requires all three Drawing URLs).",
                   foreground="grey", font=("", 8)).pack(side="left", padx=8)
 
         eng_hdrs_lf = ttk.LabelFrame(f, text="Engineering Standards Headers (optional override)", padding=8)
@@ -7732,6 +7865,8 @@ class RedLineApp(tk.Tk):
         self.title_notes = scrolledtext.ScrolledText(nf, height=5, wrap="word", font=("", 9))
         self.title_notes.pack(fill="x")
         self.title_notes.insert("1.0", self.title_page.get("notes", ""))
+        self.title_notes.bind("<<Modified>>",
+            lambda e: (self._mark_dirty(), self.title_notes.edit_modified(False)))
         # CROWs
         cf = ttk.LabelFrame(f, text="CROWs (Outage Records)", padding=6)
         cf.pack(fill="both", expand=True)
@@ -7768,6 +7903,7 @@ class RedLineApp(tk.Tk):
             file_str = f"{n} file(s)" if n else ""
             self.crow_tree.insert("", "end", values=(
                 crow.get("outage_number", ""), crow.get("url", ""), file_str))
+        self._mark_dirty()
 
     def _add_crow(self):
         dlg = CrowDialog(self, base_url=self.app_config.get("base_crow_url", ""),
@@ -7891,6 +8027,7 @@ class RedLineApp(tk.Tk):
                 info.get("url_transmission", ""),
                 info.get("notes",            ""),
             ))
+        self._mark_dirty()
 
     def _add_maintenance(self):
         dlg = MaintenanceStandardDialog(
@@ -8022,6 +8159,7 @@ class RedLineApp(tk.Tk):
                 info.get("url",           ""),
                 info.get("notes",         ""),
             ))
+        self._mark_dirty()
 
     def _add_engineering(self):
         dlg = EngineeringStandardDialog(
@@ -9840,6 +9978,7 @@ class RedLineApp(tk.Tk):
         if key not in self.tailboard_refs:
             self.tailboard_refs[key] = {}
         self.tailboard_refs[key]["url"] = self._tb_url_vars[key].get().strip()
+        self._mark_dirty()
 
     def _build_tailboard_headers(self):
         """Return extra HTTP headers for tailboard-site downloads.
@@ -10177,6 +10316,7 @@ class RedLineApp(tk.Tk):
         self._update_status()
         self._refresh_impl_list()
         self._refresh_device_list()
+        self._mark_dirty()
 
     def _on_tree_click(self, event):
         """Toggle completed on click in the ☐/☑ Done column."""
@@ -10364,6 +10504,8 @@ class RedLineApp(tk.Tk):
         # After loading we re-scan jobs to backfill any drawings that exist in job
         # endpoints but are missing from the registry (handles files saved by older
         # versions that lacked the registry), then rebuild ep_history from scratch.
+        if not self._check_unsaved():
+            return
         path = filedialog.askopenfilename(filetypes=[("Red-Line Plan","*.redline"),("Legacy wirePlan","*.wirePlan"),("JSON","*.json"),("All","*.*")])
         if not path: return
         try:
@@ -10396,6 +10538,7 @@ class RedLineApp(tk.Tk):
             if self.mode_var.get() == "impl": self._refresh_file_tabs()
             proj = data.get("project","") or os.path.splitext(os.path.basename(path))[0]
             self.title(f"Red-Line-Routing — {proj}")
+            self._mark_clean()
             self.after_idle(lambda: self._refresh_drawing_cache_bg(stale_only=True))
             self._remember_all_standards()
         except Exception as exc: messagebox.showerror("Open Error",str(exc))
@@ -10447,6 +10590,7 @@ class RedLineApp(tk.Tk):
             self.title(f"Red-Line-Routing — {proj}")
             self._update_status()
             self._remember_all_standards()
+            self._mark_clean()
         except Exception as exc: messagebox.showerror("Save Error",str(exc))
 
     # How often to look for stale cache entries, and how old an entry must
