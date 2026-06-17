@@ -75,10 +75,13 @@ try:
     import inspect as _insp
     _DSC_HAS_COOKIE_CB = "on_cookie_update" in _insp.signature(
         DrawingSearchClient.__init__).parameters
+    _DSC_HAS_DOWNLOAD_URL = "download_url" in _insp.signature(
+        DrawingSearchClient.__init__).parameters
     del _insp
 except ImportError:
     _DRAWING_SEARCH_AVAILABLE = False
     _DSC_HAS_COOKIE_CB = False
+    _DSC_HAS_DOWNLOAD_URL = False
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -4420,9 +4423,10 @@ class DrawingSearchDialog(tk.Toplevel):
                 self._persist_fn()
 
         kw = {"on_cookie_update": _on_cookie_update} if _DSC_HAS_COOKIE_CB else {}
+        if _DSC_HAS_DOWNLOAD_URL and download_url:
+            kw["download_url"] = download_url
         return DrawingSearchClient(base_url=base_url, cookies=cookies, cache=cache,
                                    search_path=path, extra_headers=extra or None,
-                                   download_url=download_url,
                                    **kw)
 
     def _get_params(self, page=0):
