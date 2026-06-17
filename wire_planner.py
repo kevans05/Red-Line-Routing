@@ -6714,6 +6714,8 @@ class RedLineApp(tk.Tk):
         self.maintenance_standards_registry = {}  # keyed by standard_id
         self.engineering_standards_registry = {}  # keyed by standard_id
         self.tailboard_refs = _empty_tailboard_refs()
+        self._dirty = False
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
         self._app_db = _AppDB()           # ~/.redlinerouting.db — settings, standards library, drawing cache
         self._drawing_cache = _GlobalDrawingCache(self._app_db)
         self.app_config = self._load_app_config()
@@ -6913,6 +6915,46 @@ class RedLineApp(tk.Tk):
         self.bind("<Control-s>", lambda _: self._save())
         self.bind("<Control-e>", lambda _: self._open_export_wizard())
         self.bind("<Control-q>", lambda _: self.quit())
+
+    # ── Unsaved-changes tracking ──────────────────────────────────
+
+    def _mark_dirty(self):
+        """Mark the project as having unsaved changes."""
+        if not self.project_folder:
+            return  # no project open yet — nothing to dirty
+        if not self._dirty:
+            self._dirty = True
+            t = self.title()
+            if not t.startswith("● "):
+                self.title("● " + t)
+
+    def _mark_clean(self):
+        """Clear the unsaved-changes flag."""
+        self._dirty = False
+        t = self.title()
+        if t.startswith("● "):
+            self.title(t[2:])
+
+    def _check_unsaved(self):
+        """If dirty, ask whether to save. Returns True to proceed, False to abort."""
+        if not self._dirty:
+            return True
+        ans = messagebox.askyesnocancel(
+            "Unsaved Changes",
+            "You have unsaved changes.\n\nSave before continuing?",
+            parent=self,
+        )
+        if ans is True:
+            self._save()
+            return not self._dirty   # abort if save itself was cancelled/failed
+        if ans is False:
+            return True              # discard changes and proceed
+        return False                 # Cancel — do nothing
+
+    def _on_close(self):
+        """WM_DELETE_WINDOW handler — prompt to save if needed."""
+        if self._check_unsaved():
+            self.destroy()
 
     def _build_ui(self):
         # ── Dark branded header bar ─────────────────────────────────
@@ -7114,6 +7156,7 @@ class RedLineApp(tk.Tk):
             self.drawings_tree.insert("","end",iid=name, tags=tags,
                 values=(name,info.get("title",""),info.get("rev",""),
                         local_lbl,info.get("url",""),info.get("notes","")))
+        self._mark_dirty()
 
     def _add_drawing(self):
         dlg = DrawingEditDialog(self, base_url=self.app_config.get("base_drawing_url",""),
@@ -7253,6 +7296,7 @@ class RedLineApp(tk.Tk):
                 info.get("url",      ""),
                 info.get("wo_device",""),
             ))
+        self._mark_dirty()
 
     def _wo_device_list(self):
         """Collect unique device names from all work order jobs."""
@@ -7816,6 +7860,8 @@ class RedLineApp(tk.Tk):
         self.title_notes = scrolledtext.ScrolledText(nf, height=5, wrap="word", font=("", 9))
         self.title_notes.pack(fill="x")
         self.title_notes.insert("1.0", self.title_page.get("notes", ""))
+        self.title_notes.bind("<<Modified>>",
+            lambda e: (self._mark_dirty(), self.title_notes.edit_modified(False)))
         # CROWs
         cf = ttk.LabelFrame(f, text="CROWs (Outage Records)", padding=6)
         cf.pack(fill="both", expand=True)
@@ -7852,6 +7898,7 @@ class RedLineApp(tk.Tk):
             file_str = f"{n} file(s)" if n else ""
             self.crow_tree.insert("", "end", values=(
                 crow.get("outage_number", ""), crow.get("url", ""), file_str))
+        self._mark_dirty()
 
     def _add_crow(self):
         dlg = CrowDialog(self, base_url=self.app_config.get("base_crow_url", ""),
@@ -7975,6 +8022,7 @@ class RedLineApp(tk.Tk):
                 info.get("url_transmission", ""),
                 info.get("notes",            ""),
             ))
+        self._mark_dirty()
 
     def _add_maintenance(self):
         dlg = MaintenanceStandardDialog(
@@ -8106,6 +8154,7 @@ class RedLineApp(tk.Tk):
                 info.get("url",           ""),
                 info.get("notes",         ""),
             ))
+        self._mark_dirty()
 
     def _add_engineering(self):
         dlg = EngineeringStandardDialog(
@@ -9924,6 +9973,7 @@ class RedLineApp(tk.Tk):
         if key not in self.tailboard_refs:
             self.tailboard_refs[key] = {}
         self.tailboard_refs[key]["url"] = self._tb_url_vars[key].get().strip()
+        self._mark_dirty()
 
     def _build_tailboard_headers(self):
         """Return extra HTTP headers for tailboard-site downloads.
@@ -10261,6 +10311,7 @@ class RedLineApp(tk.Tk):
         self._update_status()
         self._refresh_impl_list()
         self._refresh_device_list()
+        self._mark_dirty()
 
     def _on_tree_click(self, event):
         """Toggle completed on click in the ☐/☑ Done column."""
@@ -10448,6 +10499,8 @@ class RedLineApp(tk.Tk):
         # After loading we re-scan jobs to backfill any drawings that exist in job
         # endpoints but are missing from the registry (handles files saved by older
         # versions that lacked the registry), then rebuild ep_history from scratch.
+        if not self._check_unsaved():
+            return
         path = filedialog.askopenfilename(filetypes=[("Red-Line Plan","*.redline"),("Legacy wirePlan","*.wirePlan"),("JSON","*.json"),("All","*.*")])
         if not path: return
         try:
@@ -10480,6 +10533,7 @@ class RedLineApp(tk.Tk):
             if self.mode_var.get() == "impl": self._refresh_file_tabs()
             proj = data.get("project","") or os.path.splitext(os.path.basename(path))[0]
             self.title(f"Red-Line-Routing — {proj}")
+            self._mark_clean()
             self.after_idle(lambda: self._refresh_drawing_cache_bg(stale_only=True))
             self._remember_all_standards()
         except Exception as exc: messagebox.showerror("Open Error",str(exc))
@@ -10531,6 +10585,7 @@ class RedLineApp(tk.Tk):
             self.title(f"Red-Line-Routing — {proj}")
             self._update_status()
             self._remember_all_standards()
+            self._mark_clean()
         except Exception as exc: messagebox.showerror("Save Error",str(exc))
 
     # How often to look for stale cache entries, and how old an entry must
