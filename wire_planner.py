@@ -5709,7 +5709,6 @@ class SoftwareSetupDialog(tk.Toplevel):
         sections = [
             ("Drawings",       [("drawing_search_url",   "Drawing Search URL"),
                                  ("drawing_download_url", "Drawing Download URL"),
-                                 ("w3c_domain",           "W3C Domain"),
                                 ]),
             ("Aspen",          [("aspen_url",           "Aspen URL (future)")]),
             ("CROWs",          [("base_crow_url",       "Base CROW URL")]),
@@ -5720,6 +5719,7 @@ class SoftwareSetupDialog(tk.Toplevel):
             ]),
             ("Engineering Standards", [
                 ("engineering_url", "Engineering Standards URL"),
+                ("w3c_domain",      "W3C Domain"),
             ]),
         ]
         for sec, fields in sections:
@@ -5836,10 +5836,9 @@ class SoftwareSetupDialog(tk.Toplevel):
     def _grab_cookies_win_auth(self, headers_widget):
         url          = self._cfg_vars.get("drawing_search_url",   tk.StringVar()).get().strip()
         download_url = self._cfg_vars.get("drawing_download_url", tk.StringVar()).get().strip()
-        w3c_domain   = self._cfg_vars.get("w3c_domain",           tk.StringVar()).get().strip()
-        if not (url and download_url and w3c_domain):
+        if not (url and download_url):
             messagebox.showwarning("Incomplete Setup",
-                "Fill in Drawing Search URL, Drawing Download URL, and W3C Domain first.",
+                "Fill in Drawing Search URL and Drawing Download URL first.",
                 parent=self)
             return
         domain = _domain_from_url(url)
@@ -7635,7 +7634,6 @@ class RedLineApp(tk.Tk):
         draw_fields = [
             ("drawing_search_url",   "Drawing Search URL:",   "Base URL for the corporate drawing search server"),
             ("drawing_download_url", "Drawing Download URL:", "Direct download base URL for drawings"),
-            ("w3c_domain",           "W3C Domain:",           "Intranet W3C domain — required for Windows Auth cookie grab"),
         ]
         _draw_open = tk.BooleanVar(value=True)
 
@@ -7682,10 +7680,9 @@ class RedLineApp(tk.Tk):
         def _do_win_auth_cookies():
             url          = cfg_vars.get("drawing_search_url",   tk.StringVar()).get().strip()
             download_url = cfg_vars.get("drawing_download_url", tk.StringVar()).get().strip()
-            w3c_domain   = cfg_vars.get("w3c_domain",           tk.StringVar()).get().strip()
-            if not (url and download_url and w3c_domain):
+            if not (url and download_url):
                 messagebox.showwarning("Incomplete Setup",
-                    "Fill in Drawing Search URL, Drawing Download URL, and W3C Domain first.",
+                    "Fill in Drawing Search URL and Drawing Download URL first.",
                     parent=dlg)
                 return
             domain = _domain_from_url(url)
@@ -7707,12 +7704,13 @@ class RedLineApp(tk.Tk):
                    command=_do_win_auth_cookies).pack(side="left")
         ttk.Button(btn_row, text="🔄 Fetch Drawing Options",
                    command=_do_fetch_options).pack(side="left", padx=(6, 0))
-        ttk.Label(btn_row, text="Windows Auth requires all three Drawing URLs to be filled in.",
+        ttk.Label(btn_row, text="Windows Auth requires Drawing Search URL and Drawing Download URL.",
                   foreground="grey", font=("", 8)).pack(side="left", padx=8)
 
         # ── Engineering Standards section (collapsible) ───────────────
         eng_fields = [
             ("engineering_url", "Engineering Standards URL:", "Base URL for the new engineering standards system"),
+            ("w3c_domain",      "W3C Domain:",                "Intranet W3C domain — required for Engineering Windows Auth cookie grab"),
         ]
         _eng_open = tk.BooleanVar(value=True)
 
@@ -7776,7 +7774,7 @@ class RedLineApp(tk.Tk):
         ttk.Button(eng_btn_row, text="🔑 Grab via Windows Auth",
                    command=_do_eng_win_auth).pack(side="left")
         ttk.Label(eng_btn_row,
-                  text="Requires at least one Engineering URL and W3C Domain to be filled in.",
+                  text="Requires Engineering Standards URL and W3C Domain to be filled in.",
                   foreground="grey", font=("", 8)).pack(side="left", padx=8)
 
         # ── All other URL sections ────────────────────────────────────
