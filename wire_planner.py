@@ -4402,7 +4402,8 @@ class DrawingSearchDialog(tk.Toplevel):
         self._v_state.set("Released")
 
     def _build_client(self):
-        base_url = self.app_config.get("drawing_search_url", "").strip()
+        base_url     = self.app_config.get("drawing_search_url",   "").strip()
+        download_url = self.app_config.get("drawing_download_url", "").strip() or None
         if not base_url:
             return None
         path     = self.app_config.get("drawing_search_path", "").strip() or None
@@ -4421,6 +4422,7 @@ class DrawingSearchDialog(tk.Toplevel):
         kw = {"on_cookie_update": _on_cookie_update} if _DSC_HAS_COOKIE_CB else {}
         return DrawingSearchClient(base_url=base_url, cookies=cookies, cache=cache,
                                    search_path=path, extra_headers=extra or None,
+                                   download_url=download_url,
                                    **kw)
 
     def _get_params(self, page=0):
