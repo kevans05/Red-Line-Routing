@@ -5678,13 +5678,15 @@ class _BrowserCookieDialog(tk.Toplevel):
         _center_window(self)
 
     def _show_error(self, msg: str):
-        self._status_lbl.config(text="Error — see details below:", fg="#e74c3c")
-        err_txt = tk.Text(self._cookie_frame, height=10, wrap="word",
+        self._status_lbl.config(text="Error — see details below (you can select and copy):", fg="#e74c3c")
+        self._cookie_frame.pack_configure(fill="both", expand=True)
+        err_txt = tk.Text(self._cookie_frame, height=12, wrap="word",
                           font=("Courier", 8), bg="#fdfefe", fg="#922b21",
                           relief="solid", bd=1)
         err_txt.pack(fill="both", expand=True, pady=(4, 0))
         err_txt.insert("1.0", msg)
-        err_txt.config(state="normal")  # stays editable so user can select/copy
+        self.resizable(True, True)
+        self.geometry("560x420")
         _center_window(self)
 
     def _apply(self):
