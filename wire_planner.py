@@ -5730,41 +5730,68 @@ class _EngineeringBrowseDialog(tk.Toplevel):
         self._client = client
         self._all_standards: list = []
         self._filtered: list = []
+        self._sort_col = "Standard ID"
+        self._sort_rev = False
         self._build()
         _center_window(self)
-        self.geometry("900x560")
+        self.geometry("1000x600")
         self.grab_set()
         self._start_fetch()
         self.wait_window()
 
     def _build(self):
-        # ── toolbar ──────────────────────────────────────────────
-        tb = tk.Frame(self, bg="#f0f0f0", pady=4)
-        tb.pack(fill="x")
-        tk.Label(tb, text="Filter:", bg="#f0f0f0").pack(side="left", padx=(8, 2))
-        self._filter_var = tk.StringVar()
-        self._filter_var.trace_add("write", lambda *_: self._apply_filter())
-        tk.Entry(tb, textvariable=self._filter_var, width=30).pack(side="left", padx=2)
-        tk.Label(tb, text="State:", bg="#f0f0f0").pack(side="left", padx=(12, 2))
-        self._state_var = tk.StringVar(value="Active")
-        state_cb = ttk.Combobox(tb, textvariable=self._state_var,
+        _styled_header(self, "Browse Engineering Standards",
+                       "Select standards to add to this project")
+
+        # ── filter form ──────────────────────────────────────────
+        form = ttk.LabelFrame(self, text="Filter", padding=6)
+        form.pack(fill="x", padx=10, pady=(4, 0))
+
+        row0 = ttk.Frame(form); row0.pack(fill="x", pady=2)
+        row1 = ttk.Frame(form); row1.pack(fill="x", pady=2)
+
+        # Row 0: text searches
+        def _lbl_ent(parent, label, width=20):
+            ttk.Label(parent, text=label).pack(side="left")
+            var = tk.StringVar()
+            var.trace_add("write", lambda *_: self._apply_filter())
+            ttk.Entry(parent, textvariable=var, width=width).pack(side="left", padx=(2, 10))
+            return var
+
+        self._v_id   = _lbl_ent(row0, "Standard ID:", 16)
+        self._v_desc = _lbl_ent(row0, "Description contains:", 30)
+
+        ttk.Button(row0, text="Clear", command=self._clear_filters).pack(side="left", padx=4)
+
+        # Row 1: dropdowns
+        ttk.Label(row1, text="Series:").pack(side="left")
+        self._v_series = tk.StringVar(value="All")
+        self._cb_series = ttk.Combobox(row1, textvariable=self._v_series,
+                                       values=["All"], state="readonly", width=30)
+        self._cb_series.pack(side="left", padx=(2, 10))
+        self._cb_series.bind("<<ComboboxSelected>>", lambda _: self._apply_filter())
+
+        ttk.Label(row1, text="State:").pack(side="left")
+        self._v_state = tk.StringVar(value="Active")
+        state_cb = ttk.Combobox(row1, textvariable=self._v_state,
                                 values=["All", "Active", "Superseded"], state="readonly", width=12)
-        state_cb.pack(side="left", padx=2)
+        state_cb.pack(side="left", padx=(2, 10))
         state_cb.bind("<<ComboboxSelected>>", lambda _: self._apply_filter())
 
-        self._status_lbl = tk.Label(tb, text="Loading…", bg="#f0f0f0", fg="#2980b9")
+        self._status_lbl = ttk.Label(row1, text="Loading…", foreground="#2980b9")
         self._status_lbl.pack(side="left", padx=16)
 
         # ── results tree ─────────────────────────────────────────
         frame = ttk.Frame(self)
-        frame.pack(fill="both", expand=True, padx=4, pady=4)
+        frame.pack(fill="both", expand=True, padx=10, pady=4)
         cols = ("Standard ID", "Description", "Series", "State", "URL")
         self._tree = ttk.Treeview(frame, columns=cols, show="headings",
                                   selectmode="extended")
-        for col, w in zip(cols, (130, 280, 160, 80, 280)):
+        for col, w in zip(cols, (130, 300, 180, 80, 260)):
             self._tree.heading(col, text=col,
                                command=lambda c=col: self._sort_by(c))
-            self._tree.column(col, width=w, minwidth=60)
+            self._tree.column(col, width=w, minwidth=60,
+                              stretch=(col == "Description"))
         vsb = ttk.Scrollbar(frame, orient="vertical", command=self._tree.yview)
         hsb = ttk.Scrollbar(frame, orient="horizontal", command=self._tree.xview)
         self._tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
@@ -5774,7 +5801,7 @@ class _EngineeringBrowseDialog(tk.Toplevel):
         frame.rowconfigure(0, weight=1)
         frame.columnconfigure(0, weight=1)
 
-        # ── buttons ───────────────────────────────────────────────
+        # ── footer buttons ────────────────────────────────────────
         sep = tk.Frame(self, bg="#d5d8dc", height=1); sep.pack(fill="x", side="bottom")
         bf = tk.Frame(self, bg="#eaecee"); bf.pack(fill="x", side="bottom")
         ttk.Button(bf, text="Cancel", command=self.destroy).pack(side="right", padx=(6, 12), pady=8)
@@ -5783,6 +5810,13 @@ class _EngineeringBrowseDialog(tk.Toplevel):
         self._add_btn.pack(side="right", pady=8)
         self._count_lbl = tk.Label(bf, text="", bg="#eaecee", fg="#566573")
         self._count_lbl.pack(side="left", padx=12)
+
+    def _clear_filters(self):
+        self._v_id.set("")
+        self._v_desc.set("")
+        self._v_series.set("All")
+        self._v_state.set("Active")
+        self._apply_filter()
 
     def _start_fetch(self):
         self._client.fetch_all_async(
@@ -5794,27 +5828,39 @@ class _EngineeringBrowseDialog(tk.Toplevel):
 
     def _on_progress(self, done: int, total: int, title: str):
         self._status_lbl.config(
-            text=f"Loading {done}/{total}: {title[:40]}…", fg="#2980b9")
+            text=f"Loading {done}/{total}: {title[:40]}…", foreground="#2980b9")
 
     def _on_loaded(self, standards: list):
         self._all_standards = standards
+        # Populate series dropdown from actual data
+        series_seen = []
+        seen_set = set()
+        for s in standards:
+            if s.series_value not in seen_set:
+                seen_set.add(s.series_value)
+                series_seen.append(s.series_value)
+        self._cb_series.config(values=["All"] + sorted(series_seen))
         self._apply_filter()
-        n = len(standards)
-        self._status_lbl.config(text=f"{n} standard(s) loaded.", fg="#1a7a30")
+        self._status_lbl.config(text=f"{len(standards)} standard(s) loaded.", foreground="#1a7a30")
         self._add_btn.config(state="normal")
 
     def _on_error(self, msg: str):
-        self._status_lbl.config(
-            text=f"Error: {msg[:120]}", fg="#e74c3c", wraplength=600)
+        self._status_lbl.config(text=f"Error: {msg[:140]}", foreground="#e74c3c")
 
     def _apply_filter(self):
-        query = self._filter_var.get().strip().lower()
-        state_filter = self._state_var.get()
+        id_q    = self._v_id.get().strip().lower()
+        desc_q  = self._v_desc.get().strip().lower()
+        series  = self._v_series.get()
+        state   = self._v_state.get()
         filtered = []
         for std in self._all_standards:
-            if state_filter != "All" and std.document_state != state_filter:
+            if state != "All" and std.document_state != state:
                 continue
-            if query and query not in (std.standard_id + std.description + std.series_value).lower():
+            if series != "All" and std.series_value != series:
+                continue
+            if id_q and id_q not in std.standard_id.lower():
+                continue
+            if desc_q and desc_q not in std.description.lower():
                 continue
             filtered.append(std)
         self._filtered = filtered
@@ -5837,8 +5883,18 @@ class _EngineeringBrowseDialog(tk.Toplevel):
         col_map = {"Standard ID": "standard_id", "Description": "description",
                    "Series": "series_value", "State": "document_state", "URL": "url"}
         attr = col_map.get(col, "standard_id")
-        self._filtered.sort(key=lambda s: getattr(s, attr, '').lower())
+        if self._sort_col == col:
+            self._sort_rev = not self._sort_rev
+        else:
+            self._sort_col = col
+            self._sort_rev = False
+        self._filtered.sort(key=lambda s: (getattr(s, attr, '') or '').lower(),
+                            reverse=self._sort_rev)
         self._populate(self._filtered)
+        # Show sort arrow in heading
+        arrow = " ▲" if not self._sort_rev else " ▼"
+        for c in ("Standard ID", "Description", "Series", "State", "URL"):
+            self._tree.heading(c, text=c + (arrow if c == col else ""))
 
     def _add_selected(self):
         sel = self._tree.selection()
@@ -5850,7 +5906,7 @@ class _EngineeringBrowseDialog(tk.Toplevel):
         for iid in sel:
             vals = self._tree.item(iid, "values")
             if vals:
-                selected_ids.add(vals[0])   # Standard ID column
+                selected_ids.add(vals[0])
         self.result = [s for s in self._filtered if s.standard_id in selected_ids]
         self.destroy()
 
@@ -5893,7 +5949,8 @@ class SoftwareSetupDialog(tk.Toplevel):
                 ("base_maintenance_transmission_url", "Base URL (Transmission)"),
             ]),
             ("Engineering Standards", [
-                ("engineering_url", "Engineering Standards URL"),
+                ("engineering_url",     "Engineering Standards URL"),
+                ("engineering_api_url", "Engineering API URL"),
             ]),
         ]
         for sec, fields in sections:
@@ -7883,7 +7940,8 @@ class RedLineApp(tk.Tk):
 
         # ── Engineering Standards section (collapsible) ───────────────
         eng_fields = [
-            ("engineering_url", "Engineering Standards URL:", "Base URL for the new engineering standards system"),
+            ("engineering_url",     "Engineering Standards URL:", "Web app URL — used for Windows Auth cookie grab"),
+            ("engineering_api_url", "Engineering API URL:",       "API base URL for series/sections data (e.g. https://host/esv4)"),
         ]
         _eng_open = tk.BooleanVar(value=True)
 
@@ -8384,10 +8442,11 @@ class RedLineApp(tk.Tk):
             messagebox.showerror("Unavailable",
                 "The engineering_standards package could not be imported.")
             return None
-        base_url = self.app_config.get("engineering_url", "").strip()
-        if not base_url:
+        api_url = (self.app_config.get("engineering_api_url", "")
+                   or self.app_config.get("engineering_url", "")).strip()
+        if not api_url:
             messagebox.showwarning("Setup Required",
-                "Fill in the Engineering Standards URL in File → Software Settings first.")
+                "Fill in the Engineering API URL in File → Software Settings first.")
             return None
         headers = _parse_request_headers_raw(
             self.app_config.get("engineering_request_headers", "")
@@ -8398,7 +8457,7 @@ class RedLineApp(tk.Tk):
                 ttl_hours=float(self.app_config.get("drawing_cache_refresh_hours", 4))
             )
         return EngineeringStandardsClient(
-            base_url=base_url,
+            base_url=api_url,
             headers=headers,
             cache=self._eng_cache,
         )
