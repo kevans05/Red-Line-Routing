@@ -3976,12 +3976,10 @@ class MaintenanceStandardDialog(tk.Toplevel):
 
 class EngineeringStandardDialog(tk.Toplevel):
     """Add/edit an engineering standard record."""
-    def __init__(self, parent, existing=None, base_url_telecom="", base_url_transmission=""):
+    def __init__(self, parent, existing=None):
         super().__init__(parent)
         self.title("Edit Engineering Standard" if existing else "Add Engineering Standard")
         self.result = None
-        self.base_url_telecom = base_url_telecom
-        self.base_url_transmission = base_url_transmission
         self.resizable(False, False)
         self._build(existing or {})
         self.grab_set()
@@ -3994,24 +3992,14 @@ class EngineeringStandardDialog(tk.Toplevel):
 
         stype = ex.get("standard_type", "Telecom")
         stored_url = ex.get("url", "")
-        base = self.base_url_telecom if stype == "Telecom" else self.base_url_transmission
 
-        # Extract document code from stored URL:
-        # 1. strip from known base URL prefix, or
-        # 2. parse documentId= query param directly
+        # Extract document code from stored URL (documentId= query param)
         doc_code_default = ""
         if stored_url:
-            if base and stored_url.startswith(base):
-                doc_code_default = stored_url[len(base):]
-            else:
-                qs = urllib.parse.parse_qs(urllib.parse.urlparse(stored_url).query)
-                if "documentId" in qs:
-                    doc_code_default = qs["documentId"][0]
-                    # also derive base as everything up to and including "documentId="
-                    idx = stored_url.lower().find("documentid=")
-                    if idx != -1 and not base:
-                        base = stored_url[:idx + len("documentId=")]
-        url_default = stored_url if stored_url else base
+            qs = urllib.parse.parse_qs(urllib.parse.urlparse(stored_url).query)
+            if "documentId" in qs:
+                doc_code_default = qs["documentId"][0]
+        url_default = stored_url
 
         self.vars = {
             "standard_id":    tk.StringVar(value=ex.get("standard_id", "")),
@@ -4057,29 +4045,12 @@ class EngineeringStandardDialog(tk.Toplevel):
         url_entry = ttk.Entry(f, textvariable=self.vars["url"], width=52)
         url_entry.grid(row=row_url, column=1, sticky="ew", pady=4)
 
-        def _get_base():
-            t = self.vars["standard_type"].get()
-            return self.base_url_telecom if t == "Telecom" else self.base_url_transmission
-
         def _rebuild_url(*_):
             code = self.vars["document_code"].get().strip()
-            b = _get_base()
-            if code and b:
-                self.vars["url"].set(b + code)
-            elif code:
-                # no base URL configured — just show the code so the user knows it's partial
+            if code and not self.vars["url"].get().strip():
                 self.vars["url"].set(code)
 
-        def _on_type_change(*_):
-            b = _get_base()
-            code = self.vars["document_code"].get().strip()
-            if code and b:
-                self.vars["url"].set(b + code)
-            elif not self.vars["url"].get().strip():
-                self.vars["url"].set(b)
-
         self.vars["document_code"].trace_add("write", _rebuild_url)
-        type_cb.bind("<<ComboboxSelected>>", _on_type_change)
 
         row_n = row_url + 1
         ttk.Label(f, text="Notes:").grid(row=row_n, column=0, sticky="ne", padx=(0, 6), pady=4)
@@ -5748,8 +5719,7 @@ class SoftwareSetupDialog(tk.Toplevel):
                 ("base_maintenance_transmission_url", "Base URL (Transmission)"),
             ]),
             ("Engineering Standards", [
-                ("base_engineering_telecom_url",      "Base URL (Telecom)"),
-                ("base_engineering_transmission_url", "Base URL (Transmission)"),
+                ("engineering_url", "Engineering Standards URL"),
             ]),
         ]
         for sec, fields in sections:
@@ -6551,11 +6521,7 @@ class ProjectWizard(tk.Toplevel):
         self.wiz_eng_tree.bind("<Double-1>", lambda _: self._wiz_edit_eng())
 
     def _wiz_add_eng(self):
-        dlg = EngineeringStandardDialog(
-            self,
-            base_url_telecom=self.app_config.get("base_engineering_telecom_url", ""),
-            base_url_transmission=self.app_config.get("base_engineering_transmission_url", ""),
-        )
+        dlg = EngineeringStandardDialog(self)
         if dlg.result:
             sid = dlg.result["standard_id"]
             self.wiz_eng_stds[sid] = {
@@ -6571,12 +6537,7 @@ class ProjectWizard(tk.Toplevel):
         sel = self.wiz_eng_tree.selection()
         if not sel: return
         sid = sel[0]; info = self.wiz_eng_stds.get(sid, {})
-        dlg = EngineeringStandardDialog(
-            self,
-            existing={"standard_id": sid, **info},
-            base_url_telecom=self.app_config.get("base_engineering_telecom_url", ""),
-            base_url_transmission=self.app_config.get("base_engineering_transmission_url", ""),
-        )
+        dlg = EngineeringStandardDialog(self, existing={"standard_id": sid, **info})
         if dlg.result:
             old = sid; new = dlg.result["standard_id"]
             if old != new: self.wiz_eng_stds.pop(old, None)
@@ -7751,8 +7712,7 @@ class RedLineApp(tk.Tk):
 
         # ── Engineering Standards section (collapsible) ───────────────
         eng_fields = [
-            ("base_engineering_telecom_url",      "Base URL (Telecom):",      "Pre-fills Telecom URL when adding engineering standards"),
-            ("base_engineering_transmission_url", "Base URL (Transmission):", "Pre-fills Transmission URL when adding engineering standards"),
+            ("engineering_url", "Engineering Standards URL:", "Base URL for the new engineering standards system"),
         ]
         _eng_open = tk.BooleanVar(value=True)
 
@@ -7800,8 +7760,7 @@ class RedLineApp(tk.Tk):
         eng_headers_txt.insert("1.0", self.app_config.get("engineering_request_headers", ""))
 
         def _do_eng_win_auth():
-            url = (cfg_vars.get("base_engineering_telecom_url",      tk.StringVar()).get().strip() or
-                   cfg_vars.get("base_engineering_transmission_url", tk.StringVar()).get().strip())
+            url = cfg_vars.get("engineering_url", tk.StringVar()).get().strip()
             w3c = cfg_vars.get("w3c_domain", tk.StringVar()).get().strip()
             if not (url and w3c):
                 messagebox.showwarning("Incomplete Setup",
@@ -8218,11 +8177,7 @@ class RedLineApp(tk.Tk):
         self._mark_dirty()
 
     def _add_engineering(self):
-        dlg = EngineeringStandardDialog(
-            self,
-            base_url_telecom=self.app_config.get("base_engineering_telecom_url", ""),
-            base_url_transmission=self.app_config.get("base_engineering_transmission_url", ""),
-        )
+        dlg = EngineeringStandardDialog(self)
         if dlg.result:
             sid = dlg.result["standard_id"]
             self.engineering_standards_registry[sid] = {
@@ -8256,12 +8211,7 @@ class RedLineApp(tk.Tk):
         sel = self.eng_tree.selection()
         if not sel: messagebox.showinfo("Select", "Please select a standard to edit."); return
         sid = sel[0]; info = self.engineering_standards_registry.get(sid, {})
-        dlg = EngineeringStandardDialog(
-            self,
-            existing={"standard_id": sid, **info},
-            base_url_telecom=self.app_config.get("base_engineering_telecom_url", ""),
-            base_url_transmission=self.app_config.get("base_engineering_transmission_url", ""),
-        )
+        dlg = EngineeringStandardDialog(self, existing={"standard_id": sid, **info})
         if dlg.result:
             old_id = sid; new_id = dlg.result["standard_id"]
             if old_id != new_id and old_id in self.engineering_standards_registry:
