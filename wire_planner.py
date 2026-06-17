@@ -5291,19 +5291,24 @@ def _ps_grab_windows_cookies(url: str) -> dict:
         "$result = Invoke-WebRequest -Uri $url -UseDefaultCredentials -UseBasicParsing -SessionVariable session; "
         "$obj = [PSCustomObject]@{ status = $result.StatusCode; cookies = $session.Cookies.GetCookies($url) }; "
         "$obj | ConvertTo-Json -Depth 5 | Write-Host"
-    )
+    ).replace("\n", "")
+    flags = 0x08000000 if sys.platform == "win32" else 0  # CREATE_NO_WINDOW — suppress console flash
     try:
         r = subprocess.run(
-            ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
+            ["powershell", "-NoProfile", "-NonInteractive",
+             "-ExecutionPolicy", "BYPASS", "-Command", ps],
             capture_output=True, text=True, timeout=30,
+            creationflags=flags,
         )
     except FileNotFoundError:
         raise RuntimeError("PowerShell not found.")
     if r.returncode != 0:
         raise RuntimeError(f"PowerShell error:\n{(r.stderr or r.stdout).strip()}")
     try:
-        data = json.loads(r.stdout)
-    except json.JSONDecodeError as exc:
+        # Strip \r — PowerShell uses \r\n line endings which bleed into JSON string values
+        data = {k: v.replace("\r", "") if isinstance(v, str) else v
+                for k, v in json.loads(r.stdout).items()}
+    except (json.JSONDecodeError, AttributeError) as exc:
         raise RuntimeError(
             f"Could not parse PowerShell output:\n{exc}\n\nOutput: {r.stdout[:300]}"
         ) from exc
@@ -5315,7 +5320,7 @@ def _ps_grab_windows_cookies(url: str) -> dict:
         name  = cookie.get("Name") or cookie.get("name", "")
         value = cookie.get("Value") if "Value" in cookie else cookie.get("value", "")
         if name:
-            result[name] = value or ""
+            result[name] = (value or "").replace("\r", "")
     return result
 
 
