@@ -7749,6 +7749,77 @@ class RedLineApp(tk.Tk):
         ttk.Label(btn_row, text="Windows Auth requires all three Drawing URLs to be filled in.",
                   foreground="grey", font=("", 8)).pack(side="left", padx=8)
 
+        # ── Engineering Standards section (collapsible) ───────────────
+        eng_fields = [
+            ("base_engineering_telecom_url",      "Base URL (Telecom):",      "Pre-fills Telecom URL when adding engineering standards"),
+            ("base_engineering_transmission_url", "Base URL (Transmission):", "Pre-fills Transmission URL when adding engineering standards"),
+        ]
+        _eng_open = tk.BooleanVar(value=True)
+
+        eng_hdr = ttk.Frame(f)
+        eng_hdr.pack(fill="x", pady=(0, 0))
+        _eng_caret = ttk.Label(eng_hdr, text="▼ Engineering Standards", cursor="hand2", font=("", 9, "bold"))
+        _eng_caret.pack(side="left", pady=(4, 2))
+
+        eng_body = ttk.LabelFrame(f, padding=8)
+        eng_body.pack(fill="x", pady=(0, 8))
+        eng_body.columnconfigure(1, weight=1)
+
+        def _toggle_eng(e=None):
+            if _eng_open.get():
+                eng_body.pack_forget()
+                _eng_caret.config(text="▶ Engineering Standards")
+                _eng_open.set(False)
+            else:
+                eng_body.pack(fill="x", pady=(0, 8), after=eng_hdr)
+                _eng_caret.config(text="▼ Engineering Standards")
+                _eng_open.set(True)
+            f.update_idletasks()
+            _canvas.configure(scrollregion=_canvas.bbox("all"))
+
+        eng_hdr.bind("<Button-1>", _toggle_eng)
+        _eng_caret.bind("<Button-1>", _toggle_eng)
+
+        for r, (key, label, hint) in enumerate(eng_fields):
+            ttk.Label(eng_body, text=label).grid(row=r*2, column=0, sticky="e", padx=(0,6), pady=3)
+            var = tk.StringVar(value=self.app_config.get(key, ""))
+            cfg_vars[key] = var
+            ttk.Entry(eng_body, textvariable=var, width=52).grid(row=r*2, column=1, sticky="ew", pady=3)
+            ttk.Label(eng_body, text=hint, foreground="grey", font=("",8)).grid(
+                row=r*2+1, column=0, columnspan=2, sticky="w", pady=(0,2))
+
+        n_eng = len(eng_fields)
+        ttk.Separator(eng_body, orient="horizontal").grid(
+            row=n_eng*2, column=0, columnspan=2, sticky="ew", pady=(8, 4))
+        ttk.Label(eng_body, text="Override headers (leave blank to use Drawing headers above):",
+                  foreground="grey", font=("", 8)).grid(
+            row=n_eng*2+1, column=0, columnspan=2, sticky="w", pady=(0, 2))
+
+        eng_headers_txt = scrolledtext.ScrolledText(eng_body, height=3, font=("Courier", 9), wrap="none")
+        eng_headers_txt.grid(row=n_eng*2+2, column=0, columnspan=2, sticky="ew", pady=(0, 4))
+        eng_headers_txt.insert("1.0", self.app_config.get("engineering_request_headers", ""))
+
+        def _do_eng_win_auth():
+            url = (cfg_vars.get("base_engineering_telecom_url",      tk.StringVar()).get().strip() or
+                   cfg_vars.get("base_engineering_transmission_url", tk.StringVar()).get().strip())
+            w3c = cfg_vars.get("w3c_domain", tk.StringVar()).get().strip()
+            if not (url and w3c):
+                messagebox.showwarning("Incomplete Setup",
+                    "Fill in at least one Engineering Standards URL and the W3C Domain first.",
+                    parent=dlg)
+                return
+            domain = _domain_from_url(url)
+            _BrowserCookieDialog(dlg, domain, eng_headers_txt,
+                                 cookies_fn=lambda _: _ps_grab_windows_cookies(url))
+
+        eng_btn_row = ttk.Frame(eng_body)
+        eng_btn_row.grid(row=n_eng*2+3, column=0, columnspan=2, sticky="w", pady=(0, 2))
+        ttk.Button(eng_btn_row, text="🔑 Grab via Windows Auth",
+                   command=_do_eng_win_auth).pack(side="left")
+        ttk.Label(eng_btn_row,
+                  text="Requires at least one Engineering URL and W3C Domain to be filled in.",
+                  foreground="grey", font=("", 8)).pack(side="left", padx=8)
+
         # ── All other URL sections ────────────────────────────────────
         other_sections = [
             ("Aspen", [
@@ -7763,10 +7834,6 @@ class RedLineApp(tk.Tk):
             ("Maintenance Standards", [
                 ("base_maintenance_telecom_url",      "Base URL (Telecom):",      "Pre-fills Telecom URL when adding maintenance standards"),
                 ("base_maintenance_transmission_url", "Base URL (Transmission):", "Pre-fills Transmission URL when adding maintenance standards"),
-            ]),
-            ("Engineering Standards", [
-                ("base_engineering_telecom_url",      "Base URL (Telecom):",      "Pre-fills Telecom URL when adding engineering standards"),
-                ("base_engineering_transmission_url", "Base URL (Transmission):", "Pre-fills Transmission URL when adding engineering standards"),
             ]),
             ("Tailboard", [
                 ("tailboard_url",  "Tailboard URL:",  "Pre-fills the Tailboard Template URL on the Tailboards tab"),
@@ -7785,16 +7852,6 @@ class RedLineApp(tk.Tk):
                 ttk.Entry(lf, textvariable=var, width=52).grid(row=r*2, column=1, sticky="ew", pady=3)
                 ttk.Label(lf, text=hint, foreground="grey", font=("",8)).grid(
                     row=r*2+1, column=0, columnspan=2, sticky="w", pady=(0,2))
-
-        eng_hdrs_lf = ttk.LabelFrame(f, text="Engineering Standards Headers (optional override)", padding=8)
-        eng_hdrs_lf.pack(fill="x", pady=(0, 8))
-        ttk.Label(eng_hdrs_lf,
-                  text="Leave blank to use the master headers above. Fill in only if engineering\n"
-                       "standards are served from a different server with different auth credentials.",
-                  foreground="grey", font=("", 8), justify="left").pack(anchor="w", pady=(0, 4))
-        eng_headers_txt = scrolledtext.ScrolledText(eng_hdrs_lf, height=3, font=("Courier", 9), wrap="none")
-        eng_headers_txt.pack(fill="x")
-        eng_headers_txt.insert("1.0", self.app_config.get("engineering_request_headers", ""))
 
         tb_hdrs_lf = ttk.LabelFrame(f, text="Tailboard Site Headers (optional override)", padding=8)
         tb_hdrs_lf.pack(fill="x", pady=(0, 8))
