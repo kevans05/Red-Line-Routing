@@ -5261,14 +5261,20 @@ def _ps_grab_windows_cookies(url: str) -> dict:
     if sys.platform != "win32":
         raise RuntimeError("Windows authentication cookie grab requires Windows.")
     url_esc = url.replace("'", "''")
-    # Unique markers let us extract only the JSON line even when the server
-    # returns an HTML page (SPA boot page, redirect, etc.) that leaks into stdout.
+    # try/catch inside PowerShell so a non-2xx response (401, redirect-to-login, SPA
+    # boot page) doesn't abort before we can extract session cookies.
+    # Unique markers isolate the JSON from any HTML that leaks into stdout.
     ps = (
-        "$ErrorActionPreference = 'Stop'; "
         f"$url = '{url_esc}'; "
         "$session = New-Object Microsoft.PowerShell.Commands.WebRequestSession; "
-        "$result = Invoke-WebRequest -Uri $url -UseDefaultCredentials -UseBasicParsing -SessionVariable session; "
-        "$obj = [PSCustomObject]@{ status = $result.StatusCode; cookies = $session.Cookies.GetCookies($url) }; "
+        "$status = 0; "
+        "try { "
+        "  $r = Invoke-WebRequest -Uri $url -UseDefaultCredentials -UseBasicParsing -WebSession $session; "
+        "  $status = $r.StatusCode "
+        "} catch [System.Net.WebException] { "
+        "  if ($_.Exception.Response) { $status = [int]$_.Exception.Response.StatusCode } "
+        "} catch { $status = -1 }; "
+        "$obj = [PSCustomObject]@{ status = $status; cookies = $session.Cookies.GetCookies($url) }; "
         "Write-Host '__RLR_JSON_START__'; "
         "$obj | ConvertTo-Json -Depth 5 | Write-Host; "
         "Write-Host '__RLR_JSON_END__'"
@@ -5283,7 +5289,7 @@ def _ps_grab_windows_cookies(url: str) -> dict:
         )
     except FileNotFoundError:
         raise RuntimeError("PowerShell not found.")
-    if r.returncode != 0:
+    if r.returncode != 0 and "__RLR_JSON_START__" not in r.stdout:
         raise RuntimeError(f"PowerShell error:\n{(r.stderr or r.stdout).strip()}")
     # Extract the JSON block between our markers — ignores any HTML/debug output
     stdout = r.stdout
