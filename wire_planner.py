@@ -83,6 +83,14 @@ except ImportError:
     _DSC_HAS_COOKIE_CB = False
     _DSC_HAS_DOWNLOAD_URL = False
 
+try:
+    from engineering_standards import (EngineeringStandardsClient,
+                                       EngineeringStandardsCache,
+                                       EngineeringSeries, EngineeringStandard)
+    _ENG_STD_AVAILABLE = True
+except ImportError:
+    _ENG_STD_AVAILABLE = False
+
 
 # ──────────────────────────────────────────────────────────────────
 # Drawing-type helper
@@ -5708,6 +5716,145 @@ class _BrowserCookieDialog(tk.Toplevel):
         self.destroy()
 
 
+class _EngineeringBrowseDialog(tk.Toplevel):
+    """Browse and select engineering standards from the live tree API.
+
+    result: list[EngineeringStandard] of selected items, or None on cancel.
+    """
+
+    def __init__(self, parent, client):
+        super().__init__(parent)
+        self.title("Browse Engineering Standards")
+        self.resizable(True, True)
+        self.result = None
+        self._client = client
+        self._all_standards: list = []
+        self._filtered: list = []
+        self._build()
+        _center_window(self)
+        self.geometry("900x560")
+        self.grab_set()
+        self._start_fetch()
+        self.wait_window()
+
+    def _build(self):
+        # ── toolbar ──────────────────────────────────────────────
+        tb = tk.Frame(self, bg="#f0f0f0", pady=4)
+        tb.pack(fill="x")
+        tk.Label(tb, text="Filter:", bg="#f0f0f0").pack(side="left", padx=(8, 2))
+        self._filter_var = tk.StringVar()
+        self._filter_var.trace_add("write", lambda *_: self._apply_filter())
+        tk.Entry(tb, textvariable=self._filter_var, width=30).pack(side="left", padx=2)
+        tk.Label(tb, text="State:", bg="#f0f0f0").pack(side="left", padx=(12, 2))
+        self._state_var = tk.StringVar(value="Active")
+        state_cb = ttk.Combobox(tb, textvariable=self._state_var,
+                                values=["All", "Active", "Superseded"], state="readonly", width=12)
+        state_cb.pack(side="left", padx=2)
+        state_cb.bind("<<ComboboxSelected>>", lambda _: self._apply_filter())
+
+        self._status_lbl = tk.Label(tb, text="Loading…", bg="#f0f0f0", fg="#2980b9")
+        self._status_lbl.pack(side="left", padx=16)
+
+        # ── results tree ─────────────────────────────────────────
+        frame = ttk.Frame(self)
+        frame.pack(fill="both", expand=True, padx=4, pady=4)
+        cols = ("Standard ID", "Description", "Series", "State", "URL")
+        self._tree = ttk.Treeview(frame, columns=cols, show="headings",
+                                  selectmode="extended")
+        for col, w in zip(cols, (130, 280, 160, 80, 280)):
+            self._tree.heading(col, text=col,
+                               command=lambda c=col: self._sort_by(c))
+            self._tree.column(col, width=w, minwidth=60)
+        vsb = ttk.Scrollbar(frame, orient="vertical", command=self._tree.yview)
+        hsb = ttk.Scrollbar(frame, orient="horizontal", command=self._tree.xview)
+        self._tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
+        self._tree.grid(row=0, column=0, sticky="nsew")
+        vsb.grid(row=0, column=1, sticky="ns")
+        hsb.grid(row=1, column=0, sticky="ew")
+        frame.rowconfigure(0, weight=1)
+        frame.columnconfigure(0, weight=1)
+
+        # ── buttons ───────────────────────────────────────────────
+        sep = tk.Frame(self, bg="#d5d8dc", height=1); sep.pack(fill="x", side="bottom")
+        bf = tk.Frame(self, bg="#eaecee"); bf.pack(fill="x", side="bottom")
+        ttk.Button(bf, text="Cancel", command=self.destroy).pack(side="right", padx=(6, 12), pady=8)
+        self._add_btn = ttk.Button(bf, text="Add Selected",
+                                   state="disabled", command=self._add_selected)
+        self._add_btn.pack(side="right", pady=8)
+        self._count_lbl = tk.Label(bf, text="", bg="#eaecee", fg="#566573")
+        self._count_lbl.pack(side="left", padx=12)
+
+    def _start_fetch(self):
+        self._client.fetch_all_async(
+            on_done=lambda results: self.after(0, self._on_loaded, results),
+            on_error=lambda exc: self.after(0, self._on_error, str(exc)),
+            on_progress=lambda done, total, title: self.after(
+                0, self._on_progress, done, total, title),
+        )
+
+    def _on_progress(self, done: int, total: int, title: str):
+        self._status_lbl.config(
+            text=f"Loading {done}/{total}: {title[:40]}…", fg="#2980b9")
+
+    def _on_loaded(self, standards: list):
+        self._all_standards = standards
+        self._apply_filter()
+        n = len(standards)
+        self._status_lbl.config(text=f"{n} standard(s) loaded.", fg="#1a7a30")
+        self._add_btn.config(state="normal")
+
+    def _on_error(self, msg: str):
+        self._status_lbl.config(
+            text=f"Error: {msg[:120]}", fg="#e74c3c", wraplength=600)
+
+    def _apply_filter(self):
+        query = self._filter_var.get().strip().lower()
+        state_filter = self._state_var.get()
+        filtered = []
+        for std in self._all_standards:
+            if state_filter != "All" and std.document_state != state_filter:
+                continue
+            if query and query not in (std.standard_id + std.description + std.series_value).lower():
+                continue
+            filtered.append(std)
+        self._filtered = filtered
+        self._populate(filtered)
+
+    def _populate(self, standards: list):
+        for iid in self._tree.get_children():
+            self._tree.delete(iid)
+        for std in standards:
+            self._tree.insert("", "end", values=(
+                std.standard_id,
+                std.description,
+                std.series_value,
+                std.document_state,
+                std.url,
+            ))
+        self._count_lbl.config(text=f"{len(standards)} shown")
+
+    def _sort_by(self, col: str):
+        col_map = {"Standard ID": "standard_id", "Description": "description",
+                   "Series": "series_value", "State": "document_state", "URL": "url"}
+        attr = col_map.get(col, "standard_id")
+        self._filtered.sort(key=lambda s: getattr(s, attr, '').lower())
+        self._populate(self._filtered)
+
+    def _add_selected(self):
+        sel = self._tree.selection()
+        if not sel:
+            messagebox.showwarning("Nothing selected",
+                                   "Select at least one standard.", parent=self)
+            return
+        selected_ids = set()
+        for iid in sel:
+            vals = self._tree.item(iid, "values")
+            if vals:
+                selected_ids.add(vals[0])   # Standard ID column
+        self.result = [s for s in self._filtered if s.standard_id in selected_ids]
+        self.destroy()
+
+
 class SoftwareSetupDialog(tk.Toplevel):
     """First-time global setup: collect base URLs."""
     def __init__(self, parent, app_config):
@@ -5747,7 +5894,6 @@ class SoftwareSetupDialog(tk.Toplevel):
             ]),
             ("Engineering Standards", [
                 ("engineering_url", "Engineering Standards URL"),
-                ("w3c_domain",      "W3C Domain"),
             ]),
         ]
         for sec, fields in sections:
@@ -7738,7 +7884,6 @@ class RedLineApp(tk.Tk):
         # ── Engineering Standards section (collapsible) ───────────────
         eng_fields = [
             ("engineering_url", "Engineering Standards URL:", "Base URL for the new engineering standards system"),
-            ("w3c_domain",      "W3C Domain:",                "Intranet W3C domain — required for Engineering Windows Auth cookie grab"),
         ]
         _eng_open = tk.BooleanVar(value=True)
 
@@ -7787,10 +7932,9 @@ class RedLineApp(tk.Tk):
 
         def _do_eng_win_auth():
             url = cfg_vars.get("engineering_url", tk.StringVar()).get().strip()
-            w3c = cfg_vars.get("w3c_domain", tk.StringVar()).get().strip()
-            if not (url and w3c):
+            if not url:
                 messagebox.showwarning("Incomplete Setup",
-                    "Fill in at least one Engineering Standards URL and the W3C Domain first.",
+                    "Fill in the Engineering Standards URL first.",
                     parent=dlg)
                 return
             domain = _domain_from_url(url)
@@ -7802,7 +7946,7 @@ class RedLineApp(tk.Tk):
         ttk.Button(eng_btn_row, text="🔑 Grab via Windows Auth",
                    command=_do_eng_win_auth).pack(side="left")
         ttk.Label(eng_btn_row,
-                  text="Requires Engineering Standards URL and W3C Domain to be filled in.",
+                  text="Requires Engineering Standards URL to be filled in.",
                   foreground="grey", font=("", 8)).pack(side="left", padx=8)
 
         # ── All other URL sections ────────────────────────────────────
@@ -8157,6 +8301,7 @@ class RedLineApp(tk.Tk):
     def _build_engineering_tab(self, parent):
         tb = ttk.Frame(parent, padding=(4, 4)); tb.pack(fill="x")
         ttk.Button(tb, text="+ Add",           command=self._add_engineering).pack(side="left", padx=2)
+        ttk.Button(tb, text="🔍 Browse",        command=self._browse_engineering).pack(side="left", padx=2)
         ttk.Button(tb, text="📚 From Library",  command=self._add_engineering_from_library).pack(side="left", padx=2)
         ttk.Button(tb, text="Edit",            command=self._edit_engineering).pack(side="left", padx=2)
         ttk.Button(tb, text="Delete",          command=self._delete_engineering).pack(side="left", padx=2)
@@ -8232,6 +8377,56 @@ class RedLineApp(tk.Tk):
             self.engineering_standards_registry.update(dlg.result)
             self._refresh_engineering_list()
             self.status_var.set(f"Added {len(dlg.result)} standard(s) from library")
+
+    def _build_eng_client(self):
+        """Build an EngineeringStandardsClient from current app config."""
+        if not _ENG_STD_AVAILABLE:
+            messagebox.showerror("Unavailable",
+                "The engineering_standards package could not be imported.")
+            return None
+        base_url = self.app_config.get("engineering_url", "").strip()
+        if not base_url:
+            messagebox.showwarning("Setup Required",
+                "Fill in the Engineering Standards URL in File → Software Settings first.")
+            return None
+        headers = _parse_request_headers_raw(
+            self.app_config.get("engineering_request_headers", "")
+            or self.app_config.get("request_headers", "")
+        )
+        if not hasattr(self, "_eng_cache"):
+            self._eng_cache = EngineeringStandardsCache(
+                ttl_hours=float(self.app_config.get("drawing_cache_refresh_hours", 4))
+            )
+        return EngineeringStandardsClient(
+            base_url=base_url,
+            headers=headers,
+            cache=self._eng_cache,
+        )
+
+    def _browse_engineering(self):
+        client = self._build_eng_client()
+        if client is None:
+            return
+        dlg = _EngineeringBrowseDialog(self, client)
+        if dlg.result:
+            added = 0
+            for std in dlg.result:
+                sid = std.standard_id
+                if sid:
+                    self.engineering_standards_registry[sid] = {
+                        "title":         std.description,
+                        "revision":      str(std.major_version) if std.major_version else "",
+                        "standard_type": "",
+                        "url":           std.url,
+                        "notes":         "",
+                    }
+                    self._remember_standard("engineering", sid,
+                                            self.engineering_standards_registry[sid])
+                    added += 1
+            if added:
+                self._refresh_engineering_list()
+                self._mark_dirty()
+                self.status_var.set(f"Added {added} engineering standard(s) from browse")
 
     def _edit_engineering(self):
         sel = self.eng_tree.selection()
