@@ -5261,13 +5261,17 @@ def _ps_grab_windows_cookies(url: str) -> dict:
     if sys.platform != "win32":
         raise RuntimeError("Windows authentication cookie grab requires Windows.")
     url_esc = url.replace("'", "''")
+    # Unique markers let us extract only the JSON line even when the server
+    # returns an HTML page (SPA boot page, redirect, etc.) that leaks into stdout.
     ps = (
         "$ErrorActionPreference = 'Stop'; "
         f"$url = '{url_esc}'; "
         "$session = New-Object Microsoft.PowerShell.Commands.WebRequestSession; "
         "$result = Invoke-WebRequest -Uri $url -UseDefaultCredentials -UseBasicParsing -SessionVariable session; "
         "$obj = [PSCustomObject]@{ status = $result.StatusCode; cookies = $session.Cookies.GetCookies($url) }; "
-        "$obj | ConvertTo-Json -Depth 5 | Write-Host"
+        "Write-Host '__RLR_JSON_START__'; "
+        "$obj | ConvertTo-Json -Depth 5 | Write-Host; "
+        "Write-Host '__RLR_JSON_END__'"
     ).replace("\n", "")
     flags = 0x08000000 if sys.platform == "win32" else 0  # CREATE_NO_WINDOW — suppress console flash
     try:
@@ -5281,13 +5285,22 @@ def _ps_grab_windows_cookies(url: str) -> dict:
         raise RuntimeError("PowerShell not found.")
     if r.returncode != 0:
         raise RuntimeError(f"PowerShell error:\n{(r.stderr or r.stdout).strip()}")
+    # Extract the JSON block between our markers — ignores any HTML/debug output
+    stdout = r.stdout
+    start = stdout.find("__RLR_JSON_START__")
+    end   = stdout.find("__RLR_JSON_END__")
+    if start == -1 or end == -1:
+        raise RuntimeError(
+            f"Could not locate JSON output in PowerShell response.\n\nOutput: {stdout[:300]}"
+        )
+    json_text = stdout[start + len("__RLR_JSON_START__"):end].strip()
     try:
         # Strip \r — PowerShell uses \r\n line endings which bleed into JSON string values
         data = {k: v.replace("\r", "") if isinstance(v, str) else v
-                for k, v in json.loads(r.stdout).items()}
+                for k, v in json.loads(json_text).items()}
     except (json.JSONDecodeError, AttributeError) as exc:
         raise RuntimeError(
-            f"Could not parse PowerShell output:\n{exc}\n\nOutput: {r.stdout[:300]}"
+            f"Could not parse PowerShell output:\n{exc}\n\nOutput: {json_text[:300]}"
         ) from exc
     raw = data.get("cookies") or []
     if isinstance(raw, dict):
