@@ -1160,7 +1160,7 @@ class JobDialog(tk.Toplevel):
 
             self.ep_prot = ProtectionFrame(f, "Equipment / Device",
                                            registry=self.registry, job_type=self.job_type,
-                                           base_drawing_url=self.settings.get("base_drawing_url",""))
+                                           base_drawing_url=self.settings.get("drawing_download_url",""))
             self.ep_prot.grid(row=row, column=0, columnspan=2, sticky="ew", pady=2)
             self.ep_prot.set(ex.get("protection",{}))
             row += 1
@@ -1198,7 +1198,7 @@ class JobDialog(tk.Toplevel):
             row += 1
             self._iso_drawings_frame = MultiDrawingFrame(
                 f, registry=self.registry,
-                base_drawing_url=self.settings.get("base_drawing_url", ""))
+                base_drawing_url=self.settings.get("drawing_download_url", ""))
             self._iso_drawings_frame.grid(row=row, column=0, columnspan=2, sticky="ew", pady=(4,2))
             self._iso_drawings_frame.set(ex.get("drawings", []))
             row += 1
@@ -5730,10 +5730,9 @@ class SoftwareSetupDialog(tk.Toplevel):
                  bg="white", justify="left", fg="#566573", font=("", 9)).pack(anchor="w", pady=(0, 14))
 
         sections = [
-            ("Drawings",       [("base_drawing_url",     "Base Drawing URL"),      # legacy pre-fill; some paths map to drawing_download_url
-                                 ("drawing_search_url",   "Drawing Search URL"),
-                                 ("drawing_download_url", "Drawing Download URL"),  # new: direct download base URL
-                                 ("w3c_domain",           "W3C Domain"),            # new: intranet W3C domain
+            ("Drawings",       [("drawing_search_url",   "Drawing Search URL"),
+                                 ("drawing_download_url", "Drawing Download URL"),
+                                 ("w3c_domain",           "W3C Domain"),
                                 ]),
             ("Aspen",          [("aspen_url",           "Aspen URL (future)")]),
             ("CROWs",          [("base_crow_url",       "Base CROW URL")]),
@@ -5780,19 +5779,13 @@ class SoftwareSetupDialog(tk.Toplevel):
         self._headers_txt.insert("1.0", cfg.get("request_headers", ""))
         grab_row = tk.Frame(auth_body, bg="white"); grab_row.pack(anchor="w", padx=4, pady=(4, 0))
         tk.Button(
-            grab_row, text="🍪 Grab from Browser",
-            command=lambda: self._grab_cookies(self._headers_txt),
-            bg="#1a7a30", fg="white", relief="flat", font=("", 8),
-            cursor="hand2", activebackground="#229954", activeforeground="white",
-            padx=8, pady=3).pack(side="left")
-        tk.Button(
             grab_row, text="🔑 Grab via Windows Auth",
             command=lambda: self._grab_cookies_win_auth(self._headers_txt),
             bg="#6c3483", fg="white", relief="flat", font=("", 8),
             cursor="hand2", activebackground="#7d3c98", activeforeground="white",
-            padx=8, pady=3).pack(side="left", padx=(6, 0))
+            padx=8, pady=3).pack(side="left")
         tk.Label(grab_row,
-                 text="Browser: reads from Edge/Chrome.  Windows Auth: uses your domain login (requires all three Drawing URLs).",
+                 text="Uses your Windows domain login — requires Drawing Search URL, Drawing Download URL, and W3C Domain.",
                  bg="white", fg="#7f8c8d", font=("", 8)).pack(side="left", padx=8)
         # Engineering Standards Headers (optional per-server override)
         eng_hdr_row = tk.Frame(body, bg="white"); eng_hdr_row.pack(fill="x", pady=(6, 4))
@@ -5863,18 +5856,6 @@ class SoftwareSetupDialog(tk.Toplevel):
         raw  = self._headers_txt.get("1.0", "end") if self._headers_txt else ""
         headers = _parse_request_headers_raw(raw)
         _show_fetch_options_dialog(self, url, headers)
-
-    def _grab_cookies(self, headers_widget):
-        url = self._cfg_vars.get("drawing_search_url", tk.StringVar()).get().strip()
-        if not url:
-            url = self._cfg_vars.get("base_drawing_url", tk.StringVar()).get().strip()
-        domain = _domain_from_url(url) if url else ""
-        if not domain:
-            messagebox.showwarning("No URL",
-                "Set a Drawing Search URL (or Base Drawing URL) first so the domain is known.",
-                parent=self)
-            return
-        _BrowserCookieDialog(self, domain, headers_widget)
 
     def _grab_cookies_win_auth(self, headers_widget):
         url          = self._cfg_vars.get("drawing_search_url",   tk.StringVar()).get().strip()
@@ -6316,7 +6297,7 @@ class ProjectWizard(tk.Toplevel):
         self.wiz_drw_tree.bind("<Double-1>", lambda _: self._wiz_edit_drawing())
 
     def _wiz_add_drawing(self):
-        dlg = DrawingEditDialog(self, base_url=self.app_config.get("base_drawing_url",""),
+        dlg = DrawingEditDialog(self, base_url=self.app_config.get("drawing_download_url",""),
                                 app_config=self.app_config)
         if dlg.result:
             n = dlg.result["name"]
@@ -6328,7 +6309,7 @@ class ProjectWizard(tk.Toplevel):
         if not sel: return
         n = sel[0]; info = self.wiz_drawings.get(n, {})
         dlg = DrawingEditDialog(self, existing={"name":n,**info},
-                                base_url=self.app_config.get("base_drawing_url",""),
+                                base_url=self.app_config.get("drawing_download_url",""),
                                 app_config=self.app_config)
         if dlg.result:
             old = dlg.result.get("old_name"); new = dlg.result["name"]
@@ -7164,7 +7145,7 @@ class RedLineApp(tk.Tk):
         self._mark_dirty()
 
     def _add_drawing(self):
-        dlg = DrawingEditDialog(self, base_url=self.app_config.get("base_drawing_url",""),
+        dlg = DrawingEditDialog(self, base_url=self.app_config.get("drawing_download_url",""),
                                 app_config=self.app_config,
                                 proj_cache=self._drawing_cache)
         if dlg.result:
@@ -7177,7 +7158,7 @@ class RedLineApp(tk.Tk):
         if not sel: messagebox.showinfo("Select","Please select a drawing to edit."); return
         name = sel[0]; info = self.drawing_registry.get(name,{})
         dlg = DrawingEditDialog(self, existing={"name":name,**info},
-                                base_url=self.app_config.get("base_drawing_url",""),
+                                base_url=self.app_config.get("drawing_download_url",""),
                                 app_config=self.app_config,
                                 proj_cache=self._drawing_cache)
         if dlg.result:
@@ -7681,13 +7662,89 @@ class RedLineApp(tk.Tk):
         dlg.bind("<Destroy>", lambda e: _canvas.unbind_all("<MouseWheel>")
                  if e.widget is dlg else None)
 
-        sections = [
-            ("Drawings", [
-                ("base_drawing_url",     "Base Drawing URL:",     "Legacy pre-fill URL; some code paths map this to Drawing Download URL"),
-                ("drawing_search_url",   "Drawing Search URL:",   "Base URL for the corporate drawing search server"),
-                ("drawing_download_url", "Drawing Download URL:", "Direct download base URL for drawings"),
-                ("w3c_domain",           "W3C Domain:",           "Intranet W3C domain — required for Windows Auth cookie grab"),
-            ]),
+        cfg_vars = {}
+
+        # ── Drawings section (collapsible) ───────────────────────────
+        draw_fields = [
+            ("drawing_search_url",   "Drawing Search URL:",   "Base URL for the corporate drawing search server"),
+            ("drawing_download_url", "Drawing Download URL:", "Direct download base URL for drawings"),
+            ("w3c_domain",           "W3C Domain:",           "Intranet W3C domain — required for Windows Auth cookie grab"),
+        ]
+        _draw_open = tk.BooleanVar(value=True)
+
+        draw_hdr = ttk.Frame(f)
+        draw_hdr.pack(fill="x", pady=(0, 0))
+        _draw_caret = ttk.Label(draw_hdr, text="▼ Drawings", cursor="hand2", font=("", 9, "bold"))
+        _draw_caret.pack(side="left", pady=(4, 2))
+
+        draw_body = ttk.LabelFrame(f, padding=8)
+        draw_body.pack(fill="x", pady=(0, 8))
+        draw_body.columnconfigure(1, weight=1)
+
+        def _toggle_drawings(e=None):
+            if _draw_open.get():
+                draw_body.pack_forget()
+                _draw_caret.config(text="▶ Drawings")
+                _draw_open.set(False)
+            else:
+                draw_body.pack(fill="x", pady=(0, 8), after=draw_hdr)
+                _draw_caret.config(text="▼ Drawings")
+                _draw_open.set(True)
+            f.update_idletasks()
+            _canvas.configure(scrollregion=_canvas.bbox("all"))
+
+        draw_hdr.bind("<Button-1>", _toggle_drawings)
+        _draw_caret.bind("<Button-1>", _toggle_drawings)
+
+        for r, (key, label, hint) in enumerate(draw_fields):
+            ttk.Label(draw_body, text=label).grid(row=r*2, column=0, sticky="e", padx=(0,6), pady=3)
+            var = tk.StringVar(value=self.app_config.get(key, ""))
+            cfg_vars[key] = var
+            ttk.Entry(draw_body, textvariable=var, width=52).grid(row=r*2, column=1, sticky="ew", pady=3)
+            ttk.Label(draw_body, text=hint, foreground="grey", font=("",8)).grid(
+                row=r*2+1, column=0, columnspan=2, sticky="w", pady=(0,2))
+
+        n_draw = len(draw_fields)
+        ttk.Separator(draw_body, orient="horizontal").grid(
+            row=n_draw*2, column=0, columnspan=2, sticky="ew", pady=(8, 4))
+
+        headers_txt = scrolledtext.ScrolledText(draw_body, height=4, font=("Courier", 9), wrap="none")
+        headers_txt.grid(row=n_draw*2+1, column=0, columnspan=2, sticky="ew", pady=(0, 4))
+        headers_txt.insert("1.0", self.app_config.get("request_headers", ""))
+
+        def _do_win_auth_cookies():
+            url          = cfg_vars.get("drawing_search_url",   tk.StringVar()).get().strip()
+            download_url = cfg_vars.get("drawing_download_url", tk.StringVar()).get().strip()
+            w3c_domain   = cfg_vars.get("w3c_domain",           tk.StringVar()).get().strip()
+            if not (url and download_url and w3c_domain):
+                messagebox.showwarning("Incomplete Setup",
+                    "Fill in Drawing Search URL, Drawing Download URL, and W3C Domain first.",
+                    parent=dlg)
+                return
+            domain = _domain_from_url(url)
+            _BrowserCookieDialog(dlg, domain, headers_txt,
+                                 cookies_fn=lambda _: _ps_grab_windows_cookies(url))
+
+        def _do_fetch_options():
+            url = cfg_vars.get("drawing_search_url", tk.StringVar()).get().strip()
+            if not url:
+                messagebox.showwarning("No URL",
+                    "Fill in Drawing Search URL first.", parent=dlg)
+                return
+            headers = _parse_request_headers_raw(headers_txt.get("1.0", "end"))
+            _show_fetch_options_dialog(dlg, url, headers)
+
+        btn_row = ttk.Frame(draw_body)
+        btn_row.grid(row=n_draw*2+2, column=0, columnspan=2, sticky="w", pady=(0, 2))
+        ttk.Button(btn_row, text="🔑 Grab via Windows Auth",
+                   command=_do_win_auth_cookies).pack(side="left")
+        ttk.Button(btn_row, text="🔄 Fetch Drawing Options",
+                   command=_do_fetch_options).pack(side="left", padx=(6, 0))
+        ttk.Label(btn_row, text="Windows Auth requires all three Drawing URLs to be filled in.",
+                  foreground="grey", font=("", 8)).pack(side="left", padx=8)
+
+        # ── All other URL sections ────────────────────────────────────
+        other_sections = [
             ("Aspen", [
                 ("aspen_url",         "Aspen URL:",         "Base URL for Aspen (future use)"),
             ]),
@@ -7711,8 +7768,7 @@ class RedLineApp(tk.Tk):
             ]),
         ]
 
-        cfg_vars = {}
-        for section_name, fields in sections:
+        for section_name, fields in other_sections:
             lf = ttk.LabelFrame(f, text=section_name, padding=8)
             lf.pack(fill="x", pady=(0, 8))
             lf.columnconfigure(1, weight=1)
@@ -7723,54 +7779,6 @@ class RedLineApp(tk.Tk):
                 ttk.Entry(lf, textvariable=var, width=52).grid(row=r*2, column=1, sticky="ew", pady=3)
                 ttk.Label(lf, text=hint, foreground="grey", font=("",8)).grid(
                     row=r*2+1, column=0, columnspan=2, sticky="w", pady=(0,2))
-
-        ttk.Label(f, text="These settings apply to all projects and are stored globally.",
-                  foreground="grey", font=("",8)).pack(anchor="w", pady=(4,0))
-
-        auth_lf = ttk.LabelFrame(f, text="Authentication / Request Headers", padding=8)
-        auth_lf.pack(fill="x", pady=(0, 8))
-        ttk.Label(auth_lf,
-                  text="Headers sent with every download request. One per line as  Header-Name: value\n"
-                       "To authenticate, open your browser's DevTools (F12) → Network tab, make a request\n"
-                       "to the target site, then copy the full  Cookie:  and  Referer:  header values here.",
-                  foreground="grey", font=("", 8), wraplength=480, justify="left").pack(anchor="w", pady=(0, 4))
-        headers_txt = scrolledtext.ScrolledText(auth_lf, height=4, font=("Courier", 9), wrap="none")
-        headers_txt.pack(fill="x")
-        headers_txt.insert("1.0", self.app_config.get("request_headers", ""))
-
-        def _do_grab_cookies():
-            url = cfg_vars.get("drawing_search_url", tk.StringVar()).get().strip()
-            if not url:
-                url = cfg_vars.get("base_drawing_url", tk.StringVar()).get().strip()
-            domain = _domain_from_url(url) if url else ""
-            if not domain:
-                messagebox.showwarning("No URL",
-                    "Set a Drawing Search URL (or Base Drawing URL) first so the domain is known.",
-                    parent=dlg)
-                return
-            _BrowserCookieDialog(dlg, domain, headers_txt)
-
-        def _do_win_auth_cookies():
-            url          = cfg_vars.get("drawing_search_url",   tk.StringVar()).get().strip()
-            download_url = cfg_vars.get("drawing_download_url", tk.StringVar()).get().strip()
-            w3c_domain   = cfg_vars.get("w3c_domain",           tk.StringVar()).get().strip()
-            if not (url and download_url and w3c_domain):
-                messagebox.showwarning("Incomplete Setup",
-                    "Fill in Drawing Search URL, Drawing Download URL, and W3C Domain first.",
-                    parent=dlg)
-                return
-            domain = _domain_from_url(url)
-            _BrowserCookieDialog(dlg, domain, headers_txt,
-                                 cookies_fn=lambda _: _ps_grab_windows_cookies(url))
-
-        grab_row = ttk.Frame(auth_lf); grab_row.pack(anchor="w", pady=(4, 0))
-        ttk.Button(grab_row, text="🍪 Grab from Browser",
-                   command=_do_grab_cookies).pack(side="left")
-        ttk.Button(grab_row, text="🔑 Grab via Windows Auth",
-                   command=_do_win_auth_cookies).pack(side="left", padx=(6, 0))
-        ttk.Label(grab_row,
-                  text="Browser: reads from Edge/Chrome.  Windows Auth: uses your domain login (requires all three Drawing URLs).",
-                  foreground="grey", font=("", 8)).pack(side="left", padx=8)
 
         eng_hdrs_lf = ttk.LabelFrame(f, text="Engineering Standards Headers (optional override)", padding=8)
         eng_hdrs_lf.pack(fill="x", pady=(0, 8))
@@ -7815,21 +7823,6 @@ class RedLineApp(tk.Tk):
         ttk.Label(tb_grab_row,
                   text="Reads cookies for the tailboard site from your running Edge / Chrome session.",
                   foreground="grey", font=("", 8)).pack(side="left", padx=8)
-
-        drw_search_lf = ttk.LabelFrame(f, text="Drawing Search", padding=8)
-        drw_search_lf.pack(fill="x", pady=(0, 8))
-        ttk.Label(drw_search_lf,
-                  text="Fetches the live facility / drawing-type / drawing-subject lists from the "
-                       "search server.\nAuthentication uses the master Cookie header set above.",
-                  foreground="grey", font=("", 8), justify="left").pack(anchor="w", pady=(0, 4))
-
-        def _do_fetch_options():
-            url  = cfg_vars.get("drawing_search_url", tk.StringVar()).get().strip()
-            headers = _parse_request_headers_raw(headers_txt.get("1.0", "end"))
-            _show_fetch_options_dialog(dlg, url, headers)
-
-        ttk.Button(drw_search_lf, text="🔄 Fetch Drawing Options",
-                   command=_do_fetch_options).pack(anchor="w")
 
         bf = ttk.Frame(f); bf.pack(fill="x", pady=(10, 0))
         ttk.Button(bf, text="Cancel", command=dlg.destroy).pack(side="right", padx=4)
