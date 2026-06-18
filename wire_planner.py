@@ -8448,6 +8448,9 @@ class RedLineApp(tk.Tk):
             messagebox.showwarning("Setup Required",
                 "Fill in the Engineering API URL in File → Software Settings first.")
             return None
+        # Strip any trailing /sections or /series path (user may paste the full endpoint URL)
+        import re as _re
+        api_url = _re.sub(r'/(sections|series)([?/].*)?$', '', api_url).rstrip('/')
         headers = _parse_request_headers_raw(
             self.app_config.get("engineering_request_headers", "")
             or self.app_config.get("request_headers", "")
