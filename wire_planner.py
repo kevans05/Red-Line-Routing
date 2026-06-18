@@ -7989,15 +7989,23 @@ class RedLineApp(tk.Tk):
         eng_headers_txt.insert("1.0", self.app_config.get("engineering_request_headers", ""))
 
         def _do_eng_win_auth():
-            url = cfg_vars.get("engineering_url", tk.StringVar()).get().strip()
-            if not url:
+            import re as _re
+            # Prefer the API URL so we grab cookies for the /esv4/ path.
+            # The web-app URL (/es/browse) may return cookies scoped to a
+            # different path that the /esv4/ API doesn't accept.
+            api_raw = cfg_vars.get("engineering_api_url", tk.StringVar()).get().strip()
+            api_raw = _re.sub(r'/(sections|series)([?/].*)?$', '', api_raw).rstrip('/')
+            grab_url = api_raw or cfg_vars.get("engineering_url", tk.StringVar()).get().strip()
+            if not grab_url:
                 messagebox.showwarning("Incomplete Setup",
-                    "Fill in the Engineering Standards URL first.",
+                    "Fill in the Engineering API URL first.",
                     parent=dlg)
                 return
-            domain = _domain_from_url(url)
+            # Grab against the series endpoint so IIS issues a cookie for the /esv4 path
+            grab_target = grab_url.rstrip('/') + "/series?group=00all"
+            domain = _domain_from_url(grab_url)
             _BrowserCookieDialog(dlg, domain, eng_headers_txt,
-                                 cookies_fn=lambda _: _ps_grab_windows_cookies(url))
+                                 cookies_fn=lambda _: _ps_grab_windows_cookies(grab_target))
 
         eng_btn_row = ttk.Frame(eng_body)
         eng_btn_row.grid(row=n_eng*2+3, column=0, columnspan=2, sticky="w", pady=(0, 2))
