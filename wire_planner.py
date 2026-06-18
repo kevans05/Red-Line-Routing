@@ -5781,17 +5781,29 @@ class _EngineeringBrowseDialog(tk.Toplevel):
         self._status_lbl = ttk.Label(row1, text="Loading…", foreground="#2980b9")
         self._status_lbl.pack(side="left", padx=16)
 
+        # ── view toggle ───────────────────────────────────────────
+        row2 = ttk.Frame(form); row2.pack(fill="x", pady=(2, 0))
+        self._grouped_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(row2, text="Group by series", variable=self._grouped_var,
+                        command=self._apply_filter).pack(side="left")
+        ttk.Button(row2, text="Expand All",
+                   command=lambda: [self._tree.item(i, open=True)
+                                    for i in self._tree.get_children()]).pack(side="left", padx=6)
+        ttk.Button(row2, text="Collapse All",
+                   command=lambda: [self._tree.item(i, open=False)
+                                    for i in self._tree.get_children()]).pack(side="left")
+
         # ── results tree ─────────────────────────────────────────
         frame = ttk.Frame(self)
         frame.pack(fill="both", expand=True, padx=10, pady=4)
-        cols = ("Standard ID", "Description", "Series", "State", "URL")
-        self._tree = ttk.Treeview(frame, columns=cols, show="headings",
+        cols = ("Standard ID", "Description", "State", "URL")
+        self._tree = ttk.Treeview(frame, columns=cols, show="tree headings",
                                   selectmode="extended")
-        for col, w in zip(cols, (130, 300, 180, 80, 260)):
-            self._tree.heading(col, text=col,
-                               command=lambda c=col: self._sort_by(c))
-            self._tree.column(col, width=w, minwidth=60,
-                              stretch=(col == "Description"))
+        self._tree.heading("#0", text="Series", command=lambda: self._sort_by("Series"))
+        self._tree.column("#0", width=220, minwidth=120, stretch=False)
+        for col, w, stretch in zip(cols, (130, 350, 80, 240), (False, True, False, False)):
+            self._tree.heading(col, text=col, command=lambda c=col: self._sort_by(c))
+            self._tree.column(col, width=w, minwidth=60, stretch=stretch)
         vsb = ttk.Scrollbar(frame, orient="vertical", command=self._tree.yview)
         hsb = ttk.Scrollbar(frame, orient="horizontal", command=self._tree.xview)
         self._tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
@@ -5800,6 +5812,11 @@ class _EngineeringBrowseDialog(tk.Toplevel):
         hsb.grid(row=1, column=0, sticky="ew")
         frame.rowconfigure(0, weight=1)
         frame.columnconfigure(0, weight=1)
+
+        # Tooltip for truncated cells
+        self._tip_win = None
+        self._tree.bind("<Motion>", self._on_tree_motion)
+        self._tree.bind("<Leave>", lambda _: self._hide_tip())
 
         # ── footer buttons ────────────────────────────────────────
         sep = tk.Frame(self, bg="#d5d8dc", height=1); sep.pack(fill="x", side="bottom")
@@ -5869,14 +5886,29 @@ class _EngineeringBrowseDialog(tk.Toplevel):
     def _populate(self, standards: list):
         for iid in self._tree.get_children():
             self._tree.delete(iid)
-        for std in standards:
-            self._tree.insert("", "end", values=(
-                std.standard_id,
-                std.description,
-                std.series_value,
-                std.document_state,
-                std.url,
-            ))
+        if self._grouped_var.get():
+            # Group by series — one open parent node per series
+            from collections import OrderedDict
+            groups: dict = OrderedDict()
+            for std in standards:
+                groups.setdefault(std.series_value, []).append(std)
+            for series_title, items in groups.items():
+                parent = self._tree.insert(
+                    "", "end", text=f"{series_title}  ({len(items)})",
+                    open=True, tags=("series_header",))
+                for std in items:
+                    self._tree.insert(parent, "end", values=(
+                        std.standard_id, std.description,
+                        std.document_state, std.url,
+                    ), tags=("std_row",))
+            self._tree.tag_configure("series_header", font=("", 9, "bold"),
+                                     foreground="#1a5276")
+        else:
+            for std in standards:
+                self._tree.insert("", "end", text=std.series_value, values=(
+                    std.standard_id, std.description,
+                    std.document_state, std.url,
+                ), tags=("std_row",))
         self._count_lbl.config(text=f"{len(standards)} shown")
 
     def _sort_by(self, col: str):
@@ -5891,10 +5923,49 @@ class _EngineeringBrowseDialog(tk.Toplevel):
         self._filtered.sort(key=lambda s: (getattr(s, attr, '') or '').lower(),
                             reverse=self._sort_rev)
         self._populate(self._filtered)
-        # Show sort arrow in heading
         arrow = " ▲" if not self._sort_rev else " ▼"
-        for c in ("Standard ID", "Description", "Series", "State", "URL"):
+        for c in ("Standard ID", "Description", "State", "URL"):
             self._tree.heading(c, text=c + (arrow if c == col else ""))
+        self._tree.heading("#0", text="Series" + (arrow if col == "Series" else ""))
+
+    # ── tooltip for truncated text ────────────────────────────────
+
+    def _on_tree_motion(self, event):
+        iid = self._tree.identify_row(event.y)
+        col = self._tree.identify_column(event.x)
+        if not iid:
+            self._hide_tip(); return
+        item = self._tree.item(iid)
+        if "series_header" in item.get("tags", ()):
+            tip_text = item.get("text", "")
+        else:
+            vals = item.get("values", [])
+            col_idx = {"#1": 0, "#2": 1, "#3": 2, "#4": 3}.get(col)
+            if col_idx is None:
+                tip_text = item.get("text", "")  # #0 column = series
+            else:
+                tip_text = vals[col_idx] if col_idx < len(vals) else ""
+        if not tip_text:
+            self._hide_tip(); return
+        x = event.x_root + 12
+        y = event.y_root + 16
+        if self._tip_win:
+            self._tip_win.wm_geometry(f"+{x}+{y}")
+            lbl = self._tip_win.winfo_children()
+            if lbl:
+                lbl[0].config(text=str(tip_text))
+            return
+        self._tip_win = tw = tk.Toplevel(self)
+        tw.wm_overrideredirect(True)
+        tw.wm_geometry(f"+{x}+{y}")
+        tk.Label(tw, text=str(tip_text), justify="left",
+                 background="#ffffe0", relief="solid", borderwidth=1,
+                 font=("", 9), wraplength=500).pack()
+
+    def _hide_tip(self):
+        if self._tip_win:
+            self._tip_win.destroy()
+            self._tip_win = None
 
     def _add_selected(self):
         sel = self._tree.selection()
@@ -5904,9 +5975,22 @@ class _EngineeringBrowseDialog(tk.Toplevel):
             return
         selected_ids = set()
         for iid in sel:
-            vals = self._tree.item(iid, "values")
-            if vals:
-                selected_ids.add(vals[0])
+            item = self._tree.item(iid)
+            # Skip series header rows (no values)
+            if "series_header" in item.get("tags", ()):
+                # Also select all children of this group
+                for child in self._tree.get_children(iid):
+                    vals = self._tree.item(child, "values")
+                    if vals:
+                        selected_ids.add(vals[0])
+            else:
+                vals = item.get("values", [])
+                if vals:
+                    selected_ids.add(vals[0])
+        if not selected_ids:
+            messagebox.showwarning("Nothing selected",
+                                   "Select at least one standard.", parent=self)
+            return
         self.result = [s for s in self._filtered if s.standard_id in selected_ids]
         self.destroy()
 
@@ -6906,6 +6990,7 @@ class RedLineApp(tk.Tk):
         self._build_ui()
         self.after_idle(self._startup_flow)
         self._schedule_drawing_cache_refresh()
+        self._schedule_engineering_cache_refresh()
 
     # ── Startup flow ─────────────────────────────────────────────
 
@@ -7863,8 +7948,9 @@ class RedLineApp(tk.Tk):
 
         # ── Drawings section (collapsible) ───────────────────────────
         draw_fields = [
-            ("drawing_search_url",   "Drawing Search URL:",   "Base URL for the corporate drawing search server"),
-            ("drawing_download_url", "Drawing Download URL:", "Direct download base URL for drawings"),
+            ("drawing_search_url",         "Drawing Search URL:",         "Base URL for the corporate drawing search server"),
+            ("drawing_download_url",       "Drawing Download URL:",       "Direct download base URL for drawings"),
+            ("drawing_cache_refresh_hours","Drawing Cache Refresh (hrs):","How many hours before a cached drawing search result is re-fetched (default 4)"),
         ]
         _draw_open = tk.BooleanVar(value=True)
 
@@ -7940,8 +8026,9 @@ class RedLineApp(tk.Tk):
 
         # ── Engineering Standards section (collapsible) ───────────────
         eng_fields = [
-            ("engineering_url",     "Engineering Standards URL:", "Web app URL — used for Windows Auth cookie grab"),
-            ("engineering_api_url", "Engineering API URL:",       "API base URL for series/sections data (e.g. https://host/esv4)"),
+            ("engineering_url",                "Engineering Standards URL:",        "Web app URL — used for Windows Auth cookie grab"),
+            ("engineering_api_url",            "Engineering API URL:",              "API base URL for series/sections data (e.g. https://host/esv4)"),
+            ("engineering_cache_refresh_hours","Engineering Cache Refresh (hrs):",  "How many hours before cached standards are re-fetched (default 4)"),
         ]
         _eng_open = tk.BooleanVar(value=True)
 
@@ -8464,9 +8551,11 @@ class RedLineApp(tk.Tk):
             or self.app_config.get("request_headers", "")
         )
         if not hasattr(self, "_eng_cache"):
-            self._eng_cache = EngineeringStandardsCache(
-                ttl_hours=float(self.app_config.get("drawing_cache_refresh_hours", 4))
-            )
+            try:
+                ttl = float(self.app_config.get("engineering_cache_refresh_hours", 4))
+            except (TypeError, ValueError):
+                ttl = 4.0
+            self._eng_cache = EngineeringStandardsCache(ttl_hours=max(0.25, ttl))
         return EngineeringStandardsClient(
             base_url=api_url,
             headers=headers,
@@ -10961,6 +11050,60 @@ class RedLineApp(tk.Tk):
                 if done:
                     self.after(0, lambda: self.status_var.set(
                         f"Drawing cache refreshed — {done} search(es) updated"))
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    # ── Engineering standards cache refresh ───────────────────────────
+
+    _ENG_CACHE_CHECK_INTERVAL_MS = 15 * 60 * 1000  # check every 15 minutes
+    _ENG_CACHE_DEFAULT_MAX_AGE_H = 4.0
+
+    def _eng_cache_max_age_seconds(self):
+        try:
+            hours = float(self.app_config.get(
+                "engineering_cache_refresh_hours", self._ENG_CACHE_DEFAULT_MAX_AGE_H))
+        except (TypeError, ValueError):
+            hours = self._ENG_CACHE_DEFAULT_MAX_AGE_H
+        return max(0.25, hours) * 3600.0
+
+    def _schedule_engineering_cache_refresh(self, first_delay_ms=45000):
+        """Start the periodic stale-entry refresh loop for engineering standards."""
+        def _tick():
+            self._refresh_engineering_cache_bg()
+            self.after(self._ENG_CACHE_CHECK_INTERVAL_MS, _tick)
+        self.after(first_delay_ms, _tick)
+
+    def _refresh_engineering_cache_bg(self):
+        """Re-fetch stale engineering standards cache entries in a background thread."""
+        if not _ENG_STD_AVAILABLE:
+            return
+        if getattr(self, "_eng_cache_refresh_running", False):
+            return
+        cache = getattr(self, "_eng_cache", None)
+        if cache is None:
+            return
+        stale = [sv for sv in cache._data if cache.is_stale(sv)]
+        if not stale:
+            return
+        client = self._build_eng_client()
+        if client is None:
+            return
+        self._eng_cache_refresh_running = True
+
+        def _run():
+            done = 0
+            try:
+                for series_value in stale:
+                    try:
+                        client.fetch_section(series_value)
+                        done += 1
+                    except Exception:
+                        pass
+            finally:
+                self._eng_cache_refresh_running = False
+                if done:
+                    self.after(0, lambda: self.status_var.set(
+                        f"Engineering standards cache refreshed — {done} series updated"))
 
         threading.Thread(target=_run, daemon=True).start()
 
