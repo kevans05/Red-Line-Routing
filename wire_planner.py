@@ -7269,6 +7269,24 @@ class RedLineApp(tk.Tk):
         ttk.Label(_sb, textvariable=self.status_var,
                   anchor="w", padding=(4, 1), background="#f0f0f0").pack(
             side="left", fill="x", expand=True)
+
+        # Low-bandwidth toggle — session only, not saved; disables all auto cache refresh
+        self._low_bw = tk.BooleanVar(value=False)
+        def _on_low_bw():
+            if self._low_bw.get():
+                self._cancel_cache_refresh()
+                self._low_bw_btn.config(bg="#f39c12", fg="white",
+                                        relief="solid", text="Low BW  ON")
+            else:
+                self._low_bw_btn.config(bg="#f0f0f0", fg="#555",
+                                        relief="flat", text="Low BW")
+        self._low_bw_btn = tk.Button(
+            _sb, text="Low BW", bg="#f0f0f0", fg="#555",
+            relief="flat", bd=0, font=("", 8), cursor="hand2",
+            padx=4, pady=1,
+            command=lambda: [self._low_bw.set(not self._low_bw.get()), _on_low_bw()])
+        self._low_bw_btn.pack(side="right", padx=(0, 6))
+
         # Cache activity chip — hidden until a background fetch is running
         self._cache_chip = tk.Frame(_sb, bg="#d6eaf8", padx=4, pady=1)
         self._cache_chip_lbl = tk.Label(self._cache_chip, text="", bg="#d6eaf8",
@@ -11042,6 +11060,8 @@ class RedLineApp(tk.Tk):
         everything. Skips silently when a refresh is already running or
         drawing search is not configured.
         """
+        if getattr(self, "_low_bw", None) and self._low_bw.get():
+            return
         if not _DRAWING_SEARCH_AVAILABLE:
             return
         if getattr(self, "_cache_refresh_running", False):
@@ -11122,6 +11142,8 @@ class RedLineApp(tk.Tk):
 
     def _refresh_engineering_cache_bg(self):
         """Re-fetch stale engineering standards cache entries in a background thread."""
+        if getattr(self, "_low_bw", None) and self._low_bw.get():
+            return
         if not _ENG_STD_AVAILABLE:
             return
         if getattr(self, "_eng_cache_refresh_running", False):
