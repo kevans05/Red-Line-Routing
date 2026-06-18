@@ -7264,8 +7264,25 @@ class RedLineApp(tk.Tk):
 
         # Status bar (always at bottom, packed before main area)
         self.status_var = tk.StringVar(value="Ready  —  no jobs loaded")
-        ttk.Label(self, textvariable=self.status_var, relief="sunken",
-                  anchor="w", padding=(4, 1)).pack(fill="x", side="bottom")
+        _sb = tk.Frame(self, relief="sunken", bd=1, bg="#f0f0f0")
+        _sb.pack(fill="x", side="bottom")
+        ttk.Label(_sb, textvariable=self.status_var,
+                  anchor="w", padding=(4, 1), background="#f0f0f0").pack(
+            side="left", fill="x", expand=True)
+        # Cache activity chip — hidden until a background fetch is running
+        self._cache_chip = tk.Frame(_sb, bg="#d6eaf8", padx=4, pady=1)
+        self._cache_chip_lbl = tk.Label(self._cache_chip, text="", bg="#d6eaf8",
+                                        fg="#1a5276", font=("", 8))
+        self._cache_chip_lbl.pack(side="left")
+        tk.Button(self._cache_chip, text="✕", bg="#d6eaf8", fg="#1a5276",
+                  relief="flat", bd=0, font=("", 8), cursor="hand2",
+                  command=self._cancel_cache_refresh).pack(side="left", padx=(4, 0))
+        # chip starts hidden; shown by _set_cache_activity()
+
+        # Cancel events for background refresh threads
+        import threading as _threading
+        self._draw_cache_cancel  = _threading.Event()
+        self._eng_cache_cancel   = _threading.Event()
 
         # ── Planner mode frame ─────────────────────────────────────
         self.planner_frame = ttk.Frame(self)
@@ -10985,6 +11002,23 @@ class RedLineApp(tk.Tk):
     _CACHE_CHECK_INTERVAL_MS = 15 * 60 * 1000   # check every 15 minutes
     _CACHE_DEFAULT_MAX_AGE_H = 4.0              # refresh entries older than 4 h
 
+    def _set_cache_activity(self, label: str):
+        """Show or hide the status-bar cache chip. Call from the main thread only."""
+        if not hasattr(self, "_cache_chip"):
+            return
+        if label:
+            self._cache_chip_lbl.config(text=f"↺ {label}")
+            self._cache_chip.pack(side="right", padx=(0, 4), pady=1)
+        else:
+            self._cache_chip.pack_forget()
+
+    def _cancel_cache_refresh(self):
+        """Signal all running background cache refreshes to stop."""
+        self._draw_cache_cancel.set()
+        self._eng_cache_cancel.set()
+        self._set_cache_activity("")
+        self.status_var.set("Cache refresh cancelled.")
+
     def _cache_max_age_seconds(self):
         try:
             hours = float(self.app_config.get(
@@ -11032,24 +11066,37 @@ class RedLineApp(tk.Tk):
                                         extra_headers=extra or None)
 
         self._cache_refresh_running = True
+        self._draw_cache_cancel.clear()
+        total = len(keys)
+        self.after(0, self._set_cache_activity,
+                   f"Drawing cache  (0 / {total})")
 
         def _run():
             done = 0
             try:
-                for fac, typ, subj, state in keys:
+                for i, (fac, typ, subj, state) in enumerate(keys):
+                    if self._draw_cache_cancel.is_set():
+                        break
                     try:
                         params = SearchParams(facility=fac, drawing_type=typ,
                                               drawing_subject=subj, state=state)
                         results = client.search_all_pages(params)
                         cache.put(params, results)
                         done += 1
+                        self.after(0, self._set_cache_activity,
+                                   f"Drawing cache  ({done} / {total})")
                     except Exception:
                         pass
             finally:
                 self._cache_refresh_running = False
-                if done:
-                    self.after(0, lambda: self.status_var.set(
-                        f"Drawing cache refreshed — {done} search(es) updated"))
+                cancelled = self._draw_cache_cancel.is_set()
+                def _finish(d=done, c=cancelled):
+                    self._set_cache_activity("")
+                    if d or not c:
+                        self.status_var.set(
+                            f"Drawing cache refreshed — {d} search(es) updated"
+                            + (" (cancelled)" if c else ""))
+                self.after(0, _finish)
 
         threading.Thread(target=_run, daemon=True).start()
 
@@ -11089,21 +11136,34 @@ class RedLineApp(tk.Tk):
         if client is None:
             return
         self._eng_cache_refresh_running = True
+        self._eng_cache_cancel.clear()
+        total = len(stale)
+        self.after(0, self._set_cache_activity,
+                   f"Eng. standards  (0 / {total})")
 
         def _run():
             done = 0
             try:
                 for series_value in stale:
+                    if self._eng_cache_cancel.is_set():
+                        break
                     try:
                         client.fetch_section(series_value)
                         done += 1
+                        self.after(0, self._set_cache_activity,
+                                   f"Eng. standards  ({done} / {total})")
                     except Exception:
                         pass
             finally:
                 self._eng_cache_refresh_running = False
-                if done:
-                    self.after(0, lambda: self.status_var.set(
-                        f"Engineering standards cache refreshed — {done} series updated"))
+                cancelled = self._eng_cache_cancel.is_set()
+                def _finish(d=done, c=cancelled):
+                    self._set_cache_activity("")
+                    if d or not c:
+                        self.status_var.set(
+                            f"Engineering standards cache refreshed — {d} series updated"
+                            + (" (cancelled)" if c else ""))
+                self.after(0, _finish)
 
         threading.Thread(target=_run, daemon=True).start()
 
