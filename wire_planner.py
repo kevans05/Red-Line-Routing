@@ -4754,6 +4754,10 @@ class _AppDB:
                     cache_key TEXT PRIMARY KEY,
                     results   TEXT NOT NULL,
                     cached_at REAL NOT NULL);
+                CREATE TABLE IF NOT EXISTS eng_standards_cache(
+                    series_value TEXT PRIMARY KEY,
+                    results      TEXT NOT NULL,
+                    cached_at    REAL NOT NULL);
                 CREATE TABLE IF NOT EXISTS control_room_desks(
                     desk_id     TEXT PRIMARY KEY,
                     desk_name   TEXT NOT NULL DEFAULT '',
@@ -4869,6 +4873,38 @@ class _AppDB:
             with self._conn() as c:
                 return [r[0] for r in c.execute(
                     "SELECT cache_key FROM drawing_cache WHERE cached_at < ?",
+                    (cutoff,))]
+        except sqlite3.Error:
+            return []
+
+    # ── engineering standards cache ───────────────────────────────
+
+    def eng_cache_load_all(self):
+        """Return all rows as {series_value: (cached_at, results_json_str)}."""
+        try:
+            with self._conn() as c:
+                rows = c.execute(
+                    "SELECT series_value, results, cached_at FROM eng_standards_cache"
+                ).fetchall()
+            return {r[0]: (r[2], r[1]) for r in rows}
+        except sqlite3.Error:
+            return {}
+
+    def eng_cache_put(self, series_value: str, results_json: str, cached_at: float):
+        with self._conn() as c:
+            c.execute(
+                "INSERT INTO eng_standards_cache(series_value, results, cached_at) "
+                "VALUES (?, ?, ?) "
+                "ON CONFLICT(series_value) DO UPDATE SET "
+                "results = excluded.results, cached_at = excluded.cached_at",
+                (series_value, results_json, cached_at))
+
+    def eng_cache_stale_values(self, max_age_seconds: float):
+        cutoff = datetime.now().timestamp() - max_age_seconds
+        try:
+            with self._conn() as c:
+                return [r[0] for r in c.execute(
+                    "SELECT series_value FROM eng_standards_cache WHERE cached_at < ?",
                     (cutoff,))]
         except sqlite3.Error:
             return []
@@ -5722,12 +5758,13 @@ class _EngineeringBrowseDialog(tk.Toplevel):
     result: list[EngineeringStandard] of selected items, or None on cancel.
     """
 
-    def __init__(self, parent, client):
+    def __init__(self, parent, client, on_loaded=None):
         super().__init__(parent)
         self.title("Browse Engineering Standards")
         self.resizable(True, True)
         self.result = None
         self._client = client
+        self._on_loaded_cb = on_loaded   # called (no args) after data is loaded and persisted
         self._all_standards: list = []
         self._filtered: list = []
         self._sort_col = "Standard ID"
@@ -5858,8 +5895,19 @@ class _EngineeringBrowseDialog(tk.Toplevel):
                 series_seen.append(s.series_value)
         self._cb_series.config(values=["All"] + sorted(series_seen))
         self._apply_filter()
-        self._status_lbl.config(text=f"{len(standards)} standard(s) loaded.", foreground="#1a7a30")
+        n = len(standards)
+        cached_note = " (from cache)" if all(
+            self._client.cache is not None and not self._client.cache.is_stale(s.series_value)
+            for s in standards[:1]
+        ) else ""
+        self._status_lbl.config(
+            text=f"{n} standard(s) loaded{cached_note}.", foreground="#1a7a30")
         self._add_btn.config(state="normal")
+        if self._on_loaded_cb:
+            try:
+                self._on_loaded_cb()
+            except Exception:
+                pass
 
     def _on_error(self, msg: str):
         self._status_lbl.config(text=f"Error: {msg[:140]}", foreground="#e74c3c")
@@ -8591,6 +8639,7 @@ class RedLineApp(tk.Tk):
             except (TypeError, ValueError):
                 ttl = 4.0
             self._eng_cache = EngineeringStandardsCache(ttl_hours=max(0.25, ttl))
+            self._eng_cache_load_from_db()
         return EngineeringStandardsClient(
             base_url=api_url,
             headers=headers,
@@ -8601,7 +8650,8 @@ class RedLineApp(tk.Tk):
         client = self._build_eng_client()
         if client is None:
             return
-        dlg = _EngineeringBrowseDialog(self, client)
+        dlg = _EngineeringBrowseDialog(self, client,
+                                       on_loaded=self._eng_cache_persist_all)
         if dlg.result:
             added = 0
             for std in dlg.result:
@@ -11020,6 +11070,45 @@ class RedLineApp(tk.Tk):
     _CACHE_CHECK_INTERVAL_MS = 15 * 60 * 1000   # check every 15 minutes
     _CACHE_DEFAULT_MAX_AGE_H = 4.0              # refresh entries older than 4 h
 
+    def _eng_cache_load_from_db(self):
+        """Populate the in-memory engineering cache from the SQLite DB on first use."""
+        if not hasattr(self, "_eng_cache"):
+            return
+        rows = self._app_db.eng_cache_load_all()
+        for series_value, (cached_at, results_json) in rows.items():
+            try:
+                from engineering_standards.models import EngineeringStandard
+                results = [EngineeringStandard(**r)
+                           for r in json.loads(results_json)]
+                with self._eng_cache._lock:
+                    self._eng_cache._data[series_value] = (cached_at, results)
+            except Exception:
+                pass
+
+    def _eng_cache_persist_all(self):
+        """Flush every series currently in the in-memory cache to SQLite."""
+        if not hasattr(self, "_eng_cache"):
+            return
+        with self._eng_cache._lock:
+            keys = list(self._eng_cache._data.keys())
+        for sv in keys:
+            self._eng_cache_persist(sv)
+
+    def _eng_cache_persist(self, series_value: str):
+        """Flush one series from the in-memory cache to the SQLite DB."""
+        if not hasattr(self, "_eng_cache"):
+            return
+        with self._eng_cache._lock:
+            entry = self._eng_cache._data.get(series_value)
+        if entry is None:
+            return
+        cached_at, results = entry
+        try:
+            results_json = json.dumps([r.__dict__ for r in results])
+            self._app_db.eng_cache_put(series_value, results_json, cached_at)
+        except Exception:
+            pass
+
     def _set_cache_activity(self, label: str):
         """Show or hide the status-bar cache chip. Call from the main thread only."""
         if not hasattr(self, "_cache_chip"):
@@ -11171,6 +11260,7 @@ class RedLineApp(tk.Tk):
                         break
                     try:
                         client.fetch_section(series_value)
+                        self._eng_cache_persist(series_value)
                         done += 1
                         self.after(0, self._set_cache_activity,
                                    f"Eng. standards  ({done} / {total})")
