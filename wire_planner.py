@@ -75,10 +75,21 @@ try:
     import inspect as _insp
     _DSC_HAS_COOKIE_CB = "on_cookie_update" in _insp.signature(
         DrawingSearchClient.__init__).parameters
+    _DSC_HAS_DOWNLOAD_URL = "download_url" in _insp.signature(
+        DrawingSearchClient.__init__).parameters
     del _insp
 except ImportError:
     _DRAWING_SEARCH_AVAILABLE = False
     _DSC_HAS_COOKIE_CB = False
+    _DSC_HAS_DOWNLOAD_URL = False
+
+try:
+    from engineering_standards import (EngineeringStandardsClient,
+                                       EngineeringStandardsCache,
+                                       EngineeringSeries, EngineeringStandard)
+    _ENG_STD_AVAILABLE = True
+except ImportError:
+    _ENG_STD_AVAILABLE = False
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -1160,7 +1171,7 @@ class JobDialog(tk.Toplevel):
 
             self.ep_prot = ProtectionFrame(f, "Equipment / Device",
                                            registry=self.registry, job_type=self.job_type,
-                                           base_drawing_url=self.settings.get("base_drawing_url",""))
+                                           base_drawing_url=self.settings.get("drawing_download_url",""))
             self.ep_prot.grid(row=row, column=0, columnspan=2, sticky="ew", pady=2)
             self.ep_prot.set(ex.get("protection",{}))
             row += 1
@@ -1198,7 +1209,7 @@ class JobDialog(tk.Toplevel):
             row += 1
             self._iso_drawings_frame = MultiDrawingFrame(
                 f, registry=self.registry,
-                base_drawing_url=self.settings.get("base_drawing_url", ""))
+                base_drawing_url=self.settings.get("drawing_download_url", ""))
             self._iso_drawings_frame.grid(row=row, column=0, columnspan=2, sticky="ew", pady=(4,2))
             self._iso_drawings_frame.set(ex.get("drawings", []))
             row += 1
@@ -3973,12 +3984,10 @@ class MaintenanceStandardDialog(tk.Toplevel):
 
 class EngineeringStandardDialog(tk.Toplevel):
     """Add/edit an engineering standard record."""
-    def __init__(self, parent, existing=None, base_url_telecom="", base_url_transmission=""):
+    def __init__(self, parent, existing=None):
         super().__init__(parent)
         self.title("Edit Engineering Standard" if existing else "Add Engineering Standard")
         self.result = None
-        self.base_url_telecom = base_url_telecom
-        self.base_url_transmission = base_url_transmission
         self.resizable(False, False)
         self._build(existing or {})
         self.grab_set()
@@ -3991,24 +4000,14 @@ class EngineeringStandardDialog(tk.Toplevel):
 
         stype = ex.get("standard_type", "Telecom")
         stored_url = ex.get("url", "")
-        base = self.base_url_telecom if stype == "Telecom" else self.base_url_transmission
 
-        # Extract document code from stored URL:
-        # 1. strip from known base URL prefix, or
-        # 2. parse documentId= query param directly
+        # Extract document code from stored URL (documentId= query param)
         doc_code_default = ""
         if stored_url:
-            if base and stored_url.startswith(base):
-                doc_code_default = stored_url[len(base):]
-            else:
-                qs = urllib.parse.parse_qs(urllib.parse.urlparse(stored_url).query)
-                if "documentId" in qs:
-                    doc_code_default = qs["documentId"][0]
-                    # also derive base as everything up to and including "documentId="
-                    idx = stored_url.lower().find("documentid=")
-                    if idx != -1 and not base:
-                        base = stored_url[:idx + len("documentId=")]
-        url_default = stored_url if stored_url else base
+            qs = urllib.parse.parse_qs(urllib.parse.urlparse(stored_url).query)
+            if "documentId" in qs:
+                doc_code_default = qs["documentId"][0]
+        url_default = stored_url
 
         self.vars = {
             "standard_id":    tk.StringVar(value=ex.get("standard_id", "")),
@@ -4054,29 +4053,12 @@ class EngineeringStandardDialog(tk.Toplevel):
         url_entry = ttk.Entry(f, textvariable=self.vars["url"], width=52)
         url_entry.grid(row=row_url, column=1, sticky="ew", pady=4)
 
-        def _get_base():
-            t = self.vars["standard_type"].get()
-            return self.base_url_telecom if t == "Telecom" else self.base_url_transmission
-
         def _rebuild_url(*_):
             code = self.vars["document_code"].get().strip()
-            b = _get_base()
-            if code and b:
-                self.vars["url"].set(b + code)
-            elif code:
-                # no base URL configured — just show the code so the user knows it's partial
+            if code and not self.vars["url"].get().strip():
                 self.vars["url"].set(code)
 
-        def _on_type_change(*_):
-            b = _get_base()
-            code = self.vars["document_code"].get().strip()
-            if code and b:
-                self.vars["url"].set(b + code)
-            elif not self.vars["url"].get().strip():
-                self.vars["url"].set(b)
-
         self.vars["document_code"].trace_add("write", _rebuild_url)
-        type_cb.bind("<<ComboboxSelected>>", _on_type_change)
 
         row_n = row_url + 1
         ttk.Label(f, text="Notes:").grid(row=row_n, column=0, sticky="ne", padx=(0, 6), pady=4)
@@ -4402,7 +4384,8 @@ class DrawingSearchDialog(tk.Toplevel):
         self._v_state.set("Released")
 
     def _build_client(self):
-        base_url = self.app_config.get("drawing_search_url", "").strip()
+        base_url     = self.app_config.get("drawing_search_url",   "").strip()
+        download_url = self.app_config.get("drawing_download_url", "").strip() or None
         if not base_url:
             return None
         path     = self.app_config.get("drawing_search_path", "").strip() or None
@@ -4419,6 +4402,8 @@ class DrawingSearchDialog(tk.Toplevel):
                 self._persist_fn()
 
         kw = {"on_cookie_update": _on_cookie_update} if _DSC_HAS_COOKIE_CB else {}
+        if _DSC_HAS_DOWNLOAD_URL and download_url:
+            kw["download_url"] = download_url
         return DrawingSearchClient(base_url=base_url, cookies=cookies, cache=cache,
                                    search_path=path, extra_headers=extra or None,
                                    **kw)
@@ -4769,6 +4754,10 @@ class _AppDB:
                     cache_key TEXT PRIMARY KEY,
                     results   TEXT NOT NULL,
                     cached_at REAL NOT NULL);
+                CREATE TABLE IF NOT EXISTS eng_standards_cache(
+                    series_value TEXT PRIMARY KEY,
+                    results      TEXT NOT NULL,
+                    cached_at    REAL NOT NULL);
                 CREATE TABLE IF NOT EXISTS control_room_desks(
                     desk_id     TEXT PRIMARY KEY,
                     desk_name   TEXT NOT NULL DEFAULT '',
@@ -4884,6 +4873,38 @@ class _AppDB:
             with self._conn() as c:
                 return [r[0] for r in c.execute(
                     "SELECT cache_key FROM drawing_cache WHERE cached_at < ?",
+                    (cutoff,))]
+        except sqlite3.Error:
+            return []
+
+    # ── engineering standards cache ───────────────────────────────
+
+    def eng_cache_load_all(self):
+        """Return all rows as {series_value: (cached_at, results_json_str)}."""
+        try:
+            with self._conn() as c:
+                rows = c.execute(
+                    "SELECT series_value, results, cached_at FROM eng_standards_cache"
+                ).fetchall()
+            return {r[0]: (r[2], r[1]) for r in rows}
+        except sqlite3.Error:
+            return {}
+
+    def eng_cache_put(self, series_value: str, results_json: str, cached_at: float):
+        with self._conn() as c:
+            c.execute(
+                "INSERT INTO eng_standards_cache(series_value, results, cached_at) "
+                "VALUES (?, ?, ?) "
+                "ON CONFLICT(series_value) DO UPDATE SET "
+                "results = excluded.results, cached_at = excluded.cached_at",
+                (series_value, results_json, cached_at))
+
+    def eng_cache_stale_values(self, max_age_seconds: float):
+        cutoff = datetime.now().timestamp() - max_age_seconds
+        try:
+            with self._conn() as c:
+                return [r[0] for r in c.execute(
+                    "SELECT series_value FROM eng_standards_cache WHERE cached_at < ?",
                     (cutoff,))]
         except sqlite3.Error:
             return []
@@ -5284,13 +5305,23 @@ def _ps_grab_windows_cookies(url: str) -> dict:
     if sys.platform != "win32":
         raise RuntimeError("Windows authentication cookie grab requires Windows.")
     url_esc = url.replace("'", "''")
+    # try/catch inside PowerShell so a non-2xx response (401, redirect-to-login, SPA
+    # boot page) doesn't abort before we can extract session cookies.
+    # Unique markers isolate the JSON from any HTML that leaks into stdout.
     ps = (
-        "$ErrorActionPreference = 'Stop'; "
         f"$url = '{url_esc}'; "
         "$session = New-Object Microsoft.PowerShell.Commands.WebRequestSession; "
-        "$result = Invoke-WebRequest -Uri $url -UseDefaultCredentials -UseBasicParsing -SessionVariable session; "
-        "$obj = [PSCustomObject]@{ status = $result.StatusCode; cookies = $session.Cookies.GetCookies($url) }; "
-        "$obj | ConvertTo-Json -Depth 5 | Write-Host"
+        "$status = 0; "
+        "try { "
+        "  $r = Invoke-WebRequest -Uri $url -UseDefaultCredentials -UseBasicParsing -WebSession $session; "
+        "  $status = $r.StatusCode "
+        "} catch [System.Net.WebException] { "
+        "  if ($_.Exception.Response) { $status = [int]$_.Exception.Response.StatusCode } "
+        "} catch { $status = -1 }; "
+        "$obj = [PSCustomObject]@{ status = $status; cookies = $session.Cookies.GetCookies($url) }; "
+        "Write-Host '__RLR_JSON_START__'; "
+        "$obj | ConvertTo-Json -Depth 5 | Write-Host; "
+        "Write-Host '__RLR_JSON_END__'"
     ).replace("\n", "")
     flags = 0x08000000 if sys.platform == "win32" else 0  # CREATE_NO_WINDOW — suppress console flash
     try:
@@ -5302,15 +5333,24 @@ def _ps_grab_windows_cookies(url: str) -> dict:
         )
     except FileNotFoundError:
         raise RuntimeError("PowerShell not found.")
-    if r.returncode != 0:
+    if r.returncode != 0 and "__RLR_JSON_START__" not in r.stdout:
         raise RuntimeError(f"PowerShell error:\n{(r.stderr or r.stdout).strip()}")
+    # Extract the JSON block between our markers — ignores any HTML/debug output
+    stdout = r.stdout
+    start = stdout.find("__RLR_JSON_START__")
+    end   = stdout.find("__RLR_JSON_END__")
+    if start == -1 or end == -1:
+        raise RuntimeError(
+            f"Could not locate JSON output in PowerShell response.\n\nOutput: {stdout[:300]}"
+        )
+    json_text = stdout[start + len("__RLR_JSON_START__"):end].strip()
     try:
         # Strip \r — PowerShell uses \r\n line endings which bleed into JSON string values
         data = {k: v.replace("\r", "") if isinstance(v, str) else v
-                for k, v in json.loads(r.stdout).items()}
+                for k, v in json.loads(json_text).items()}
     except (json.JSONDecodeError, AttributeError) as exc:
         raise RuntimeError(
-            f"Could not parse PowerShell output:\n{exc}\n\nOutput: {r.stdout[:300]}"
+            f"Could not parse PowerShell output:\n{exc}\n\nOutput: {json_text[:300]}"
         ) from exc
     raw = data.get("cookies") or []
     if isinstance(raw, dict):
@@ -5688,7 +5728,16 @@ class _BrowserCookieDialog(tk.Toplevel):
         _center_window(self)
 
     def _show_error(self, msg: str):
-        self._status_lbl.config(text=f"Error: {msg}", fg="#e74c3c", wraplength=420)
+        self._status_lbl.config(text="Error — see details below (you can select and copy):", fg="#e74c3c")
+        self._cookie_frame.pack_configure(fill="both", expand=True)
+        err_txt = tk.Text(self._cookie_frame, height=12, wrap="word",
+                          font=("Courier", 8), bg="#fdfefe", fg="#922b21",
+                          relief="solid", bd=1)
+        err_txt.pack(fill="both", expand=True, pady=(4, 0))
+        err_txt.insert("1.0", msg)
+        self.resizable(True, True)
+        self.geometry("560x420")
+        _center_window(self)
 
     def _apply(self):
         selected = {n: self._cookies[n] for n, v in self._vars.items() if v.get()}
@@ -5700,6 +5749,297 @@ class _BrowserCookieDialog(tk.Toplevel):
         updated = _update_cookie_in_headers(raw, selected)
         self._headers_widget.delete("1.0", "end")
         self._headers_widget.insert("1.0", updated)
+        self.destroy()
+
+
+class _EngineeringBrowseDialog(tk.Toplevel):
+    """Browse and select engineering standards from the live tree API.
+
+    result: list[EngineeringStandard] of selected items, or None on cancel.
+    """
+
+    def __init__(self, parent, client, on_loaded=None):
+        super().__init__(parent)
+        self.title("Browse Engineering Standards")
+        self.resizable(True, True)
+        self.result = None
+        self._client = client
+        self._on_loaded_cb = on_loaded   # called (no args) after data is loaded and persisted
+        self._all_standards: list = []
+        self._filtered: list = []
+        self._sort_col = "Standard ID"
+        self._sort_rev = False
+        self._build()
+        _center_window(self)
+        self.geometry("1000x600")
+        self.grab_set()
+        self._start_fetch()
+        self.wait_window()
+
+    def _build(self):
+        _styled_header(self, "Browse Engineering Standards",
+                       "Select standards to add to this project")
+
+        # ── filter form ──────────────────────────────────────────
+        form = ttk.LabelFrame(self, text="Filter", padding=6)
+        form.pack(fill="x", padx=10, pady=(4, 0))
+
+        row0 = ttk.Frame(form); row0.pack(fill="x", pady=2)
+        row1 = ttk.Frame(form); row1.pack(fill="x", pady=2)
+
+        # Row 0: text searches
+        def _lbl_ent(parent, label, width=20):
+            ttk.Label(parent, text=label).pack(side="left")
+            var = tk.StringVar()
+            var.trace_add("write", lambda *_: self._apply_filter())
+            ttk.Entry(parent, textvariable=var, width=width).pack(side="left", padx=(2, 10))
+            return var
+
+        self._v_id   = _lbl_ent(row0, "Standard ID:", 16)
+        self._v_desc = _lbl_ent(row0, "Description contains:", 30)
+
+        ttk.Button(row0, text="Clear", command=self._clear_filters).pack(side="left", padx=4)
+
+        # Row 1: dropdowns
+        ttk.Label(row1, text="Series:").pack(side="left")
+        self._v_series = tk.StringVar(value="All")
+        self._cb_series = ttk.Combobox(row1, textvariable=self._v_series,
+                                       values=["All"], state="readonly", width=30)
+        self._cb_series.pack(side="left", padx=(2, 10))
+        self._cb_series.bind("<<ComboboxSelected>>", lambda _: self._apply_filter())
+
+        ttk.Label(row1, text="State:").pack(side="left")
+        self._v_state = tk.StringVar(value="Active")
+        state_cb = ttk.Combobox(row1, textvariable=self._v_state,
+                                values=["All", "Active", "Superseded"], state="readonly", width=12)
+        state_cb.pack(side="left", padx=(2, 10))
+        state_cb.bind("<<ComboboxSelected>>", lambda _: self._apply_filter())
+
+        self._status_lbl = ttk.Label(row1, text="Loading…", foreground="#2980b9")
+        self._status_lbl.pack(side="left", padx=16)
+
+        # ── view toggle ───────────────────────────────────────────
+        row2 = ttk.Frame(form); row2.pack(fill="x", pady=(2, 0))
+        self._grouped_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(row2, text="Group by series", variable=self._grouped_var,
+                        command=self._apply_filter).pack(side="left")
+        ttk.Button(row2, text="Expand All",
+                   command=lambda: [self._tree.item(i, open=True)
+                                    for i in self._tree.get_children()]).pack(side="left", padx=6)
+        ttk.Button(row2, text="Collapse All",
+                   command=lambda: [self._tree.item(i, open=False)
+                                    for i in self._tree.get_children()]).pack(side="left")
+
+        # ── results tree ─────────────────────────────────────────
+        frame = ttk.Frame(self)
+        frame.pack(fill="both", expand=True, padx=10, pady=4)
+        cols = ("Standard ID", "Description", "State", "URL")
+        self._tree = ttk.Treeview(frame, columns=cols, show="tree headings",
+                                  selectmode="extended")
+        self._tree.heading("#0", text="Series", command=lambda: self._sort_by("Series"))
+        self._tree.column("#0", width=220, minwidth=120, stretch=False)
+        for col, w, stretch in zip(cols, (130, 350, 80, 240), (False, True, False, False)):
+            self._tree.heading(col, text=col, command=lambda c=col: self._sort_by(c))
+            self._tree.column(col, width=w, minwidth=60, stretch=stretch)
+        vsb = ttk.Scrollbar(frame, orient="vertical", command=self._tree.yview)
+        hsb = ttk.Scrollbar(frame, orient="horizontal", command=self._tree.xview)
+        self._tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
+        self._tree.grid(row=0, column=0, sticky="nsew")
+        vsb.grid(row=0, column=1, sticky="ns")
+        hsb.grid(row=1, column=0, sticky="ew")
+        frame.rowconfigure(0, weight=1)
+        frame.columnconfigure(0, weight=1)
+
+        # Tooltip for truncated cells
+        self._tip_win = None
+        self._tree.bind("<Motion>", self._on_tree_motion)
+        self._tree.bind("<Leave>", lambda _: self._hide_tip())
+
+        # ── footer buttons ────────────────────────────────────────
+        sep = tk.Frame(self, bg="#d5d8dc", height=1); sep.pack(fill="x", side="bottom")
+        bf = tk.Frame(self, bg="#eaecee"); bf.pack(fill="x", side="bottom")
+        ttk.Button(bf, text="Cancel", command=self.destroy).pack(side="right", padx=(6, 12), pady=8)
+        self._add_btn = ttk.Button(bf, text="Add Selected",
+                                   state="disabled", command=self._add_selected)
+        self._add_btn.pack(side="right", pady=8)
+        self._count_lbl = tk.Label(bf, text="", bg="#eaecee", fg="#566573")
+        self._count_lbl.pack(side="left", padx=12)
+
+    def _clear_filters(self):
+        self._v_id.set("")
+        self._v_desc.set("")
+        self._v_series.set("All")
+        self._v_state.set("Active")
+        self._apply_filter()
+
+    def _start_fetch(self):
+        self._client.fetch_all_async(
+            on_done=lambda results: self.after(0, self._on_loaded, results),
+            on_error=lambda exc: self.after(0, self._on_error, str(exc)),
+            on_progress=lambda done, total, title: self.after(
+                0, self._on_progress, done, total, title),
+        )
+
+    def _on_progress(self, done: int, total: int, title: str):
+        self._status_lbl.config(
+            text=f"Loading {done}/{total}: {title[:40]}…", foreground="#2980b9")
+
+    def _on_loaded(self, standards: list):
+        self._all_standards = standards
+        # Populate series dropdown from actual data
+        series_seen = []
+        seen_set = set()
+        for s in standards:
+            if s.series_value not in seen_set:
+                seen_set.add(s.series_value)
+                series_seen.append(s.series_value)
+        self._cb_series.config(values=["All"] + sorted(series_seen))
+        self._apply_filter()
+        n = len(standards)
+        cached_note = " (from cache)" if all(
+            self._client.cache is not None and not self._client.cache.is_stale(s.series_value)
+            for s in standards[:1]
+        ) else ""
+        self._status_lbl.config(
+            text=f"{n} standard(s) loaded{cached_note}.", foreground="#1a7a30")
+        self._add_btn.config(state="normal")
+        if self._on_loaded_cb:
+            try:
+                self._on_loaded_cb()
+            except Exception:
+                pass
+
+    def _on_error(self, msg: str):
+        self._status_lbl.config(text=f"Error: {msg[:140]}", foreground="#e74c3c")
+
+    def _apply_filter(self):
+        id_q    = self._v_id.get().strip().lower()
+        desc_q  = self._v_desc.get().strip().lower()
+        series  = self._v_series.get()
+        state   = self._v_state.get()
+        filtered = []
+        for std in self._all_standards:
+            if state != "All" and std.document_state != state:
+                continue
+            if series != "All" and std.series_value != series:
+                continue
+            if id_q and id_q not in std.standard_id.lower():
+                continue
+            if desc_q and desc_q not in std.description.lower():
+                continue
+            filtered.append(std)
+        self._filtered = filtered
+        self._populate(filtered)
+
+    def _populate(self, standards: list):
+        for iid in self._tree.get_children():
+            self._tree.delete(iid)
+        if self._grouped_var.get():
+            # Group by series — one open parent node per series
+            from collections import OrderedDict
+            groups: dict = OrderedDict()
+            for std in standards:
+                groups.setdefault(std.series_value, []).append(std)
+            for series_title, items in groups.items():
+                parent = self._tree.insert(
+                    "", "end", text=f"{series_title}  ({len(items)})",
+                    open=True, tags=("series_header",))
+                for std in items:
+                    self._tree.insert(parent, "end", values=(
+                        std.standard_id, std.description,
+                        std.document_state, std.url,
+                    ), tags=("std_row",))
+            self._tree.tag_configure("series_header", font=("", 9, "bold"),
+                                     foreground="#1a5276")
+        else:
+            for std in standards:
+                self._tree.insert("", "end", text=std.series_value, values=(
+                    std.standard_id, std.description,
+                    std.document_state, std.url,
+                ), tags=("std_row",))
+        self._count_lbl.config(text=f"{len(standards)} shown")
+
+    def _sort_by(self, col: str):
+        col_map = {"Standard ID": "standard_id", "Description": "description",
+                   "Series": "series_value", "State": "document_state", "URL": "url"}
+        attr = col_map.get(col, "standard_id")
+        if self._sort_col == col:
+            self._sort_rev = not self._sort_rev
+        else:
+            self._sort_col = col
+            self._sort_rev = False
+        self._filtered.sort(key=lambda s: (getattr(s, attr, '') or '').lower(),
+                            reverse=self._sort_rev)
+        self._populate(self._filtered)
+        arrow = " ▲" if not self._sort_rev else " ▼"
+        for c in ("Standard ID", "Description", "State", "URL"):
+            self._tree.heading(c, text=c + (arrow if c == col else ""))
+        self._tree.heading("#0", text="Series" + (arrow if col == "Series" else ""))
+
+    # ── tooltip for truncated text ────────────────────────────────
+
+    def _on_tree_motion(self, event):
+        iid = self._tree.identify_row(event.y)
+        col = self._tree.identify_column(event.x)
+        if not iid:
+            self._hide_tip(); return
+        item = self._tree.item(iid)
+        if "series_header" in item.get("tags", ()):
+            tip_text = item.get("text", "")
+        else:
+            vals = item.get("values", [])
+            col_idx = {"#1": 0, "#2": 1, "#3": 2, "#4": 3}.get(col)
+            if col_idx is None:
+                tip_text = item.get("text", "")  # #0 column = series
+            else:
+                tip_text = vals[col_idx] if col_idx < len(vals) else ""
+        if not tip_text:
+            self._hide_tip(); return
+        x = event.x_root + 12
+        y = event.y_root + 16
+        if self._tip_win:
+            self._tip_win.wm_geometry(f"+{x}+{y}")
+            lbl = self._tip_win.winfo_children()
+            if lbl:
+                lbl[0].config(text=str(tip_text))
+            return
+        self._tip_win = tw = tk.Toplevel(self)
+        tw.wm_overrideredirect(True)
+        tw.wm_geometry(f"+{x}+{y}")
+        tk.Label(tw, text=str(tip_text), justify="left",
+                 background="#ffffe0", relief="solid", borderwidth=1,
+                 font=("", 9), wraplength=500).pack()
+
+    def _hide_tip(self):
+        if self._tip_win:
+            self._tip_win.destroy()
+            self._tip_win = None
+
+    def _add_selected(self):
+        sel = self._tree.selection()
+        if not sel:
+            messagebox.showwarning("Nothing selected",
+                                   "Select at least one standard.", parent=self)
+            return
+        selected_ids = set()
+        for iid in sel:
+            item = self._tree.item(iid)
+            # Skip series header rows (no values)
+            if "series_header" in item.get("tags", ()):
+                # Also select all children of this group
+                for child in self._tree.get_children(iid):
+                    vals = self._tree.item(child, "values")
+                    if vals:
+                        selected_ids.add(vals[0])
+            else:
+                vals = item.get("values", [])
+                if vals:
+                    selected_ids.add(vals[0])
+        if not selected_ids:
+            messagebox.showwarning("Nothing selected",
+                                   "Select at least one standard.", parent=self)
+            return
+        self.result = [s for s in self._filtered if s.standard_id in selected_ids]
         self.destroy()
 
 
@@ -5730,10 +6070,8 @@ class SoftwareSetupDialog(tk.Toplevel):
                  bg="white", justify="left", fg="#566573", font=("", 9)).pack(anchor="w", pady=(0, 14))
 
         sections = [
-            ("Drawings",       [("base_drawing_url",     "Base Drawing URL"),      # legacy pre-fill; some paths map to drawing_download_url
-                                 ("drawing_search_url",   "Drawing Search URL"),
-                                 ("drawing_download_url", "Drawing Download URL"),  # new: direct download base URL
-                                 ("w3c_domain",           "W3C Domain"),            # new: intranet W3C domain
+            ("Drawings",       [("drawing_search_url",   "Drawing Search URL"),
+                                 ("drawing_download_url", "Drawing Download URL"),
                                 ]),
             ("Aspen",          [("aspen_url",           "Aspen URL (future)")]),
             ("CROWs",          [("base_crow_url",       "Base CROW URL")]),
@@ -5743,8 +6081,8 @@ class SoftwareSetupDialog(tk.Toplevel):
                 ("base_maintenance_transmission_url", "Base URL (Transmission)"),
             ]),
             ("Engineering Standards", [
-                ("base_engineering_telecom_url",      "Base URL (Telecom)"),
-                ("base_engineering_transmission_url", "Base URL (Transmission)"),
+                ("engineering_url",     "Engineering Standards URL"),
+                ("engineering_api_url", "Engineering API URL"),
             ]),
         ]
         for sec, fields in sections:
@@ -5780,19 +6118,13 @@ class SoftwareSetupDialog(tk.Toplevel):
         self._headers_txt.insert("1.0", cfg.get("request_headers", ""))
         grab_row = tk.Frame(auth_body, bg="white"); grab_row.pack(anchor="w", padx=4, pady=(4, 0))
         tk.Button(
-            grab_row, text="🍪 Grab from Browser",
-            command=lambda: self._grab_cookies(self._headers_txt),
-            bg="#1a7a30", fg="white", relief="flat", font=("", 8),
-            cursor="hand2", activebackground="#229954", activeforeground="white",
-            padx=8, pady=3).pack(side="left")
-        tk.Button(
             grab_row, text="🔑 Grab via Windows Auth",
             command=lambda: self._grab_cookies_win_auth(self._headers_txt),
             bg="#6c3483", fg="white", relief="flat", font=("", 8),
             cursor="hand2", activebackground="#7d3c98", activeforeground="white",
-            padx=8, pady=3).pack(side="left", padx=(6, 0))
+            padx=8, pady=3).pack(side="left")
         tk.Label(grab_row,
-                 text="Browser: reads from Edge/Chrome.  Windows Auth: uses your domain login (requires all three Drawing URLs).",
+                 text="Uses your Windows domain login — requires Drawing Search URL, Drawing Download URL, and W3C Domain.",
                  bg="white", fg="#7f8c8d", font=("", 8)).pack(side="left", padx=8)
         # Engineering Standards Headers (optional per-server override)
         eng_hdr_row = tk.Frame(body, bg="white"); eng_hdr_row.pack(fill="x", pady=(6, 4))
@@ -5864,25 +6196,12 @@ class SoftwareSetupDialog(tk.Toplevel):
         headers = _parse_request_headers_raw(raw)
         _show_fetch_options_dialog(self, url, headers)
 
-    def _grab_cookies(self, headers_widget):
-        url = self._cfg_vars.get("drawing_search_url", tk.StringVar()).get().strip()
-        if not url:
-            url = self._cfg_vars.get("base_drawing_url", tk.StringVar()).get().strip()
-        domain = _domain_from_url(url) if url else ""
-        if not domain:
-            messagebox.showwarning("No URL",
-                "Set a Drawing Search URL (or Base Drawing URL) first so the domain is known.",
-                parent=self)
-            return
-        _BrowserCookieDialog(self, domain, headers_widget)
-
     def _grab_cookies_win_auth(self, headers_widget):
         url          = self._cfg_vars.get("drawing_search_url",   tk.StringVar()).get().strip()
         download_url = self._cfg_vars.get("drawing_download_url", tk.StringVar()).get().strip()
-        w3c_domain   = self._cfg_vars.get("w3c_domain",           tk.StringVar()).get().strip()
-        if not (url and download_url and w3c_domain):
+        if not (url and download_url):
             messagebox.showwarning("Incomplete Setup",
-                "Fill in Drawing Search URL, Drawing Download URL, and W3C Domain first.",
+                "Fill in Drawing Search URL and Drawing Download URL first.",
                 parent=self)
             return
         domain = _domain_from_url(url)
@@ -6316,7 +6635,7 @@ class ProjectWizard(tk.Toplevel):
         self.wiz_drw_tree.bind("<Double-1>", lambda _: self._wiz_edit_drawing())
 
     def _wiz_add_drawing(self):
-        dlg = DrawingEditDialog(self, base_url=self.app_config.get("base_drawing_url",""),
+        dlg = DrawingEditDialog(self, base_url=self.app_config.get("drawing_download_url",""),
                                 app_config=self.app_config)
         if dlg.result:
             n = dlg.result["name"]
@@ -6328,7 +6647,7 @@ class ProjectWizard(tk.Toplevel):
         if not sel: return
         n = sel[0]; info = self.wiz_drawings.get(n, {})
         dlg = DrawingEditDialog(self, existing={"name":n,**info},
-                                base_url=self.app_config.get("base_drawing_url",""),
+                                base_url=self.app_config.get("drawing_download_url",""),
                                 app_config=self.app_config)
         if dlg.result:
             old = dlg.result.get("old_name"); new = dlg.result["name"]
@@ -6564,11 +6883,7 @@ class ProjectWizard(tk.Toplevel):
         self.wiz_eng_tree.bind("<Double-1>", lambda _: self._wiz_edit_eng())
 
     def _wiz_add_eng(self):
-        dlg = EngineeringStandardDialog(
-            self,
-            base_url_telecom=self.app_config.get("base_engineering_telecom_url", ""),
-            base_url_transmission=self.app_config.get("base_engineering_transmission_url", ""),
-        )
+        dlg = EngineeringStandardDialog(self)
         if dlg.result:
             sid = dlg.result["standard_id"]
             self.wiz_eng_stds[sid] = {
@@ -6584,12 +6899,7 @@ class ProjectWizard(tk.Toplevel):
         sel = self.wiz_eng_tree.selection()
         if not sel: return
         sid = sel[0]; info = self.wiz_eng_stds.get(sid, {})
-        dlg = EngineeringStandardDialog(
-            self,
-            existing={"standard_id": sid, **info},
-            base_url_telecom=self.app_config.get("base_engineering_telecom_url", ""),
-            base_url_transmission=self.app_config.get("base_engineering_transmission_url", ""),
-        )
+        dlg = EngineeringStandardDialog(self, existing={"standard_id": sid, **info})
         if dlg.result:
             old = sid; new = dlg.result["standard_id"]
             if old != new: self.wiz_eng_stds.pop(old, None)
@@ -6728,6 +7038,7 @@ class RedLineApp(tk.Tk):
         self._build_ui()
         self.after_idle(self._startup_flow)
         self._schedule_drawing_cache_refresh()
+        self._schedule_engineering_cache_refresh()
 
     # ── Startup flow ─────────────────────────────────────────────
 
@@ -7001,8 +7312,43 @@ class RedLineApp(tk.Tk):
 
         # Status bar (always at bottom, packed before main area)
         self.status_var = tk.StringVar(value="Ready  —  no jobs loaded")
-        ttk.Label(self, textvariable=self.status_var, relief="sunken",
-                  anchor="w", padding=(4, 1)).pack(fill="x", side="bottom")
+        _sb = tk.Frame(self, relief="sunken", bd=1, bg="#f0f0f0")
+        _sb.pack(fill="x", side="bottom")
+        ttk.Label(_sb, textvariable=self.status_var,
+                  anchor="w", padding=(4, 1), background="#f0f0f0").pack(
+            side="left", fill="x", expand=True)
+
+        # Low-bandwidth toggle — session only, not saved; disables all auto cache refresh
+        self._low_bw = tk.BooleanVar(value=False)
+        def _on_low_bw():
+            if self._low_bw.get():
+                self._cancel_cache_refresh()
+                self._low_bw_btn.config(bg="#f39c12", fg="white",
+                                        relief="solid", text="Low BW  ON")
+            else:
+                self._low_bw_btn.config(bg="#f0f0f0", fg="#555",
+                                        relief="flat", text="Low BW")
+        self._low_bw_btn = tk.Button(
+            _sb, text="Low BW", bg="#f0f0f0", fg="#555",
+            relief="flat", bd=0, font=("", 8), cursor="hand2",
+            padx=4, pady=1,
+            command=lambda: [self._low_bw.set(not self._low_bw.get()), _on_low_bw()])
+        self._low_bw_btn.pack(side="right", padx=(0, 6))
+
+        # Cache activity chip — hidden until a background fetch is running
+        self._cache_chip = tk.Frame(_sb, bg="#d6eaf8", padx=4, pady=1)
+        self._cache_chip_lbl = tk.Label(self._cache_chip, text="", bg="#d6eaf8",
+                                        fg="#1a5276", font=("", 8))
+        self._cache_chip_lbl.pack(side="left")
+        tk.Button(self._cache_chip, text="✕", bg="#d6eaf8", fg="#1a5276",
+                  relief="flat", bd=0, font=("", 8), cursor="hand2",
+                  command=self._cancel_cache_refresh).pack(side="left", padx=(4, 0))
+        # chip starts hidden; shown by _set_cache_activity()
+
+        # Cancel events for background refresh threads
+        import threading as _threading
+        self._draw_cache_cancel  = _threading.Event()
+        self._eng_cache_cancel   = _threading.Event()
 
         # ── Planner mode frame ─────────────────────────────────────
         self.planner_frame = ttk.Frame(self)
@@ -7164,7 +7510,7 @@ class RedLineApp(tk.Tk):
         self._mark_dirty()
 
     def _add_drawing(self):
-        dlg = DrawingEditDialog(self, base_url=self.app_config.get("base_drawing_url",""),
+        dlg = DrawingEditDialog(self, base_url=self.app_config.get("drawing_download_url",""),
                                 app_config=self.app_config,
                                 proj_cache=self._drawing_cache)
         if dlg.result:
@@ -7177,7 +7523,7 @@ class RedLineApp(tk.Tk):
         if not sel: messagebox.showinfo("Select","Please select a drawing to edit."); return
         name = sel[0]; info = self.drawing_registry.get(name,{})
         dlg = DrawingEditDialog(self, existing={"name":name,**info},
-                                base_url=self.app_config.get("base_drawing_url",""),
+                                base_url=self.app_config.get("drawing_download_url",""),
                                 app_config=self.app_config,
                                 proj_cache=self._drawing_cache)
         if dlg.result:
@@ -7681,13 +8027,166 @@ class RedLineApp(tk.Tk):
         dlg.bind("<Destroy>", lambda e: _canvas.unbind_all("<MouseWheel>")
                  if e.widget is dlg else None)
 
-        sections = [
-            ("Drawings", [
-                ("base_drawing_url",     "Base Drawing URL:",     "Legacy pre-fill URL; some code paths map this to Drawing Download URL"),
-                ("drawing_search_url",   "Drawing Search URL:",   "Base URL for the corporate drawing search server"),
-                ("drawing_download_url", "Drawing Download URL:", "Direct download base URL for drawings"),
-                ("w3c_domain",           "W3C Domain:",           "Intranet W3C domain — required for Windows Auth cookie grab"),
-            ]),
+        cfg_vars = {}
+
+        # ── Drawings section (collapsible) ───────────────────────────
+        draw_fields = [
+            ("drawing_search_url",         "Drawing Search URL:",         "Base URL for the corporate drawing search server"),
+            ("drawing_download_url",       "Drawing Download URL:",       "Direct download base URL for drawings"),
+            ("drawing_cache_refresh_hours","Drawing Cache Refresh (hrs):","How many hours before a cached drawing search result is re-fetched (default 4)"),
+        ]
+        _draw_open = tk.BooleanVar(value=True)
+
+        draw_hdr = ttk.Frame(f)
+        draw_hdr.pack(fill="x", pady=(0, 0))
+        _draw_caret = ttk.Label(draw_hdr, text="▼ Drawings", cursor="hand2", font=("", 9, "bold"))
+        _draw_caret.pack(side="left", pady=(4, 2))
+
+        draw_body = ttk.LabelFrame(f, padding=8)
+        draw_body.pack(fill="x", pady=(0, 8))
+        draw_body.columnconfigure(1, weight=1)
+
+        def _toggle_drawings(e=None):
+            if _draw_open.get():
+                draw_body.pack_forget()
+                _draw_caret.config(text="▶ Drawings")
+                _draw_open.set(False)
+            else:
+                draw_body.pack(fill="x", pady=(0, 8), after=draw_hdr)
+                _draw_caret.config(text="▼ Drawings")
+                _draw_open.set(True)
+            f.update_idletasks()
+            _canvas.configure(scrollregion=_canvas.bbox("all"))
+
+        draw_hdr.bind("<Button-1>", _toggle_drawings)
+        _draw_caret.bind("<Button-1>", _toggle_drawings)
+
+        for r, (key, label, hint) in enumerate(draw_fields):
+            ttk.Label(draw_body, text=label).grid(row=r*2, column=0, sticky="e", padx=(0,6), pady=3)
+            var = tk.StringVar(value=self.app_config.get(key, ""))
+            cfg_vars[key] = var
+            ttk.Entry(draw_body, textvariable=var, width=52).grid(row=r*2, column=1, sticky="ew", pady=3)
+            ttk.Label(draw_body, text=hint, foreground="grey", font=("",8)).grid(
+                row=r*2+1, column=0, columnspan=2, sticky="w", pady=(0,2))
+
+        n_draw = len(draw_fields)
+        ttk.Separator(draw_body, orient="horizontal").grid(
+            row=n_draw*2, column=0, columnspan=2, sticky="ew", pady=(8, 4))
+
+        headers_txt = scrolledtext.ScrolledText(draw_body, height=4, font=("Courier", 9), wrap="none")
+        headers_txt.grid(row=n_draw*2+1, column=0, columnspan=2, sticky="ew", pady=(0, 4))
+        headers_txt.insert("1.0", self.app_config.get("request_headers", ""))
+
+        def _do_win_auth_cookies():
+            url          = cfg_vars.get("drawing_search_url",   tk.StringVar()).get().strip()
+            download_url = cfg_vars.get("drawing_download_url", tk.StringVar()).get().strip()
+            if not (url and download_url):
+                messagebox.showwarning("Incomplete Setup",
+                    "Fill in Drawing Search URL and Drawing Download URL first.",
+                    parent=dlg)
+                return
+            domain = _domain_from_url(url)
+            _BrowserCookieDialog(dlg, domain, headers_txt,
+                                 cookies_fn=lambda _: _ps_grab_windows_cookies(url))
+
+        def _do_fetch_options():
+            url = cfg_vars.get("drawing_search_url", tk.StringVar()).get().strip()
+            if not url:
+                messagebox.showwarning("No URL",
+                    "Fill in Drawing Search URL first.", parent=dlg)
+                return
+            headers = _parse_request_headers_raw(headers_txt.get("1.0", "end"))
+            _show_fetch_options_dialog(dlg, url, headers)
+
+        btn_row = ttk.Frame(draw_body)
+        btn_row.grid(row=n_draw*2+2, column=0, columnspan=2, sticky="w", pady=(0, 2))
+        ttk.Button(btn_row, text="🔑 Grab via Windows Auth",
+                   command=_do_win_auth_cookies).pack(side="left")
+        ttk.Button(btn_row, text="🔄 Fetch Drawing Options",
+                   command=_do_fetch_options).pack(side="left", padx=(6, 0))
+        ttk.Label(btn_row, text="Windows Auth requires Drawing Search URL and Drawing Download URL.",
+                  foreground="grey", font=("", 8)).pack(side="left", padx=8)
+
+        # ── Engineering Standards section (collapsible) ───────────────
+        eng_fields = [
+            ("engineering_url",                "Engineering Standards URL:",        "Web app URL — used for Windows Auth cookie grab"),
+            ("engineering_api_url",            "Engineering API URL:",              "API base URL for series/sections data (e.g. https://host/esv4)"),
+            ("engineering_cache_refresh_hours","Engineering Cache Refresh (hrs):",  "How many hours before cached standards are re-fetched (default 4)"),
+        ]
+        _eng_open = tk.BooleanVar(value=True)
+
+        eng_hdr = ttk.Frame(f)
+        eng_hdr.pack(fill="x", pady=(0, 0))
+        _eng_caret = ttk.Label(eng_hdr, text="▼ Engineering Standards", cursor="hand2", font=("", 9, "bold"))
+        _eng_caret.pack(side="left", pady=(4, 2))
+
+        eng_body = ttk.LabelFrame(f, padding=8)
+        eng_body.pack(fill="x", pady=(0, 8))
+        eng_body.columnconfigure(1, weight=1)
+
+        def _toggle_eng(e=None):
+            if _eng_open.get():
+                eng_body.pack_forget()
+                _eng_caret.config(text="▶ Engineering Standards")
+                _eng_open.set(False)
+            else:
+                eng_body.pack(fill="x", pady=(0, 8), after=eng_hdr)
+                _eng_caret.config(text="▼ Engineering Standards")
+                _eng_open.set(True)
+            f.update_idletasks()
+            _canvas.configure(scrollregion=_canvas.bbox("all"))
+
+        eng_hdr.bind("<Button-1>", _toggle_eng)
+        _eng_caret.bind("<Button-1>", _toggle_eng)
+
+        for r, (key, label, hint) in enumerate(eng_fields):
+            ttk.Label(eng_body, text=label).grid(row=r*2, column=0, sticky="e", padx=(0,6), pady=3)
+            var = tk.StringVar(value=self.app_config.get(key, ""))
+            cfg_vars[key] = var
+            ttk.Entry(eng_body, textvariable=var, width=52).grid(row=r*2, column=1, sticky="ew", pady=3)
+            ttk.Label(eng_body, text=hint, foreground="grey", font=("",8)).grid(
+                row=r*2+1, column=0, columnspan=2, sticky="w", pady=(0,2))
+
+        n_eng = len(eng_fields)
+        ttk.Separator(eng_body, orient="horizontal").grid(
+            row=n_eng*2, column=0, columnspan=2, sticky="ew", pady=(8, 4))
+        ttk.Label(eng_body, text="Override headers (leave blank to use Drawing headers above):",
+                  foreground="grey", font=("", 8)).grid(
+            row=n_eng*2+1, column=0, columnspan=2, sticky="w", pady=(0, 2))
+
+        eng_headers_txt = scrolledtext.ScrolledText(eng_body, height=3, font=("Courier", 9), wrap="none")
+        eng_headers_txt.grid(row=n_eng*2+2, column=0, columnspan=2, sticky="ew", pady=(0, 4))
+        eng_headers_txt.insert("1.0", self.app_config.get("engineering_request_headers", ""))
+
+        def _do_eng_win_auth():
+            import re as _re
+            # Prefer the API URL so we grab cookies for the /esv4/ path.
+            # The web-app URL (/es/browse) may return cookies scoped to a
+            # different path that the /esv4/ API doesn't accept.
+            api_raw = cfg_vars.get("engineering_api_url", tk.StringVar()).get().strip()
+            api_raw = _re.sub(r'/(sections|series)([?/].*)?$', '', api_raw).rstrip('/')
+            grab_url = api_raw or cfg_vars.get("engineering_url", tk.StringVar()).get().strip()
+            if not grab_url:
+                messagebox.showwarning("Incomplete Setup",
+                    "Fill in the Engineering API URL first.",
+                    parent=dlg)
+                return
+            # Grab against the series endpoint so IIS issues a cookie for the /esv4 path
+            grab_target = grab_url.rstrip('/') + "/series?group=00all"
+            domain = _domain_from_url(grab_url)
+            _BrowserCookieDialog(dlg, domain, eng_headers_txt,
+                                 cookies_fn=lambda _: _ps_grab_windows_cookies(grab_target))
+
+        eng_btn_row = ttk.Frame(eng_body)
+        eng_btn_row.grid(row=n_eng*2+3, column=0, columnspan=2, sticky="w", pady=(0, 2))
+        ttk.Button(eng_btn_row, text="🔑 Grab via Windows Auth",
+                   command=_do_eng_win_auth).pack(side="left")
+        ttk.Label(eng_btn_row,
+                  text="Requires Engineering Standards URL to be filled in.",
+                  foreground="grey", font=("", 8)).pack(side="left", padx=8)
+
+        # ── All other URL sections ────────────────────────────────────
+        other_sections = [
             ("Aspen", [
                 ("aspen_url",         "Aspen URL:",         "Base URL for Aspen (future use)"),
             ]),
@@ -7701,18 +8200,13 @@ class RedLineApp(tk.Tk):
                 ("base_maintenance_telecom_url",      "Base URL (Telecom):",      "Pre-fills Telecom URL when adding maintenance standards"),
                 ("base_maintenance_transmission_url", "Base URL (Transmission):", "Pre-fills Transmission URL when adding maintenance standards"),
             ]),
-            ("Engineering Standards", [
-                ("base_engineering_telecom_url",      "Base URL (Telecom):",      "Pre-fills Telecom URL when adding engineering standards"),
-                ("base_engineering_transmission_url", "Base URL (Transmission):", "Pre-fills Transmission URL when adding engineering standards"),
-            ]),
             ("Tailboard", [
                 ("tailboard_url",  "Tailboard URL:",  "Pre-fills the Tailboard Template URL on the Tailboards tab"),
                 ("crew_email",     "Crew Email(s):",  "Default recipients when emailing a completed tailboard (comma-separated)"),
             ]),
         ]
 
-        cfg_vars = {}
-        for section_name, fields in sections:
+        for section_name, fields in other_sections:
             lf = ttk.LabelFrame(f, text=section_name, padding=8)
             lf.pack(fill="x", pady=(0, 8))
             lf.columnconfigure(1, weight=1)
@@ -7723,64 +8217,6 @@ class RedLineApp(tk.Tk):
                 ttk.Entry(lf, textvariable=var, width=52).grid(row=r*2, column=1, sticky="ew", pady=3)
                 ttk.Label(lf, text=hint, foreground="grey", font=("",8)).grid(
                     row=r*2+1, column=0, columnspan=2, sticky="w", pady=(0,2))
-
-        ttk.Label(f, text="These settings apply to all projects and are stored globally.",
-                  foreground="grey", font=("",8)).pack(anchor="w", pady=(4,0))
-
-        auth_lf = ttk.LabelFrame(f, text="Authentication / Request Headers", padding=8)
-        auth_lf.pack(fill="x", pady=(0, 8))
-        ttk.Label(auth_lf,
-                  text="Headers sent with every download request. One per line as  Header-Name: value\n"
-                       "To authenticate, open your browser's DevTools (F12) → Network tab, make a request\n"
-                       "to the target site, then copy the full  Cookie:  and  Referer:  header values here.",
-                  foreground="grey", font=("", 8), wraplength=480, justify="left").pack(anchor="w", pady=(0, 4))
-        headers_txt = scrolledtext.ScrolledText(auth_lf, height=4, font=("Courier", 9), wrap="none")
-        headers_txt.pack(fill="x")
-        headers_txt.insert("1.0", self.app_config.get("request_headers", ""))
-
-        def _do_grab_cookies():
-            url = cfg_vars.get("drawing_search_url", tk.StringVar()).get().strip()
-            if not url:
-                url = cfg_vars.get("base_drawing_url", tk.StringVar()).get().strip()
-            domain = _domain_from_url(url) if url else ""
-            if not domain:
-                messagebox.showwarning("No URL",
-                    "Set a Drawing Search URL (or Base Drawing URL) first so the domain is known.",
-                    parent=dlg)
-                return
-            _BrowserCookieDialog(dlg, domain, headers_txt)
-
-        def _do_win_auth_cookies():
-            url          = cfg_vars.get("drawing_search_url",   tk.StringVar()).get().strip()
-            download_url = cfg_vars.get("drawing_download_url", tk.StringVar()).get().strip()
-            w3c_domain   = cfg_vars.get("w3c_domain",           tk.StringVar()).get().strip()
-            if not (url and download_url and w3c_domain):
-                messagebox.showwarning("Incomplete Setup",
-                    "Fill in Drawing Search URL, Drawing Download URL, and W3C Domain first.",
-                    parent=dlg)
-                return
-            domain = _domain_from_url(url)
-            _BrowserCookieDialog(dlg, domain, headers_txt,
-                                 cookies_fn=lambda _: _ps_grab_windows_cookies(url))
-
-        grab_row = ttk.Frame(auth_lf); grab_row.pack(anchor="w", pady=(4, 0))
-        ttk.Button(grab_row, text="🍪 Grab from Browser",
-                   command=_do_grab_cookies).pack(side="left")
-        ttk.Button(grab_row, text="🔑 Grab via Windows Auth",
-                   command=_do_win_auth_cookies).pack(side="left", padx=(6, 0))
-        ttk.Label(grab_row,
-                  text="Browser: reads from Edge/Chrome.  Windows Auth: uses your domain login (requires all three Drawing URLs).",
-                  foreground="grey", font=("", 8)).pack(side="left", padx=8)
-
-        eng_hdrs_lf = ttk.LabelFrame(f, text="Engineering Standards Headers (optional override)", padding=8)
-        eng_hdrs_lf.pack(fill="x", pady=(0, 8))
-        ttk.Label(eng_hdrs_lf,
-                  text="Leave blank to use the master headers above. Fill in only if engineering\n"
-                       "standards are served from a different server with different auth credentials.",
-                  foreground="grey", font=("", 8), justify="left").pack(anchor="w", pady=(0, 4))
-        eng_headers_txt = scrolledtext.ScrolledText(eng_hdrs_lf, height=3, font=("Courier", 9), wrap="none")
-        eng_headers_txt.pack(fill="x")
-        eng_headers_txt.insert("1.0", self.app_config.get("engineering_request_headers", ""))
 
         tb_hdrs_lf = ttk.LabelFrame(f, text="Tailboard Site Headers (optional override)", padding=8)
         tb_hdrs_lf.pack(fill="x", pady=(0, 8))
@@ -7815,21 +8251,6 @@ class RedLineApp(tk.Tk):
         ttk.Label(tb_grab_row,
                   text="Reads cookies for the tailboard site from your running Edge / Chrome session.",
                   foreground="grey", font=("", 8)).pack(side="left", padx=8)
-
-        drw_search_lf = ttk.LabelFrame(f, text="Drawing Search", padding=8)
-        drw_search_lf.pack(fill="x", pady=(0, 8))
-        ttk.Label(drw_search_lf,
-                  text="Fetches the live facility / drawing-type / drawing-subject lists from the "
-                       "search server.\nAuthentication uses the master Cookie header set above.",
-                  foreground="grey", font=("", 8), justify="left").pack(anchor="w", pady=(0, 4))
-
-        def _do_fetch_options():
-            url  = cfg_vars.get("drawing_search_url", tk.StringVar()).get().strip()
-            headers = _parse_request_headers_raw(headers_txt.get("1.0", "end"))
-            _show_fetch_options_dialog(dlg, url, headers)
-
-        ttk.Button(drw_search_lf, text="🔄 Fetch Drawing Options",
-                   command=_do_fetch_options).pack(anchor="w")
 
         bf = ttk.Frame(f); bf.pack(fill="x", pady=(10, 0))
         ttk.Button(bf, text="Cancel", command=dlg.destroy).pack(side="right", padx=4)
@@ -8116,6 +8537,7 @@ class RedLineApp(tk.Tk):
     def _build_engineering_tab(self, parent):
         tb = ttk.Frame(parent, padding=(4, 4)); tb.pack(fill="x")
         ttk.Button(tb, text="+ Add",           command=self._add_engineering).pack(side="left", padx=2)
+        ttk.Button(tb, text="🔍 Browse",        command=self._browse_engineering).pack(side="left", padx=2)
         ttk.Button(tb, text="📚 From Library",  command=self._add_engineering_from_library).pack(side="left", padx=2)
         ttk.Button(tb, text="Edit",            command=self._edit_engineering).pack(side="left", padx=2)
         ttk.Button(tb, text="Delete",          command=self._delete_engineering).pack(side="left", padx=2)
@@ -8162,11 +8584,7 @@ class RedLineApp(tk.Tk):
         self._mark_dirty()
 
     def _add_engineering(self):
-        dlg = EngineeringStandardDialog(
-            self,
-            base_url_telecom=self.app_config.get("base_engineering_telecom_url", ""),
-            base_url_transmission=self.app_config.get("base_engineering_transmission_url", ""),
-        )
+        dlg = EngineeringStandardDialog(self)
         if dlg.result:
             sid = dlg.result["standard_id"]
             self.engineering_standards_registry[sid] = {
@@ -8196,16 +8614,69 @@ class RedLineApp(tk.Tk):
             self._refresh_engineering_list()
             self.status_var.set(f"Added {len(dlg.result)} standard(s) from library")
 
+    def _build_eng_client(self):
+        """Build an EngineeringStandardsClient from current app config."""
+        if not _ENG_STD_AVAILABLE:
+            messagebox.showerror("Unavailable",
+                "The engineering_standards package could not be imported.")
+            return None
+        api_url = (self.app_config.get("engineering_api_url", "")
+                   or self.app_config.get("engineering_url", "")).strip()
+        if not api_url:
+            messagebox.showwarning("Setup Required",
+                "Fill in the Engineering API URL in File → Software Settings first.")
+            return None
+        # Strip any trailing /sections or /series path (user may paste the full endpoint URL)
+        import re as _re
+        api_url = _re.sub(r'/(sections|series)([?/].*)?$', '', api_url).rstrip('/')
+        headers = _parse_request_headers_raw(
+            self.app_config.get("engineering_request_headers", "")
+            or self.app_config.get("request_headers", "")
+        )
+        if not hasattr(self, "_eng_cache"):
+            try:
+                ttl = float(self.app_config.get("engineering_cache_refresh_hours", 4))
+            except (TypeError, ValueError):
+                ttl = 4.0
+            self._eng_cache = EngineeringStandardsCache(ttl_hours=max(0.25, ttl))
+            self._eng_cache_load_from_db()
+        return EngineeringStandardsClient(
+            base_url=api_url,
+            headers=headers,
+            cache=self._eng_cache,
+        )
+
+    def _browse_engineering(self):
+        client = self._build_eng_client()
+        if client is None:
+            return
+        dlg = _EngineeringBrowseDialog(self, client,
+                                       on_loaded=self._eng_cache_persist_all)
+        if dlg.result:
+            added = 0
+            for std in dlg.result:
+                sid = std.standard_id
+                if sid:
+                    self.engineering_standards_registry[sid] = {
+                        "title":         std.description,
+                        "revision":      str(std.major_version) if std.major_version else "",
+                        "standard_type": "",
+                        "url":           std.url,
+                        "notes":         "",
+                    }
+                    self._remember_standard("engineering", sid,
+                                            self.engineering_standards_registry[sid])
+                    added += 1
+            if added:
+                self._refresh_engineering_list()
+                self._mark_dirty()
+                self.status_var.set(f"Added {added} engineering standard(s) from browse")
+
     def _edit_engineering(self):
         sel = self.eng_tree.selection()
         if not sel: messagebox.showinfo("Select", "Please select a standard to edit."); return
         sid = sel[0]; info = self.engineering_standards_registry.get(sid, {})
-        dlg = EngineeringStandardDialog(
-            self,
-            existing={"standard_id": sid, **info},
-            base_url_telecom=self.app_config.get("base_engineering_telecom_url", ""),
-            base_url_transmission=self.app_config.get("base_engineering_transmission_url", ""),
-        )
+        dlg = EngineeringStandardDialog(self, existing={"standard_id": sid, **info})
         if dlg.result:
             old_id = sid; new_id = dlg.result["standard_id"]
             if old_id != new_id and old_id in self.engineering_standards_registry:
@@ -10599,6 +11070,62 @@ class RedLineApp(tk.Tk):
     _CACHE_CHECK_INTERVAL_MS = 15 * 60 * 1000   # check every 15 minutes
     _CACHE_DEFAULT_MAX_AGE_H = 4.0              # refresh entries older than 4 h
 
+    def _eng_cache_load_from_db(self):
+        """Populate the in-memory engineering cache from the SQLite DB on first use."""
+        if not hasattr(self, "_eng_cache"):
+            return
+        rows = self._app_db.eng_cache_load_all()
+        for series_value, (cached_at, results_json) in rows.items():
+            try:
+                from engineering_standards.models import EngineeringStandard
+                results = [EngineeringStandard(**r)
+                           for r in json.loads(results_json)]
+                with self._eng_cache._lock:
+                    self._eng_cache._data[series_value] = (cached_at, results)
+            except Exception:
+                pass
+
+    def _eng_cache_persist_all(self):
+        """Flush every series currently in the in-memory cache to SQLite."""
+        if not hasattr(self, "_eng_cache"):
+            return
+        with self._eng_cache._lock:
+            keys = list(self._eng_cache._data.keys())
+        for sv in keys:
+            self._eng_cache_persist(sv)
+
+    def _eng_cache_persist(self, series_value: str):
+        """Flush one series from the in-memory cache to the SQLite DB."""
+        if not hasattr(self, "_eng_cache"):
+            return
+        with self._eng_cache._lock:
+            entry = self._eng_cache._data.get(series_value)
+        if entry is None:
+            return
+        cached_at, results = entry
+        try:
+            results_json = json.dumps([r.__dict__ for r in results])
+            self._app_db.eng_cache_put(series_value, results_json, cached_at)
+        except Exception:
+            pass
+
+    def _set_cache_activity(self, label: str):
+        """Show or hide the status-bar cache chip. Call from the main thread only."""
+        if not hasattr(self, "_cache_chip"):
+            return
+        if label:
+            self._cache_chip_lbl.config(text=f"↺ {label}")
+            self._cache_chip.pack(side="right", padx=(0, 4), pady=1)
+        else:
+            self._cache_chip.pack_forget()
+
+    def _cancel_cache_refresh(self):
+        """Signal all running background cache refreshes to stop."""
+        self._draw_cache_cancel.set()
+        self._eng_cache_cancel.set()
+        self._set_cache_activity("")
+        self.status_var.set("Cache refresh cancelled.")
+
     def _cache_max_age_seconds(self):
         try:
             hours = float(self.app_config.get(
@@ -10622,6 +11149,8 @@ class RedLineApp(tk.Tk):
         everything. Skips silently when a refresh is already running or
         drawing search is not configured.
         """
+        if getattr(self, "_low_bw", None) and self._low_bw.get():
+            return
         if not _DRAWING_SEARCH_AVAILABLE:
             return
         if getattr(self, "_cache_refresh_running", False):
@@ -10646,24 +11175,107 @@ class RedLineApp(tk.Tk):
                                         extra_headers=extra or None)
 
         self._cache_refresh_running = True
+        self._draw_cache_cancel.clear()
+        total = len(keys)
+        self.after(0, self._set_cache_activity,
+                   f"Drawing cache  (0 / {total})")
 
         def _run():
             done = 0
             try:
-                for fac, typ, subj, state in keys:
+                for i, (fac, typ, subj, state) in enumerate(keys):
+                    if self._draw_cache_cancel.is_set():
+                        break
                     try:
                         params = SearchParams(facility=fac, drawing_type=typ,
                                               drawing_subject=subj, state=state)
                         results = client.search_all_pages(params)
                         cache.put(params, results)
                         done += 1
+                        self.after(0, self._set_cache_activity,
+                                   f"Drawing cache  ({done} / {total})")
                     except Exception:
                         pass
             finally:
                 self._cache_refresh_running = False
-                if done:
-                    self.after(0, lambda: self.status_var.set(
-                        f"Drawing cache refreshed — {done} search(es) updated"))
+                cancelled = self._draw_cache_cancel.is_set()
+                def _finish(d=done, c=cancelled):
+                    self._set_cache_activity("")
+                    if d or not c:
+                        self.status_var.set(
+                            f"Drawing cache refreshed — {d} search(es) updated"
+                            + (" (cancelled)" if c else ""))
+                self.after(0, _finish)
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    # ── Engineering standards cache refresh ───────────────────────────
+
+    _ENG_CACHE_CHECK_INTERVAL_MS = 15 * 60 * 1000  # check every 15 minutes
+    _ENG_CACHE_DEFAULT_MAX_AGE_H = 4.0
+
+    def _eng_cache_max_age_seconds(self):
+        try:
+            hours = float(self.app_config.get(
+                "engineering_cache_refresh_hours", self._ENG_CACHE_DEFAULT_MAX_AGE_H))
+        except (TypeError, ValueError):
+            hours = self._ENG_CACHE_DEFAULT_MAX_AGE_H
+        return max(0.25, hours) * 3600.0
+
+    def _schedule_engineering_cache_refresh(self, first_delay_ms=45000):
+        """Start the periodic stale-entry refresh loop for engineering standards."""
+        def _tick():
+            self._refresh_engineering_cache_bg()
+            self.after(self._ENG_CACHE_CHECK_INTERVAL_MS, _tick)
+        self.after(first_delay_ms, _tick)
+
+    def _refresh_engineering_cache_bg(self):
+        """Re-fetch stale engineering standards cache entries in a background thread."""
+        if getattr(self, "_low_bw", None) and self._low_bw.get():
+            return
+        if not _ENG_STD_AVAILABLE:
+            return
+        if getattr(self, "_eng_cache_refresh_running", False):
+            return
+        cache = getattr(self, "_eng_cache", None)
+        if cache is None:
+            return
+        stale = [sv for sv in cache._data if cache.is_stale(sv)]
+        if not stale:
+            return
+        client = self._build_eng_client()
+        if client is None:
+            return
+        self._eng_cache_refresh_running = True
+        self._eng_cache_cancel.clear()
+        total = len(stale)
+        self.after(0, self._set_cache_activity,
+                   f"Eng. standards  (0 / {total})")
+
+        def _run():
+            done = 0
+            try:
+                for series_value in stale:
+                    if self._eng_cache_cancel.is_set():
+                        break
+                    try:
+                        client.fetch_section(series_value)
+                        self._eng_cache_persist(series_value)
+                        done += 1
+                        self.after(0, self._set_cache_activity,
+                                   f"Eng. standards  ({done} / {total})")
+                    except Exception:
+                        pass
+            finally:
+                self._eng_cache_refresh_running = False
+                cancelled = self._eng_cache_cancel.is_set()
+                def _finish(d=done, c=cancelled):
+                    self._set_cache_activity("")
+                    if d or not c:
+                        self.status_var.set(
+                            f"Engineering standards cache refreshed — {d} series updated"
+                            + (" (cancelled)" if c else ""))
+                self.after(0, _finish)
 
         threading.Thread(target=_run, daemon=True).start()
 

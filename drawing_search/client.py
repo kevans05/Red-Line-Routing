@@ -43,6 +43,7 @@ class DrawingSearchClient:
         search_path: Optional[str] = None,
         extra_headers: Optional[dict] = None,
         on_cookie_update: Optional[Callable[[dict], None]] = None,
+        download_url: Optional[str] = None,
     ):
         _base = base_url.rstrip("/")
         if search_path is not None:
@@ -63,13 +64,16 @@ class DrawingSearchClient:
         self.extra_headers       = dict(extra_headers) if extra_headers else {}
         self._last_response_html = ""   # stored for caller diagnostics
         self.on_cookie_update    = on_cookie_update
+        # download_url is used to build document_url on results; falls back to
+        # base_url when not supplied so existing callers are unaffected.
+        self.download_url = download_url.rstrip("/") if download_url else self.base_url
 
     # ── public API ────────────────────────────────────────────────
 
     def search(self, params: "SearchParams") -> list[DrawingResult]:
         """Execute a drawing search and return parsed results (backward compat)."""
         html = self._post(params._to_form_data())
-        return parse_results(html, self.base_url)
+        return parse_results(html, self.download_url)
 
     def search_paged(self, params: "SearchParams") -> PagedResults:
         """Execute a drawing search and return a PagedResults.
@@ -88,7 +92,7 @@ class DrawingSearchClient:
                 )
 
         html   = self._post(params._to_form_data())
-        paged  = parse_paged(html, self.base_url, page=params.page,
+        paged  = parse_paged(html, self.download_url, page=params.page,
                              page_size=params.page_size)
 
         if self.cache is not None:
