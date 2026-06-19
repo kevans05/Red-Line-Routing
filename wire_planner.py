@@ -92,10 +92,14 @@ except ImportError:
     _ENG_STD_AVAILABLE = False
 
 try:
-    from pts_parser import parse_pts as _parse_pts
+    from pts_parser import (parse_pts as _parse_pts,
+                            row_key as _pts_row_key,
+                            write_completions as _pts_write_completions)
     _PTS_PARSER_AVAILABLE = True
 except ImportError:
     _PTS_PARSER_AVAILABLE = False
+    def _pts_row_key(entry): return ""
+    def _pts_write_completions(*a, **kw): return False, "pts_parser not available"
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -264,7 +268,7 @@ def empty_job(job_type="REMOVE"):
     if job_type in ("BLOCK", "UNBLOCK"):
         return {"type": job_type, "description": "", "protection": empty_protection()}
     if job_type == "TESTING":
-        return {"type": job_type, "description": "", "notes": ""}
+        return {"type": job_type, "description": "", "notes": "", "pts_file": ""}
     if job_type == "ISOLATION":
         return {"type": job_type, "description": "", "drawings": [], "notes": ""}
     if job_type == "CR_PROT":
@@ -1006,7 +1010,8 @@ class JobDialog(tk.Toplevel):
     def __init__(self, parent, job_type, existing=None, registry=None,
                  history=None, ep_history=None, jobs=None, settings=None,
                  maintenance_standards=None, engineering_standards=None,
-                 ctrl_desks=None, crows=None):
+                 ctrl_desks=None, crows=None,
+                 pts_files=None, on_complete_pts=None):
         super().__init__(parent)
         self.title(f"{'Edit' if existing else 'Add'} — {job_type}")
         self.result = None
@@ -1020,6 +1025,8 @@ class JobDialog(tk.Toplevel):
         self.engineering_standards = engineering_standards if engineering_standards is not None else {}
         self.ctrl_desks = ctrl_desks if ctrl_desks is not None else []
         self.crows = crows if crows is not None else []
+        self.pts_files = pts_files if pts_files is not None else {}
+        self.on_complete_pts = on_complete_pts
         self.resizable(True, True)
         self._build(existing)
         self.grab_set()
@@ -1064,6 +1071,31 @@ class JobDialog(tk.Toplevel):
             self.geometry("660x560")
         else:
             self.geometry("960x640")
+
+    def _get_pts_entries_for_steps(self, fname):
+        """Return parsed entries for a PTS file, or [] if unavailable."""
+        if not _PTS_PARSER_AVAILABLE:
+            return []
+        pts_dir = self.settings.get("_pts_dir_hint", "")
+        fpath = os.path.join(pts_dir, fname) if pts_dir else fname
+        if not os.path.isfile(fpath):
+            return []
+        try:
+            result = _parse_pts(fpath)
+            return result.get("entries", []) if not result.get("error") else []
+        except Exception:
+            return []
+
+    def _complete_pts_step(self, fname, key, entry, refresh_cb):
+        """Open _PTSCompletionDialog for one step; call on_complete_pts on save."""
+        existing = (self.pts_files.get(fname, {})
+                    .get("completions", {}).get(key))
+        dlg = _PTSCompletionDialog(self, entry, existing=existing)
+        if dlg.result is None:
+            return
+        if self.on_complete_pts:
+            self.on_complete_pts(fname, key, dlg.result or None)
+        refresh_cb()
 
     def _section_label(self, parent, row, text, color):
         ttk.Separator(parent, orient="horizontal").grid(
@@ -1199,11 +1231,83 @@ class JobDialog(tk.Toplevel):
             self._section_label(f, row, "── TESTING / NOTE ──", color); row += 2
             ttk.Label(f, text="Notes:").grid(row=row, column=0, sticky="ne", padx=(0,6), pady=2)
             self.test_notes_var = tk.StringVar(value=ex.get("notes",""))
-            notes_txt = tk.Text(f, width=58, height=6, wrap="word", font=("",9))
+            notes_txt = tk.Text(f, width=58, height=4, wrap="word", font=("",9))
             notes_txt.grid(row=row, column=0, columnspan=2, sticky="ew", pady=2)
             notes_txt.insert("1.0", ex.get("notes",""))
             self._test_notes_widget = notes_txt
             row += 1
+
+            # ── Linked PTS File ───────────────────────────────────────
+            self._section_label(f, row, "── PTS FILE ──", color); row += 2
+            ttk.Label(f, text="PTS File:").grid(row=row, column=0, sticky="e",
+                                                 padx=(0, 6), pady=2)
+            pts_names = [""] + sorted(self.pts_files.keys())
+            self._testing_pts_var = tk.StringVar(value=ex.get("pts_file", ""))
+            pts_cb = ttk.Combobox(f, textvariable=self._testing_pts_var,
+                                  values=pts_names, state="readonly", width=46)
+            pts_cb.grid(row=row, column=1, sticky="w", pady=2)
+            row += 1
+
+            # Steps list (rebuilt whenever the dropdown changes)
+            steps_lf = ttk.LabelFrame(f, text="PTS Steps", padding=4)
+            steps_lf.grid(row=row, column=0, columnspan=2, sticky="ew", pady=(4, 2))
+            f.columnconfigure(1, weight=1)
+            row += 1
+            self._testing_steps_lf = steps_lf
+
+            def _rebuild_steps(*_):
+                for w in steps_lf.winfo_children():
+                    w.destroy()
+                fname = self._testing_pts_var.get()
+                if not fname or fname not in self.pts_files:
+                    ttk.Label(steps_lf, text="Select a PTS file above to view steps.",
+                              foreground="grey").pack(anchor="w")
+                    return
+                completions = self.pts_files[fname].get("completions", {})
+                # Try to get live entries via parser; fall back to stored IDs
+                entries = self._get_pts_entries_for_steps(fname)
+                if not entries:
+                    ttk.Label(steps_lf,
+                              text="Parse file from the PTS tab to see individual steps.",
+                              foreground="grey").pack(anchor="w")
+                    return
+                canvas = tk.Canvas(steps_lf, height=120, highlightthickness=0)
+                vsb = ttk.Scrollbar(steps_lf, orient="vertical", command=canvas.yview)
+                canvas.configure(yscrollcommand=vsb.set)
+                vsb.pack(side="right", fill="y")
+                canvas.pack(side="left", fill="both", expand=True)
+                inner = ttk.Frame(canvas)
+                canvas.create_window((0, 0), window=inner, anchor="nw")
+                inner.bind("<Configure>",
+                           lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+                for entry in entries:
+                    key = _pts_row_key(entry)
+                    comp = completions.get(key)
+                    sect = entry.get("section", "")
+                    subs = entry.get("subsection", "")
+                    sys_ = entry.get("system", "")
+                    ctx  = f"{sect}  ›  {subs}" if sect and subs else (sect or subs)
+                    stds = ",  ".join(entry.get("standard_ids", []))
+                    status = "✓" if comp else "○"
+                    fg = "#1a7a3a" if comp else "#555"
+                    row_f = ttk.Frame(inner)
+                    row_f.pack(fill="x", pady=1)
+                    tk.Label(row_f, text=status, fg=fg, font=("", 10, "bold"),
+                             width=2).pack(side="left")
+                    lbl_txt = f"{ctx}  |  {sys_}  |  {stds}"
+                    if comp:
+                        lbl_txt += f"  [{comp.get('tested_by','')}  {comp.get('date','')}]"
+                    tk.Label(row_f, text=lbl_txt, anchor="w",
+                             font=("", 8)).pack(side="left", fill="x", expand=True)
+                    _entry = entry  # capture for lambda
+                    _key   = key
+                    ttk.Button(row_f, text="Complete" if not comp else "Edit",
+                               command=lambda e=_entry, k=_key, fn=fname:
+                                   self._complete_pts_step(fn, k, e, _rebuild_steps)
+                               ).pack(side="right", padx=(4, 0))
+
+            pts_cb.bind("<<ComboboxSelected>>", _rebuild_steps)
+            _rebuild_steps()
 
         elif self.job_type == "ISOLATION":
             self._section_label(f, row, "── ISOLATION ──", color); row += 2
@@ -1399,7 +1503,8 @@ class JobDialog(tk.Toplevel):
             job["endpoint"] = self.ep_device.get()
             job["notes"]    = self._dev_notes_widget.get("1.0","end").strip()
         elif self.job_type == "TESTING":
-            job["notes"] = self._test_notes_widget.get("1.0","end").strip()
+            job["notes"]     = self._test_notes_widget.get("1.0", "end").strip()
+            job["pts_file"]  = self._testing_pts_var.get()
         elif self.job_type == "ISOLATION":
             job["drawings"] = self._iso_drawings_frame.get()
             job["notes"] = self._test_notes_widget.get("1.0","end").strip()
@@ -1570,7 +1675,9 @@ def format_job(index, job):
             lines += ["", "  NOTES", *[f"    {ln}" for ln in job["notes"].splitlines()]]
     elif jtype == "TESTING":
         if job.get("notes"):
-            lines += ["","  NOTES", *[f"    {ln}" for ln in job["notes"].splitlines()]]
+            lines += ["", "  NOTES", *[f"    {ln}" for ln in job["notes"].splitlines()]]
+        if job.get("pts_file"):
+            lines += ["", f"  PTS FILE  {job['pts_file']}"]
     elif jtype == "ISOLATION":
         drawings = job.get("drawings", [])
         if drawings:
@@ -4299,6 +4406,104 @@ class _PTSImportDialog(tk.Toplevel):
                                 parent=self)
             return
         self.result = [self._rows[int(iid)] for iid in selected]
+        self.destroy()
+
+
+# ──────────────────────────────────────────────────────────────────
+# PTS completion dialog
+# ──────────────────────────────────────────────────────────────────
+
+class _PTSCompletionDialog(tk.Toplevel):
+    """Capture initials, date, and comment for one PTS test entry.
+
+    result : {tested_by, date, comment} when saved; {} when cleared; None if cancelled.
+    """
+
+    def __init__(self, parent, entry, existing=None):
+        super().__init__(parent)
+        self.title("Complete PTS Test")
+        self.resizable(False, False)
+        self.result = None
+        self.grab_set()
+
+        hdr = tk.Frame(self, bg="#6c3483"); hdr.pack(fill="x")
+        tk.Label(hdr, text="PTS Test Completion",
+                 bg="#6c3483", fg="white", font=("", 11, "bold"),
+                 padx=10, pady=8).pack(side="left")
+
+        ctx = ttk.Frame(self, padding=(12, 8, 12, 4)); ctx.pack(fill="x")
+        ctx.columnconfigure(1, weight=1)
+        r = 0
+        sect = entry.get('section', '')
+        subs = entry.get('subsection', '')
+        ctx_str = f"{sect}  ›  {subs}".strip(" ›") if sect or subs else ""
+        for lbl, val in [
+            ("Section:",   ctx_str),
+            ("System:",    entry.get('system', '')),
+            ("Test:",      (entry.get('tests', '')[:120]
+                            + ('…' if len(entry.get('tests', '')) > 120 else ''))),
+            ("Standards:", ",  ".join(entry.get('standard_ids', []))),
+        ]:
+            if val:
+                ttk.Label(ctx, text=lbl, font=("", 9, "bold")).grid(
+                    row=r, column=0, sticky="ne", padx=(0, 6), pady=1)
+                ttk.Label(ctx, text=val, wraplength=440, justify="left",
+                          font=("", 9)).grid(row=r, column=1, sticky="nw", pady=1)
+                r += 1
+
+        ttk.Separator(self, orient="horizontal").pack(fill="x", padx=12, pady=4)
+
+        fields = ttk.Frame(self, padding=(12, 4, 12, 8)); fields.pack(fill="x")
+        fields.columnconfigure(1, weight=1)
+        ex = existing or {}
+
+        ttk.Label(fields, text="Tested By:").grid(
+            row=0, column=0, sticky="e", padx=(0, 6), pady=4)
+        self._tested_by = tk.StringVar(value=ex.get('tested_by', ''))
+        ttk.Entry(fields, textvariable=self._tested_by, width=20).grid(
+            row=0, column=1, sticky="w", pady=4)
+
+        ttk.Label(fields, text="Date:").grid(
+            row=1, column=0, sticky="e", padx=(0, 6), pady=4)
+        date_f = ttk.Frame(fields); date_f.grid(row=1, column=1, sticky="w", pady=4)
+        self._date = tk.StringVar(value=ex.get('date', ''))
+        ttk.Entry(date_f, textvariable=self._date, width=16).pack(side="left")
+        ttk.Button(date_f, text="Today",
+                   command=lambda: self._date.set(
+                       datetime.now().strftime("%Y-%m-%d"))
+                   ).pack(side="left", padx=(4, 0))
+
+        ttk.Label(fields, text="Comment:").grid(
+            row=2, column=0, sticky="ne", padx=(0, 6), pady=4)
+        self._comment = tk.Text(fields, width=40, height=3, wrap="word", font=("", 9))
+        self._comment.grid(row=2, column=1, sticky="ew", pady=4)
+        if ex.get('comment'):
+            self._comment.insert("1.0", ex['comment'])
+
+        btn_f = ttk.Frame(self, padding=(12, 4, 12, 10)); btn_f.pack(fill="x")
+        ttk.Button(btn_f, text="Save",   command=self._save).pack(side="right", padx=2)
+        ttk.Button(btn_f, text="Cancel", command=self.destroy).pack(side="right", padx=2)
+        if existing:
+            ttk.Button(btn_f, text="Clear Completion",
+                       command=self._clear).pack(side="left")
+
+        _center_window(self)
+        self.wait_window()
+
+    def _save(self):
+        tested_by = self._tested_by.get().strip()
+        if not tested_by:
+            messagebox.showwarning("Required", "Tested By is required.", parent=self)
+            return
+        self.result = {
+            'tested_by': tested_by,
+            'date':      self._date.get().strip(),
+            'comment':   self._comment.get("1.0", "end").strip(),
+        }
+        self.destroy()
+
+    def _clear(self):
+        self.result = {}   # empty dict = "clear" signal
         self.destroy()
 
 
@@ -7157,7 +7362,8 @@ class RedLineApp(tk.Tk):
         self.relay_registry = {}          # keyed by device_id
         self.maintenance_standards_registry = {}  # keyed by standard_id
         self.engineering_standards_registry = {}  # keyed by standard_id
-        self.pts_files = {}               # {filename: {uploaded_at, standard_ids}}
+        self.pts_files = {}               # {filename: {uploaded_at, standard_ids, completions}}
+        self._pts_entries_cache = {}      # row_key → entry dict, populated by _refresh_pts_results
         self.tailboard_refs = _empty_tailboard_refs()
         self._dirty = False
         self.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -8496,6 +8702,14 @@ class RedLineApp(tk.Tk):
     def _get_settings(self):
         return dict(self.app_config)
 
+    def _get_settings_with_pts(self):
+        """Settings dict with _pts_dir_hint so JobDialog can locate PTS files."""
+        s = dict(self.app_config)
+        pts_dir = self._pts_dir()
+        if pts_dir:
+            s["_pts_dir_hint"] = pts_dir
+        return s
+
     def _build_relay_settings_tab(self, parent):
         tb = ttk.Frame(parent, padding=(4, 4)); tb.pack(fill="x")
         ttk.Button(tb, text="+ Add",        command=self._add_relay).pack(side="left", padx=2)
@@ -8921,26 +9135,44 @@ class RedLineApp(tk.Tk):
         fvsb.pack(side="right", fill="y")
         self._pts_file_tree.bind("<<TreeviewSelect>>", self._pts_on_file_select)
 
-        # ── Bottom pane: extracted standards detail ──────────────
+        # ── Bottom pane: test steps detail ───────────────────────
         bot_f = ttk.Frame(pw); pw.add(bot_f, weight=2)
         self._pts_results_lf = ttk.LabelFrame(
-            bot_f, text="Extracted Standards — select a PTS file above", padding=4)
+            bot_f, text="PTS Tests — select a PTS file above", padding=4)
         self._pts_results_lf.pack(fill="both", expand=True)
+
+        # Results toolbar
+        rtb = ttk.Frame(self._pts_results_lf); rtb.pack(fill="x", pady=(0, 4))
+        ttk.Button(rtb, text="✓ Mark Complete",
+                   command=self._pts_complete_selected).pack(side="left")
+        ttk.Button(rtb, text="✗ Clear",
+                   command=self._pts_clear_completion_selected).pack(side="left", padx=(4, 0))
+        ttk.Button(rtb, text="⟳ Write to Document",
+                   command=self._pts_write_back_selected).pack(side="left", padx=(12, 0))
+
         rf = ttk.Frame(self._pts_results_lf); rf.pack(fill="both", expand=True)
-        rcols = ("Section", "System", "Standard ID")
+        rcols = ("Section", "System", "Standards", "Status", "Tested By", "Date")
         self._pts_results_tree = ttk.Treeview(rf, columns=rcols,
                                               show="headings", height=10)
-        self._pts_results_tree.heading("Section",     text="Section")
-        self._pts_results_tree.heading("System",      text="System")
-        self._pts_results_tree.heading("Standard ID", text="Standard ID")
-        self._pts_results_tree.column("Section",     width=240)
-        self._pts_results_tree.column("System",      width=220)
-        self._pts_results_tree.column("Standard ID", width=130, stretch=False)
+        self._pts_results_tree.heading("Section",   text="Section")
+        self._pts_results_tree.heading("System",    text="System")
+        self._pts_results_tree.heading("Standards", text="Standards")
+        self._pts_results_tree.heading("Status",    text="✓")
+        self._pts_results_tree.heading("Tested By", text="Tested By")
+        self._pts_results_tree.heading("Date",      text="Date")
+        self._pts_results_tree.column("Section",   width=200)
+        self._pts_results_tree.column("System",    width=170)
+        self._pts_results_tree.column("Standards", width=180)
+        self._pts_results_tree.column("Status",    width=30,  stretch=False, anchor="center")
+        self._pts_results_tree.column("Tested By", width=80,  stretch=False)
+        self._pts_results_tree.column("Date",      width=90,  stretch=False)
         rvsb = ttk.Scrollbar(rf, orient="vertical",
                               command=self._pts_results_tree.yview)
         self._pts_results_tree.configure(yscrollcommand=rvsb.set)
         self._pts_results_tree.pack(side="left", fill="both", expand=True)
         rvsb.pack(side="right", fill="y")
+        self._pts_results_tree.bind("<Double-1>", lambda e: self._pts_complete_selected())
+        self._pts_entries_cache = {}   # row_key → entry dict, populated by _refresh_pts_results
 
     def _refresh_pts_tab(self):
         """Reload both panes of the PTS tab (no-op if tab not yet built)."""
@@ -8966,9 +9198,94 @@ class RedLineApp(tk.Tk):
         if hasattr(self, "_pts_results_tree"):
             for iid in self._pts_results_tree.get_children():
                 self._pts_results_tree.delete(iid)
+        if hasattr(self, "_pts_entries_cache"):
+            self._pts_entries_cache = {}
         if hasattr(self, "_pts_results_lf"):
             self._pts_results_lf.configure(
-                text="Extracted Standards — select a PTS file above")
+                text="PTS Tests — select a PTS file above")
+
+    def _pts_active_filename(self):
+        """Return the filename currently selected in the PTS file list, or None."""
+        sel = self._pts_file_tree.selection()
+        return sel[0] if sel else None
+
+    def _pts_complete_selected(self):
+        """Open the completion dialog for the selected result row."""
+        fname = self._pts_active_filename()
+        if not fname:
+            return
+        sel = self._pts_results_tree.selection()
+        if not sel:
+            return
+        key   = sel[0]
+        entry = getattr(self, "_pts_entries_cache", {}).get(key)
+        if not entry:
+            messagebox.showinfo("Re-parse Required",
+                "Select the file in the list above to load entry details.",
+                parent=self)
+            return
+        existing = self.pts_files.get(fname, {}).get("completions", {}).get(key)
+        dlg = _PTSCompletionDialog(self, entry, existing=existing)
+        if dlg.result is None:
+            return
+        self._pts_save_completion(fname, key, dlg.result or None)
+
+    def _pts_clear_completion_selected(self):
+        """Remove the completion record for the selected result row."""
+        fname = self._pts_active_filename()
+        if not fname:
+            return
+        sel = self._pts_results_tree.selection()
+        if not sel:
+            return
+        key = sel[0]
+        if not self.pts_files.get(fname, {}).get("completions", {}).get(key):
+            return
+        self._pts_save_completion(fname, key, None)
+
+    def _pts_save_completion(self, fname, key, data):
+        """Save or remove a completion record, then refresh the display.
+
+        data : {tested_by, date, comment}  → save
+               None                        → remove
+        """
+        meta = self.pts_files.setdefault(fname, {})
+        comps = meta.setdefault("completions", {})
+        if data:
+            comps[key] = data
+        else:
+            comps.pop(key, None)
+        self._mark_dirty()
+        self._refresh_pts_results(fname)
+
+    def _pts_write_back_selected(self):
+        """Write all completions for the selected PTS file back into the .docx."""
+        fname = self._pts_active_filename()
+        if not fname:
+            messagebox.showinfo("No File Selected",
+                "Select a PTS file in the list above.", parent=self)
+            return
+        pts_dir = self._pts_dir()
+        if not pts_dir:
+            return
+        fpath = os.path.join(pts_dir, fname)
+        if not os.path.isfile(fpath):
+            messagebox.showwarning("File Not Found",
+                f"{fname} is not on disk. Re-upload the file first.", parent=self)
+            return
+        comps = self.pts_files.get(fname, {}).get("completions", {})
+        if not comps:
+            messagebox.showinfo("Nothing to Write",
+                "No completions recorded for this file yet.", parent=self)
+            return
+        _archive_revision(pts_dir, fname)
+        ok, err = _pts_write_completions(fpath, comps)
+        if ok:
+            messagebox.showinfo("Done",
+                f"Completion data written to {fname}.\n"
+                "The previous revision has been archived.", parent=self)
+        else:
+            messagebox.showerror("Write Failed", err or "Unknown error", parent=self)
 
     def _pts_on_file_select(self, event=None):
         sel = self._pts_file_tree.selection()
@@ -8980,23 +9297,26 @@ class RedLineApp(tk.Tk):
     def _refresh_pts_results(self, filename):
         for iid in self._pts_results_tree.get_children():
             self._pts_results_tree.delete(iid)
+        self._pts_entries_cache = {}
+        self._pts_results_tree.tag_configure("done", background="#d5f5e3")
 
         pts_dir = self._pts_dir()
         fpath = os.path.join(pts_dir, filename) if pts_dir else None
+        completions = self.pts_files.get(filename, {}).get("completions", {})
 
         # File not on disk — fall back to stored IDs without section context
         if not (fpath and os.path.isfile(fpath)):
             ids = self.pts_files.get(filename, {}).get("standard_ids", [])
             for sid in ids:
-                self._pts_results_tree.insert("", "end", values=("", "", sid))
+                self._pts_results_tree.insert("", "end",
+                    values=("", "", sid, "", "", ""))
             self._pts_results_lf.configure(
-                text=f"Extracted Standards — {filename}  "
-                     f"({len(ids)} IDs stored, file not on disk)")
+                text=f"PTS Tests — {filename}  ({len(ids)} IDs stored, file not on disk)")
             return
 
         if not _PTS_PARSER_AVAILABLE:
             self._pts_results_lf.configure(
-                text=f"Extracted Standards — {filename}  (pts_parser not available)")
+                text=f"PTS Tests — {filename}  (pts_parser not available)")
             return
 
         try:
@@ -9010,17 +9330,33 @@ class RedLineApp(tk.Tk):
             return
 
         for entry in result["entries"]:
+            key  = _pts_row_key(entry)
+            comp = completions.get(key)
+            self._pts_entries_cache[key] = entry
+
             sect = entry.get("section", "")
             subs = entry.get("subsection", "")
             sys_ = entry.get("system", "")
             display_sect = f"{sect}  ›  {subs}" if sect and subs else (sect or subs)
-            for sid in entry.get("standard_ids", []):
-                self._pts_results_tree.insert(
-                    "", "end", values=(display_sect, sys_, sid))
+            stds = ",  ".join(entry.get("standard_ids", []))
 
-        n = len(result["all_standard_ids"])
+            if comp:
+                status    = "✓"
+                tested_by = comp.get("tested_by", "")
+                date      = comp.get("date", "")
+                tags      = ("done",)
+            else:
+                status = "○"; tested_by = ""; date = ""; tags = ()
+
+            self._pts_results_tree.insert(
+                "", "end", iid=key, tags=tags,
+                values=(display_sect, sys_, stds, status, tested_by, date))
+
+        n_total = len(result["entries"])
+        n_done  = sum(1 for e in result["entries"]
+                      if _pts_row_key(e) in completions)
         self._pts_results_lf.configure(
-            text=f"Extracted Standards — {filename}  ({n} unique ID(s))")
+            text=f"PTS Tests — {filename}  ({n_done}/{n_total} completed)")
 
     def _upload_pts(self):
         if not self.project_folder:
@@ -11413,11 +11749,13 @@ class RedLineApp(tk.Tk):
     def _add_job(self, job_type):
         dlg = JobDialog(self, job_type, registry=self.drawing_registry,
                         history=self.history, ep_history=self.ep_history, jobs=self.jobs,
-                        settings=self._get_settings(),
+                        settings=self._get_settings_with_pts(),
                         maintenance_standards=self.maintenance_standards_registry,
                         engineering_standards=self.engineering_standards_registry,
                         ctrl_desks=self._app_db.get_ctrl_desks(),
-                        crows=self.title_page.get("crows", []))
+                        crows=self.title_page.get("crows", []),
+                        pts_files=self.pts_files,
+                        on_complete_pts=self._pts_save_completion)
         if dlg.result:
             self._collect_history(dlg.result)
             self.jobs.append(dlg.result); self._refresh_list(); self._refresh_drawings_list()
@@ -11428,11 +11766,14 @@ class RedLineApp(tk.Tk):
         if idx is None: messagebox.showinfo("Select a Job","Please select a job from the list."); return
         dlg = JobDialog(self, self.jobs[idx]["type"], existing=deepcopy(self.jobs[idx]),
                         registry=self.drawing_registry, history=self.history,
-                        ep_history=self.ep_history, jobs=self.jobs, settings=self._get_settings(),
+                        ep_history=self.ep_history, jobs=self.jobs,
+                        settings=self._get_settings_with_pts(),
                         maintenance_standards=self.maintenance_standards_registry,
                         engineering_standards=self.engineering_standards_registry,
                         ctrl_desks=self._app_db.get_ctrl_desks(),
-                        crows=self.title_page.get("crows", []))
+                        crows=self.title_page.get("crows", []),
+                        pts_files=self.pts_files,
+                        on_complete_pts=self._pts_save_completion)
         if dlg.result:
             self._collect_history(dlg.result)
             self.jobs[idx]=dlg.result; self._refresh_list(); self._refresh_drawings_list()

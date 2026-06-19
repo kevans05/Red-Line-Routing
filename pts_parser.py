@@ -33,6 +33,9 @@ Return value from parse_pts()
     'error':            str|None,
 }
 """
+import copy
+import hashlib
+import io
 import os
 import re
 import shutil
@@ -248,3 +251,160 @@ def parse_pts(path):
     finally:
         if tmpdir:
             shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+# ── Completion helpers ────────────────────────────────────────────────
+
+
+def row_key(entry):
+    """12-char stable key for a parse_pts entry, used to track completions.
+
+    Based on section + subsection + system + tests text, so it is stable
+    across re-parses of the same document as long as those fields don't change.
+    """
+    raw = "{}|{}|{}|{}".format(
+        entry.get('section', ''),
+        entry.get('subsection', ''),
+        entry.get('system', ''),
+        entry.get('tests', ''),
+    )
+    return hashlib.md5(raw.encode('utf-8')).hexdigest()[:12]
+
+
+def _set_cell_text(tc_elem, text):
+    """Replace text runs in a w:tc's first paragraph, preserving run properties."""
+    for para in tc_elem.findall(f'{{{_W}}}p'):
+        existing_rpr = None
+        for r in para.findall(f'{{{_W}}}r'):
+            rpr = r.find(f'{{{_W}}}rPr')
+            if rpr is not None:
+                existing_rpr = copy.deepcopy(rpr)
+            break
+        for r in list(para.findall(f'{{{_W}}}r')):
+            para.remove(r)
+        r_elem = ET.SubElement(para, f'{{{_W}}}r')
+        if existing_rpr is not None:
+            r_elem.insert(0, existing_rpr)
+        t_elem = ET.SubElement(r_elem, f'{{{_W}}}t')
+        t_elem.text = text or ''
+        if text and (text.startswith(' ') or text.endswith(' ')):
+            t_elem.set('{http://www.w3.org/XML/1998/namespace}space', 'preserve')
+        return  # first paragraph only
+
+
+def write_completions(docx_path, completions_by_key, out_path=None):
+    """Write completion data back into the TESTED BY / DATE columns of a .docx.
+
+    completions_by_key : {row_key: {'tested_by': str, 'date': str, 'comment': str}}
+    out_path           : write to this path; if None, overwrites docx_path in-place.
+    Returns (success: bool, error: str|None).
+    """
+    if not completions_by_key:
+        return True, None
+
+    try:
+        with zipfile.ZipFile(docx_path, 'r') as z:
+            file_data = {name: z.read(name) for name in z.namelist()}
+    except (zipfile.BadZipFile, OSError) as exc:
+        return False, f'Cannot read {docx_path}: {exc}'
+
+    xml_bytes = file_data.get('word/document.xml')
+    if xml_bytes is None:
+        return False, 'No word/document.xml in archive'
+
+    # Register all namespace prefixes found in the document so ET.tostring
+    # serialises them back with the original prefix names (not ns0, ns1, …).
+    for _, (prefix, uri) in ET.iterparse(io.BytesIO(xml_bytes), events=['start-ns']):
+        ET.register_namespace(prefix, uri)
+    ET.register_namespace('xml', 'http://www.w3.org/XML/1998/namespace')
+
+    root = ET.fromstring(xml_bytes)
+    body = root.find(f'{{{_W}}}body')
+    if body is None:
+        return False, 'No body element'
+
+    modified = False
+    current_section = ''
+    current_subsection = ''
+
+    for tbl in body.iter(f'{{{_W}}}tbl'):
+        prev_system = ''
+        prev_ndm = ''
+        prev_tr = None
+
+        for tr in tbl.findall(f'{{{_W}}}tr'):
+            texts, spans, conts = _row_info(tr)
+            if not texts:
+                prev_tr = tr; continue
+            if _is_header_row(texts):
+                prev_tr = tr; continue
+
+            non_empty = [t for t in texts if t.strip()]
+            total_span = sum(spans)
+            first = texts[0].strip() if texts else ''
+
+            if total_span >= 4 and len(non_empty) <= 2 and not conts[0]:
+                if first:
+                    if _SECTION_RE.match(first):
+                        current_section = first
+                        current_subsection = ''
+                    else:
+                        current_subsection = first
+                prev_tr = tr; continue
+
+            if len(texts) < 3:
+                prev_tr = tr; continue
+
+            if conts[0]:
+                system = prev_system
+                ndm = prev_ndm
+            else:
+                system = first
+                ndm = texts[1].strip() if len(texts) > 1 else ''
+                prev_system = system
+                prev_ndm = ndm
+
+            tests = texts[2].strip() if len(texts) > 2 else ''
+            if not tests:
+                prev_tr = tr; continue
+
+            ids = list(dict.fromkeys(_ES_ID.findall(tests)))
+            if not ids:
+                prev_tr = tr; continue
+
+            key = row_key({
+                'section': current_section, 'subsection': current_subsection,
+                'system': system, 'new_dec_mod': ndm, 'tests': tests,
+                'standard_ids': ids,
+            })
+
+            if key in completions_by_key:
+                comp = completions_by_key[key]
+                tested_by = comp.get('tested_by', '')
+                date_str = comp.get('date', '')
+                # vMerge continuation: TESTED BY / DATE live on the restart row
+                write_tr = (prev_tr if (conts[0] and prev_tr is not None) else tr)
+                cells = write_tr.findall(f'{{{_W}}}tc')
+                if len(cells) > 3:
+                    _set_cell_text(cells[3], tested_by)
+                if len(cells) > 4:
+                    _set_cell_text(cells[4], date_str)
+                modified = True
+
+            prev_tr = tr
+
+    if not modified:
+        return True, None
+
+    xml_str = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
+               + ET.tostring(root, encoding='unicode'))
+    file_data['word/document.xml'] = xml_str.encode('utf-8')
+
+    out = out_path or docx_path
+    try:
+        with zipfile.ZipFile(out, 'w', zipfile.ZIP_DEFLATED) as z:
+            for name, data in file_data.items():
+                z.writestr(name, data)
+        return True, None
+    except OSError as exc:
+        return False, f'Cannot write {out}: {exc}'
