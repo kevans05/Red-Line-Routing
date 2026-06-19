@@ -9212,13 +9212,21 @@ class RedLineApp(tk.Tk):
                 text=f"Fetching {done}/{total}: {series_title[:55]}"))
 
         def _on_done(all_stds):
-            # Build prefix-keyed lookup: "ES 62-K0100" → best EngineeringStandard
-            id_prefix = re.compile(r'^(ES\s+\d+[A-Z]*-[A-Z]\d{4,})')
+            # Build a normalised-key lookup so PTS IDs ("ES 62-M0300") match
+            # API IDs ("ES 62-M0300 R00") regardless of revision suffix or
+            # whitespace variations.
+            id_prefix = re.compile(r'^(ES\s+\d+[A-Z]*-[A-Z]\d{4,})', re.IGNORECASE)
+
+            def _norm_es(s):
+                """Base ES ID: strip revision suffix, collapse whitespace, uppercase."""
+                s = re.sub(r'\s+R\d+\S*\s*$', '', s.strip(), flags=re.IGNORECASE)
+                return ' '.join(s.split()).upper()
+
             lookup: dict = {}
             for std in all_stds:
                 m = id_prefix.match(std.standard_id)
                 if m:
-                    key = m.group(1)
+                    key = _norm_es(m.group(1))
                     prev = lookup.get(key)
                     if prev is None or std.major_version > prev.major_version:
                         lookup[key] = std
@@ -9226,7 +9234,7 @@ class RedLineApp(tk.Tk):
             results = [
                 {
                     'id':          sid,
-                    'std':         lookup.get(sid),
+                    'std':         lookup.get(_norm_es(sid)),
                     'in_registry': sid in self.engineering_standards_registry,
                 }
                 for sid in standard_ids
