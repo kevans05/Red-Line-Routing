@@ -91,6 +91,12 @@ try:
 except ImportError:
     _ENG_STD_AVAILABLE = False
 
+try:
+    from pts_parser import parse_pts as _parse_pts
+    _PTS_PARSER_AVAILABLE = True
+except ImportError:
+    _PTS_PARSER_AVAILABLE = False
+
 
 # ──────────────────────────────────────────────────────────────────
 # Drawing-type helper
@@ -4173,6 +4179,129 @@ class StandardsLibraryDialog(tk.Toplevel):
         self.destroy()
 
 
+class _PTSImportDialog(tk.Toplevel):
+    """Review and selectively import engineering standards extracted from a PTS.
+
+    lookup_results : list of dicts, one per unique standard ID:
+        {
+            'id':          str,       # extracted ES ID, e.g. "ES 62-K0100"
+            'std':         obj|None,  # EngineeringStandard from API, or None if not found
+            'in_registry': bool,      # already in engineering_standards_registry
+        }
+    result : list of selected dicts (the ones the user wants to import), or None on cancel.
+    """
+
+    _TAG_NEW      = 'new'
+    _TAG_EXISTS   = 'exists'
+    _TAG_NOTFOUND = 'notfound'
+
+    def __init__(self, parent, filename, lookup_results):
+        super().__init__(parent)
+        self.title("Import Standards from PTS")
+        self.resizable(True, True)
+        self.grab_set()
+        self.result = None
+        self._rows = lookup_results
+
+        # Header bar
+        hdr = tk.Frame(self, bg="#1c2833"); hdr.pack(fill="x")
+        tk.Label(hdr, text="Import Engineering Standards from PTS",
+                 bg="#1c2833", fg="white", font=("", 11, "bold"),
+                 padx=14, pady=10).pack(side="left")
+        tk.Label(hdr, text=filename, bg="#1c2833", fg="#85929e",
+                 font=("", 9), padx=8, pady=10).pack(side="right")
+
+        # Summary line
+        n_new     = sum(1 for r in lookup_results if not r['in_registry'])
+        n_exists  = sum(1 for r in lookup_results if r['in_registry'])
+        n_found   = sum(1 for r in lookup_results if r['std'] is not None)
+        n_total   = len(lookup_results)
+        info_f = ttk.Frame(self, padding=(10, 6, 10, 0)); info_f.pack(fill="x")
+        ttk.Label(info_f,
+                  text=(f"{n_total} standard(s) found  ·  "
+                        f"{n_new} new to this project  ·  "
+                        f"{n_exists} already in registry  ·  "
+                        f"{n_found} matched in API"),
+                  foreground="#2980b9").pack(anchor="w")
+        ttk.Label(info_f,
+                  text=("Standards already in registry will receive a PTS-source tag; "
+                        "their existing title/URL/revision are not overwritten."),
+                  foreground="grey", font=("", 8)).pack(anchor="w", pady=(2, 0))
+
+        # Results treeview
+        frame = ttk.Frame(self, padding=(10, 6, 10, 0)); frame.pack(fill="both", expand=True)
+        cols = ("Standard ID", "Title", "Rev", "Status")
+        self._tree = ttk.Treeview(frame, columns=cols, show="headings",
+                                  selectmode="extended", height=14)
+        self._tree.heading("Standard ID", text="Standard ID")
+        self._tree.heading("Title",       text="Title")
+        self._tree.heading("Rev",         text="Rev")
+        self._tree.heading("Status",      text="Status")
+        self._tree.column("Standard ID", width=140, stretch=False)
+        self._tree.column("Title",       width=320)
+        self._tree.column("Rev",         width=50,  stretch=False)
+        self._tree.column("Status",      width=160, stretch=False)
+        self._tree.tag_configure(self._TAG_NEW,      background="white")
+        self._tree.tag_configure(self._TAG_EXISTS,   background="#f0f0f0", foreground="#666666")
+        self._tree.tag_configure(self._TAG_NOTFOUND, background="#fff3cd")
+        vsb = ttk.Scrollbar(frame, orient="vertical", command=self._tree.yview)
+        self._tree.configure(yscrollcommand=vsb.set)
+        self._tree.pack(side="left", fill="both", expand=True)
+        vsb.pack(side="right", fill="y")
+
+        for i, r in enumerate(lookup_results):
+            std    = r['std']
+            in_reg = r['in_registry']
+            if in_reg:
+                tag    = self._TAG_EXISTS
+                status = "Already in registry"
+            elif std is None:
+                tag    = self._TAG_NOTFOUND
+                status = "Not found in API"
+            else:
+                tag    = self._TAG_NEW
+                status = "New"
+            title = std.description        if std else ""
+            rev   = (str(std.major_version)
+                     if (std and std.major_version) else "")
+            self._tree.insert("", "end", iid=str(i), tags=(tag,),
+                              values=(r['id'], title, rev, status))
+
+        # Button bar
+        bf = ttk.Frame(self, padding=(10, 6, 10, 10)); bf.pack(fill="x")
+        ttk.Button(bf, text="Cancel",
+                   command=self.destroy).pack(side="right", padx=4)
+        ttk.Button(bf, text="Import Selected",
+                   command=self._do_import).pack(side="right")
+        ttk.Button(bf, text="Select All New",
+                   command=self._select_all_new).pack(side="left")
+        ttk.Button(bf, text="Deselect All",
+                   command=lambda: self._tree.selection_set([])).pack(side="left", padx=6)
+
+        self._select_all_new()
+        self.geometry("740x520")
+        _center_window(self)
+        self.wait_window()
+
+    def _select_all_new(self):
+        new_iids = [
+            iid for iid in self._tree.get_children()
+            if self._TAG_NOTFOUND in self._tree.item(iid, "tags")
+            or self._TAG_NEW in self._tree.item(iid, "tags")
+        ]
+        self._tree.selection_set(new_iids)
+
+    def _do_import(self):
+        selected = self._tree.selection()
+        if not selected:
+            messagebox.showinfo("Nothing Selected",
+                                "Select at least one standard to import.",
+                                parent=self)
+            return
+        self.result = [self._rows[int(iid)] for iid in selected]
+        self.destroy()
+
+
 # ──────────────────────────────────────────────────────────────────
 # Startup / wizard dialogs  —  shared UI helpers
 # ──────────────────────────────────────────────────────────────────
@@ -7028,6 +7157,7 @@ class RedLineApp(tk.Tk):
         self.relay_registry = {}          # keyed by device_id
         self.maintenance_standards_registry = {}  # keyed by standard_id
         self.engineering_standards_registry = {}  # keyed by standard_id
+        self.pts_files = {}               # {filename: {uploaded_at, standard_ids}}
         self.tailboard_refs = _empty_tailboard_refs()
         self._dirty = False
         self.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -7360,6 +7490,7 @@ class RedLineApp(tk.Tk):
         rt = ttk.Frame(nb); nb.add(rt, text="  Relay Settings  ");   self._build_relay_settings_tab(rt)
         mt = ttk.Frame(nb); nb.add(mt, text="  Maintenance Standards  "); self._build_maintenance_tab(mt)
         et = ttk.Frame(nb); nb.add(et, text="  Engineering Standards  "); self._build_engineering_tab(et)
+        pt = ttk.Frame(nb); nb.add(pt, text="  PTS  ");              self._build_pts_tab(pt)
         ct = ttk.Frame(nb); nb.add(ct, text="  CROW  ");             self._build_title_tab(ct)
         tbt = ttk.Frame(nb); nb.add(tbt, text="  Tailboards  ");      self._build_tailboards_tab(tbt)
         sdt = ttk.Frame(nb); nb.add(sdt, text="  Safety Documents  "); self._build_safety_tab(sdt)
@@ -8571,9 +8702,11 @@ class RedLineApp(tk.Tk):
         self.eng_tree.bind("<Control-Button-1>", self._on_eng_ctrl_click)
 
     def _refresh_engineering_list(self):
+        self.eng_tree.tag_configure("pts", background="#dbeafe")
         for iid in self.eng_tree.get_children(): self.eng_tree.delete(iid)
         for sid, info in sorted(self.engineering_standards_registry.items()):
-            self.eng_tree.insert("", "end", iid=sid, values=(
+            tags = ("pts",) if info.get("pts_source") else ()
+            self.eng_tree.insert("", "end", iid=sid, tags=tags, values=(
                 sid,
                 info.get("title",         ""),
                 info.get("revision",      ""),
@@ -8735,6 +8868,446 @@ class RedLineApp(tk.Tk):
         if eng_raw:
             return _parse_request_headers_raw(eng_raw)
         return self._parse_request_headers()
+
+    # ── PTS (Protection Test Sheet) tab ───────────────────────────
+
+    def _pts_dir(self):
+        """Path to the project PTS folder, or None if no project is open."""
+        return os.path.join(self.project_folder, "PTS") if self.project_folder else None
+
+    def _build_pts_tab(self, parent):
+        # Toolbar
+        tb = ttk.Frame(parent, padding=(4, 4, 4, 2)); tb.pack(fill="x")
+        ttk.Button(tb, text="⬆ Upload PTS",
+                   command=self._upload_pts).pack(side="left")
+        ttk.Button(tb, text="↺ Re-import Standards",
+                   command=self._pts_reimport_selected).pack(side="left", padx=(6, 0))
+        ttk.Button(tb, text="👁 Open File",
+                   command=self._pts_open_selected).pack(side="left", padx=(6, 0))
+        ttk.Button(tb, text="⊞ Open Folder",
+                   command=lambda: self._reveal_project_subfolder("PTS")).pack(side="left", padx=(6, 0))
+        ttk.Button(tb, text="🗂 Old Revisions",
+                   command=lambda: self._reveal_project_subfolder("PTS", "Archive")).pack(side="left", padx=(6, 0))
+        ttk.Button(tb, text="✕ Remove",
+                   command=self._pts_remove_selected).pack(side="left", padx=(6, 0))
+        ttk.Label(tb,
+                  text="  Upload .docx / .doc Protection Test Sheets.  "
+                       "Standards are extracted and optionally imported to Engineering Standards.",
+                  foreground="grey", font=("", 8)).pack(side="left", padx=8)
+
+        # Vertical split: file list (top) / extracted-standards detail (bottom)
+        pw = ttk.PanedWindow(parent, orient="vertical")
+        pw.pack(fill="both", expand=True, padx=4, pady=(0, 4))
+
+        # ── Top pane: PTS file list ──────────────────────────────
+        top_f = ttk.Frame(pw); pw.add(top_f, weight=1)
+        top_lf = ttk.LabelFrame(top_f, text="PTS Files", padding=4)
+        top_lf.pack(fill="both", expand=True)
+        ff = ttk.Frame(top_lf); ff.pack(fill="both", expand=True)
+        fcols = ("Filename", "Uploaded", "Standards")
+        self._pts_file_tree = ttk.Treeview(ff, columns=fcols,
+                                           show="headings", height=5)
+        self._pts_file_tree.heading("Filename",  text="Filename")
+        self._pts_file_tree.heading("Uploaded",  text="Uploaded")
+        self._pts_file_tree.heading("Standards", text="Standards")
+        self._pts_file_tree.column("Filename",  width=380)
+        self._pts_file_tree.column("Uploaded",  width=150, stretch=False)
+        self._pts_file_tree.column("Standards", width=90,  stretch=False,
+                                   anchor="center")
+        fvsb = ttk.Scrollbar(ff, orient="vertical",
+                              command=self._pts_file_tree.yview)
+        self._pts_file_tree.configure(yscrollcommand=fvsb.set)
+        self._pts_file_tree.pack(side="left", fill="both", expand=True)
+        fvsb.pack(side="right", fill="y")
+        self._pts_file_tree.bind("<<TreeviewSelect>>", self._pts_on_file_select)
+
+        # ── Bottom pane: extracted standards detail ──────────────
+        bot_f = ttk.Frame(pw); pw.add(bot_f, weight=2)
+        self._pts_results_lf = ttk.LabelFrame(
+            bot_f, text="Extracted Standards — select a PTS file above", padding=4)
+        self._pts_results_lf.pack(fill="both", expand=True)
+        rf = ttk.Frame(self._pts_results_lf); rf.pack(fill="both", expand=True)
+        rcols = ("Section", "System", "Standard ID")
+        self._pts_results_tree = ttk.Treeview(rf, columns=rcols,
+                                              show="headings", height=10)
+        self._pts_results_tree.heading("Section",     text="Section")
+        self._pts_results_tree.heading("System",      text="System")
+        self._pts_results_tree.heading("Standard ID", text="Standard ID")
+        self._pts_results_tree.column("Section",     width=240)
+        self._pts_results_tree.column("System",      width=220)
+        self._pts_results_tree.column("Standard ID", width=130, stretch=False)
+        rvsb = ttk.Scrollbar(rf, orient="vertical",
+                              command=self._pts_results_tree.yview)
+        self._pts_results_tree.configure(yscrollcommand=rvsb.set)
+        self._pts_results_tree.pack(side="left", fill="both", expand=True)
+        rvsb.pack(side="right", fill="y")
+
+    def _refresh_pts_tab(self):
+        """Reload both panes of the PTS tab (no-op if tab not yet built)."""
+        if hasattr(self, "_pts_file_tree"):
+            self._refresh_pts_file_list()
+            self._pts_clear_results()
+
+    def _refresh_pts_file_list(self):
+        for iid in self._pts_file_tree.get_children():
+            self._pts_file_tree.delete(iid)
+        for fname, meta in sorted(self.pts_files.items()):
+            ts = meta.get("uploaded_at", "")
+            try:
+                ts = datetime.fromisoformat(ts).strftime("%Y-%m-%d  %H:%M")
+            except Exception:
+                pass
+            n = len(meta.get("standard_ids", []))
+            self._pts_file_tree.insert("", "end", iid=fname, values=(
+                fname, ts, n if n else "—"
+            ))
+
+    def _pts_clear_results(self):
+        if hasattr(self, "_pts_results_tree"):
+            for iid in self._pts_results_tree.get_children():
+                self._pts_results_tree.delete(iid)
+        if hasattr(self, "_pts_results_lf"):
+            self._pts_results_lf.configure(
+                text="Extracted Standards — select a PTS file above")
+
+    def _pts_on_file_select(self, event=None):
+        sel = self._pts_file_tree.selection()
+        if not sel:
+            self._pts_clear_results()
+            return
+        self._refresh_pts_results(sel[0])
+
+    def _refresh_pts_results(self, filename):
+        for iid in self._pts_results_tree.get_children():
+            self._pts_results_tree.delete(iid)
+
+        pts_dir = self._pts_dir()
+        fpath = os.path.join(pts_dir, filename) if pts_dir else None
+
+        # File not on disk — fall back to stored IDs without section context
+        if not (fpath and os.path.isfile(fpath)):
+            ids = self.pts_files.get(filename, {}).get("standard_ids", [])
+            for sid in ids:
+                self._pts_results_tree.insert("", "end", values=("", "", sid))
+            self._pts_results_lf.configure(
+                text=f"Extracted Standards — {filename}  "
+                     f"({len(ids)} IDs stored, file not on disk)")
+            return
+
+        if not _PTS_PARSER_AVAILABLE:
+            self._pts_results_lf.configure(
+                text=f"Extracted Standards — {filename}  (pts_parser not available)")
+            return
+
+        try:
+            result = _parse_pts(fpath)
+        except Exception as exc:
+            messagebox.showerror("Parse Error", str(exc), parent=self)
+            return
+
+        if result.get("error"):
+            messagebox.showerror("Parse Error", result["error"], parent=self)
+            return
+
+        for entry in result["entries"]:
+            sect = entry.get("section", "")
+            subs = entry.get("subsection", "")
+            sys_ = entry.get("system", "")
+            display_sect = f"{sect}  ›  {subs}" if sect and subs else (sect or subs)
+            for sid in entry.get("standard_ids", []):
+                self._pts_results_tree.insert(
+                    "", "end", values=(display_sect, sys_, sid))
+
+        n = len(result["all_standard_ids"])
+        self._pts_results_lf.configure(
+            text=f"Extracted Standards — {filename}  ({n} unique ID(s))")
+
+    def _upload_pts(self):
+        if not self.project_folder:
+            messagebox.showinfo("Save Project First",
+                "Save the project before uploading PTS files.", parent=self)
+            return
+        paths = filedialog.askopenfilenames(
+            title="Upload Protection Test Sheet(s)",
+            filetypes=[("Word Documents", "*.docx *.doc"), ("All files", "*.*")])
+        if not paths:
+            return
+
+        pts_dir = self._pts_dir()
+        os.makedirs(pts_dir, exist_ok=True)
+
+        uploaded = []   # (filename, parse_result)
+        for src in paths:
+            base = os.path.basename(src)
+            _archive_revision(pts_dir, base)
+            try:
+                shutil.copy2(src, os.path.join(pts_dir, base))
+            except Exception as exc:
+                messagebox.showwarning("Copy Failed",
+                    f"Could not copy {base}:\n{exc}", parent=self)
+                continue
+
+            dest_path = os.path.join(pts_dir, base)
+            if _PTS_PARSER_AVAILABLE:
+                try:
+                    result = _parse_pts(dest_path)
+                except Exception as exc:
+                    result = {"entries": [], "all_standard_ids": [], "error": str(exc)}
+            else:
+                result = {"entries": [], "all_standard_ids": [],
+                          "error": "pts_parser module not found."}
+
+            if result.get("error"):
+                messagebox.showwarning(
+                    "Parse Warning",
+                    f"{base}:\n{result['error']}\n\n"
+                    "The file was uploaded but standards could not be extracted.",
+                    parent=self)
+
+            self.pts_files[base] = {
+                "uploaded_at":  datetime.now().isoformat(timespec="seconds"),
+                "standard_ids": result["all_standard_ids"],
+            }
+            uploaded.append((base, result))
+
+        if not uploaded:
+            return
+
+        self._refresh_pts_file_list()
+        self._mark_dirty()
+
+        # Select the first uploaded file so results pane populates
+        if uploaded:
+            first_fname = uploaded[0][0]
+            if first_fname in [self._pts_file_tree.item(i)["values"][0]
+                                for i in self._pts_file_tree.get_children()]:
+                self._pts_file_tree.selection_set(first_fname)
+                self._refresh_pts_results(first_fname)
+
+        # Offer to import standards now
+        all_new_ids: list = []
+        for _, r in uploaded:
+            for sid in r["all_standard_ids"]:
+                if sid not in all_new_ids:
+                    all_new_ids.append(sid)
+
+        if all_new_ids:
+            n_files = len(uploaded)
+            msg = (f"Extracted {len(all_new_ids)} engineering standard ID(s) "
+                   f"from {n_files} PTS file(s).\n\n"
+                   "Import them to the Engineering Standards registry now?")
+            if messagebox.askyesno("Import Standards", msg, parent=self):
+                for fname, result in uploaded:
+                    if result["all_standard_ids"]:
+                        self._pts_do_import(fname, result["all_standard_ids"])
+
+    def _pts_open_selected(self):
+        sel = self._pts_file_tree.selection()
+        if not sel:
+            messagebox.showinfo("Select", "Select a PTS file first.", parent=self)
+            return
+        d = self._pts_dir()
+        path = os.path.join(d, sel[0]) if d else None
+        if path and os.path.isfile(path):
+            _open_file(path)
+        else:
+            messagebox.showinfo("Not Found",
+                f"{sel[0]} is no longer in the PTS folder.", parent=self)
+
+    def _pts_remove_selected(self):
+        sel = self._pts_file_tree.selection()
+        if not sel:
+            messagebox.showinfo("Select", "Select a PTS file to remove.", parent=self)
+            return
+        fname = sel[0]
+        if not messagebox.askyesno(
+                "Remove",
+                f"Remove  {fname}  from the PTS list?\n\n"
+                "The file will be moved to Archive/.  Any Engineering Standards "
+                "it added to this project will remain (with their PTS-source tag).",
+                parent=self):
+            return
+        d = self._pts_dir()
+        if d:
+            _archive_revision(d, fname)
+        self.pts_files.pop(fname, None)
+        self._refresh_pts_file_list()
+        self._pts_clear_results()
+        self._mark_dirty()
+
+    def _pts_reimport_selected(self):
+        sel = self._pts_file_tree.selection()
+        if not sel:
+            messagebox.showinfo("Select",
+                "Select a PTS file to re-import standards from.", parent=self)
+            return
+        fname = sel[0]
+        meta  = self.pts_files.get(fname, {})
+        std_ids = meta.get("standard_ids", [])
+
+        # If we have no IDs stored, try to re-parse the file
+        if not std_ids:
+            d = self._pts_dir()
+            fpath = os.path.join(d, fname) if d else None
+            if not (fpath and os.path.isfile(fpath)):
+                messagebox.showinfo("File Not Found",
+                    f"{fname} is not in the PTS folder and has no stored IDs.",
+                    parent=self)
+                return
+            if not _PTS_PARSER_AVAILABLE:
+                messagebox.showerror("Unavailable",
+                    "pts_parser module is not available.", parent=self)
+                return
+            try:
+                result  = _parse_pts(fpath)
+                std_ids = result["all_standard_ids"]
+                self.pts_files[fname]["standard_ids"] = std_ids
+                self._refresh_pts_file_list()
+                self._refresh_pts_results(fname)
+                self._mark_dirty()
+            except Exception as exc:
+                messagebox.showerror("Parse Error", str(exc), parent=self)
+                return
+
+        if not std_ids:
+            messagebox.showinfo("No Standards",
+                f"No engineering standard IDs were found in {fname}.", parent=self)
+            return
+
+        self._pts_do_import(fname, std_ids)
+
+    def _pts_do_import(self, filename, standard_ids):
+        """Look up standard IDs via the engineering API then open the import dialog."""
+        if not standard_ids:
+            return
+
+        client = self._build_eng_client() if _ENG_STD_AVAILABLE else None
+
+        if client is None:
+            # No API — import with ID only (blank title/URL)
+            results = [
+                {'id': sid, 'std': None,
+                 'in_registry': sid in self.engineering_standards_registry}
+                for sid in standard_ids
+            ]
+            self._pts_show_import_dialog(filename, results)
+            return
+
+        # Show a lightweight progress window while fetching the catalogue
+        prog = tk.Toplevel(self)
+        prog.title("Looking Up Standards…")
+        prog.resizable(False, False)
+        prog.grab_set()
+        prog_lbl = ttk.Label(prog,
+                             text="Fetching engineering standards catalogue…",
+                             padding=(20, 16))
+        prog_lbl.pack()
+        bar = ttk.Progressbar(prog, mode="indeterminate", length=320)
+        bar.pack(padx=20, pady=(0, 20))
+        bar.start(10)
+        _center_window(prog)
+
+        def _on_progress(done, total, series_title):
+            self.after(0, lambda: prog_lbl.config(
+                text=f"Fetching {done}/{total}: {series_title[:55]}"))
+
+        def _on_done(all_stds):
+            # Build prefix-keyed lookup: "ES 62-K0100" → best EngineeringStandard
+            id_prefix = re.compile(r'^(ES\s+\d+[A-Z]*-[A-Z]\d{4,})')
+            lookup: dict = {}
+            for std in all_stds:
+                m = id_prefix.match(std.standard_id)
+                if m:
+                    key = m.group(1)
+                    prev = lookup.get(key)
+                    if prev is None or std.major_version > prev.major_version:
+                        lookup[key] = std
+
+            results = [
+                {
+                    'id':          sid,
+                    'std':         lookup.get(sid),
+                    'in_registry': sid in self.engineering_standards_registry,
+                }
+                for sid in standard_ids
+            ]
+
+            def _finish():
+                try:
+                    prog.destroy()
+                except Exception:
+                    pass
+                self._eng_cache_persist_all()
+                self._pts_show_import_dialog(filename, results)
+
+            self.after(0, _finish)
+
+        def _on_error(exc):
+            def _finish():
+                try:
+                    prog.destroy()
+                except Exception:
+                    pass
+                messagebox.showwarning(
+                    "API Unavailable",
+                    f"Could not fetch engineering standards:\n{exc}\n\n"
+                    "Standards will be imported with ID only (blank title/URL).",
+                    parent=self)
+                fallback = [
+                    {'id': sid, 'std': None,
+                     'in_registry': sid in self.engineering_standards_registry}
+                    for sid in standard_ids
+                ]
+                self._pts_show_import_dialog(filename, fallback)
+
+            self.after(0, _finish)
+
+        client.fetch_all_async(on_done=_on_done, on_error=_on_error,
+                               on_progress=_on_progress)
+
+    def _pts_show_import_dialog(self, filename, lookup_results):
+        """Open _PTSImportDialog and apply the user's selections to the registry."""
+        dlg = _PTSImportDialog(self, filename, lookup_results)
+        if not dlg.result:
+            return
+
+        added = tagged = 0
+        for row in dlg.result:
+            sid    = row['id']
+            std    = row['std']
+            in_reg = row['in_registry']
+
+            if in_reg:
+                # Add PTS-source tag to the existing entry without overwriting data
+                entry   = self.engineering_standards_registry.get(sid, {})
+                sources = list(entry.get("pts_source", []))
+                if filename not in sources:
+                    sources.append(filename)
+                entry["pts_source"] = sources
+                self.engineering_standards_registry[sid] = entry
+                tagged += 1
+            else:
+                self.engineering_standards_registry[sid] = {
+                    "title":         std.description        if std else "",
+                    "revision":      (str(std.major_version)
+                                      if (std and std.major_version) else ""),
+                    "standard_type": "",
+                    "url":           std.url                if std else "",
+                    "notes":         "",
+                    "pts_source":    [filename],
+                }
+                self._remember_standard(
+                    "engineering", sid,
+                    self.engineering_standards_registry[sid])
+                added += 1
+
+        if added or tagged:
+            self._refresh_engineering_list()
+            self._mark_dirty()
+            parts = []
+            if added:  parts.append(f"{added} standard(s) added")
+            if tagged: parts.append(f"{tagged} existing standard(s) tagged as PTS source")
+            self.status_var.set("PTS import: " + ", ".join(parts))
 
     # ── Print helpers ─────────────────────────────────────────────
 
@@ -10954,6 +11527,7 @@ class RedLineApp(tk.Tk):
         if self.jobs and not messagebox.askyesno("New Plan","Discard current plan and start fresh?"): return
         self.jobs=[]; self.drawing_registry={}; self.relay_registry={}
         self.maintenance_standards_registry={}; self.engineering_standards_registry={}
+        self.pts_files={}
         self.current_file=None; self.project_folder=None
         self.project_var.set("")
         self.history = {"device": [], "location": [], "pin": [], "panel": [], "wire": []}
@@ -10964,6 +11538,7 @@ class RedLineApp(tk.Tk):
         self._refresh_list(); self._refresh_drawings_list()
         self._refresh_relay_list(); self._refresh_maintenance_list()
         self._refresh_engineering_list(); self._refresh_crows()
+        self._refresh_pts_tab()
         self.preview.configure(state="normal"); self.preview.delete("1.0","end")
         self.preview.configure(state="disabled")
         self.impl_preview.configure(state="normal"); self.impl_preview.delete("1.0","end")
@@ -10986,6 +11561,7 @@ class RedLineApp(tk.Tk):
             self.relay_registry   = data.get("relay_settings",{})  # key kept as "relay_settings" for file compatibility
             self.maintenance_standards_registry = data.get("maintenance_standards", {})
             self.engineering_standards_registry = data.get("engineering_standards", {})
+            self.pts_files = data.get("pts_files", {})
             self.history = data.get("history", {"device":[],"location":[],"pin":[],"panel":[],"wire":[]})
             # Older files carried a per-project drawing cache — fold it
             # into the global DB so nothing is lost, then ignore it.
@@ -11006,6 +11582,7 @@ class RedLineApp(tk.Tk):
             self._refresh_relay_list(); self._refresh_maintenance_list()
             self._refresh_engineering_list(); self._refresh_crows()
             self._refresh_tailboards_tab(); self._refresh_safety_tab(); self._refresh_other_docs_tab()
+            self._refresh_pts_tab()
             if self.mode_var.get() == "impl": self._refresh_file_tabs()
             proj = data.get("project","") or os.path.splitext(os.path.basename(path))[0]
             self.title(f"Red-Line-Routing — {proj}")
@@ -11027,7 +11604,7 @@ class RedLineApp(tk.Tk):
         try:
             os.makedirs(folder, exist_ok=True)
             for sub in ("Drawings", "Relay Settings", "Maintenance Standards", "Engineering Standards",
-                        "CROW Outage", "Other",
+                        "CROW Outage", "Other", "PTS",
                         os.path.join("Tailboards", "Completed"),
                         os.path.join("Safety Documents", "Completed"),
                         "Other Documents"):
@@ -11054,6 +11631,7 @@ class RedLineApp(tk.Tk):
                            "relay_settings":self.relay_registry,           # key kept as "relay_settings" for file compatibility
                            "maintenance_standards":self.maintenance_standards_registry,
                            "engineering_standards":self.engineering_standards_registry,
+                           "pts_files":self.pts_files,
                            "tailboard_refs":self.tailboard_refs,
                            "history":self.history,
                            "jobs":self.jobs},fh,indent=2)
