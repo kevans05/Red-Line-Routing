@@ -29,7 +29,7 @@ def parse_section(data, series_value: str, base_url: str) -> list:
             # URL preference: explicit field → href → construct from node_value
             url = (node.get('url') or node.get('href') or '').strip()
             if not url and node_value and base_url:
-                url = f"{base_url.rstrip('/')}/document?documentId={node_value}"
+                url = f"{base_url.rstrip('/')}/fetchDocument.html?documentId={node_value}"
             results.append(EngineeringStandard(
                 standard_id=std_id,
                 description=(node.get('description') or '').strip(),
