@@ -412,11 +412,15 @@ Things the brain-dump did not address. ⚠️ marks the heavyweight ones.
    and sync-vs-store-and-forward. **Deferred until server buy-in.** Shapes the
    whole server.
    *Observed (2026-06): the in-scope systems are **on-prem** (private IPs, nothing
-   Entra in the browser), using **Integrated Windows Auth — Kerberos indicated**
-   (no `Authorization` header on warm requests because it's session-cookie-based
-   after a one-time `WWW-Authenticate: Negotiate` handshake; confirm with `klist`
-   showing an `HTTP/<server>` service ticket). → the **KCD/gMSA** path applies; the
-   cloud/Graph branch is ruled out.*
+   Entra in the browser) and **session-cookie-based** — which is why the app's
+   existing grab-and-replay of the `Cookie` works. A `WWW-Authenticate: Negotiate`
+   challenge was **not** seen on the first requests after clearing cookies, so
+   **Kerberos is not confirmed** (could be forms auth / an on-prem SSO gateway, or
+   IWA that re-authed silently). → Relay can rely on **cookie-forwarding** (already
+   proven by the app); **KCD/gMSA** only if a Kerberos handshake is later confirmed
+   upstream. Cloud/Graph is ruled out either way. Run `tools/auth_probe.py`
+   (stdlib; sends no creds, follows no redirects) to reproduce this check from the
+   command line and surface the raw `WWW-Authenticate` the browser hides.*
 5. **Concurrency correctness (corrects v1).** Order by server `seq` + logical
    clock, not wall-clock. Instant ops apply to canonical items only. Tombstones
    for deletes. Job ordering is review-class shared data (explicit order field /
@@ -454,10 +458,12 @@ Recommendations first; these need a human call.
 
 1. **IdP — RESOLVED: Microsoft Entra / AD** (the org is exclusively Microsoft).
    Federate to Windows/Entra; don't build our own auth.
-2. **Relay credentials** — **on-prem confirmed** (private IPs, no Entra; IWA /
-   **Kerberos** indicated) → **KCD/RBCD + gMSA** (fetch as the user, no stored
-   creds). Cloud/Graph branch ruled out. Remaining: confirm Kerberos vs NTLM via
-   `klist`, and sync-vs-store-and-forward. **Deferred until server buy-in.**
+2. **Relay credentials** — **on-prem, session-cookie-based** confirmed (private
+   IPs, no Entra; no `WWW-Authenticate: Negotiate` seen → Kerberos not confirmed).
+   Relay leans on **cookie-forwarding** (the app already grabs/replays the session
+   cookie); **KCD/gMSA** only if Kerberos is confirmed upstream. Cloud/Graph ruled
+   out. Remaining: forms-vs-gateway-vs-IWA, and sync-vs-store-and-forward.
+   **Deferred until server buy-in.**
 3. **Signing strength** — all-MS path is **ADCS** per-user certs (native PKI),
    leaning per-user signatures over HMAC. Deferred; today's attribution is
    **unsigned** ([§5.1](#5-data-model-changes)).
