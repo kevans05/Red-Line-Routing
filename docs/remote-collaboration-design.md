@@ -411,16 +411,18 @@ Things the brain-dump did not address. ⚠️ marks the heavyweight ones.
    signing via **ADCS** certs. Open per connector: on-prem-Kerberos vs cloud-Graph,
    and sync-vs-store-and-forward. **Deferred until server buy-in.** Shapes the
    whole server.
-   *Observed (2026-06): the in-scope systems are **on-prem** (private IPs, nothing
-   Entra in the browser) and **session-cookie-based** — which is why the app's
-   existing grab-and-replay of the `Cookie` works. A `WWW-Authenticate: Negotiate`
-   challenge was **not** seen on the first requests after clearing cookies, so
-   **Kerberos is not confirmed** (could be forms auth / an on-prem SSO gateway, or
-   IWA that re-authed silently). → Relay can rely on **cookie-forwarding** (already
-   proven by the app); **KCD/gMSA** only if a Kerberos handshake is later confirmed
-   upstream. Cloud/Graph is ruled out either way. Run `tools/auth_probe.py`
-   (stdlib; sends no creds, follows no redirects) to reproduce this check from the
-   command line and surface the raw `WWW-Authenticate` the browser hides.*
+   *Confirmed (2026-06) with `tools/auth_probe.py`: the drawing server
+   (`w3ecm.bchydro.bc.ca`, an **IBM FileNet** ECM behind an **F5 BIG-IP**) returns
+   **HTTP 401 `WWW-Authenticate: Negotiate`** to an unauthenticated request — i.e.
+   **on-prem Windows Integrated Auth (Negotiate/Kerberos)**. The browser had hidden
+   this by answering Negotiate silently; the probe (no creds, no redirects)
+   surfaced it. → **KCD + gMSA** is the relay path: fetch **as the user, no stored
+   creds**; the `filenet-search` session cookie is the existing cookie-replay
+   fallback. Cloud/Graph ruled out. Notes: F5 in front → IT scopes the SPN /
+   delegation to the load-balanced name; FileNet exposes **CMIS/P8 REST APIs**, so
+   the relay could fetch via API instead of scraping search HTML. Still to sweep
+   (per-connector): CROW, relay settings, tailboard, reporting — run
+   `auth_probe.py --from-settings`.*
 5. **Concurrency correctness (corrects v1).** Order by server `seq` + logical
    clock, not wall-clock. Instant ops apply to canonical items only. Tombstones
    for deletes. Job ordering is review-class shared data (explicit order field /
@@ -458,12 +460,12 @@ Recommendations first; these need a human call.
 
 1. **IdP — RESOLVED: Microsoft Entra / AD** (the org is exclusively Microsoft).
    Federate to Windows/Entra; don't build our own auth.
-2. **Relay credentials** — **on-prem, session-cookie-based** confirmed (private
-   IPs, no Entra; no `WWW-Authenticate: Negotiate` seen → Kerberos not confirmed).
-   Relay leans on **cookie-forwarding** (the app already grabs/replays the session
-   cookie); **KCD/gMSA** only if Kerberos is confirmed upstream. Cloud/Graph ruled
-   out. Remaining: forms-vs-gateway-vs-IWA, and sync-vs-store-and-forward.
-   **Deferred until server buy-in.**
+2. **Relay credentials** — **Kerberos confirmed** on the drawing server
+   (`auth_probe.py` → 401 `WWW-Authenticate: Negotiate`; IBM FileNet behind F5).
+   → **KCD + gMSA** relay (fetch as the user, no stored creds); `filenet-search`
+   cookie-replay as fallback; FileNet CMIS/REST API an option. Cloud/Graph ruled
+   out. Remaining: sweep the other connectors (CROW/relay/tailboard/reporting) with
+   `--from-settings`, and sync-vs-store-and-forward. **Deferred until server buy-in.**
 3. **Signing strength** — all-MS path is **ADCS** per-user certs (native PKI),
    leaning per-user signatures over HMAC. Deferred; today's attribution is
    **unsigned** ([§5.1](#5-data-model-changes)).
