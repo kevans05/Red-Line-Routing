@@ -1,6 +1,6 @@
 # Remote Collaboration & Rebuild — Design
 
-**Status:** Draft / RFC — v2 (decisions folded in, open problems surfaced)
+**Status:** Draft / RFC — v3 (all-Microsoft identity; local activity log as the near-term feature)
 **Audience:** maintainers of Red-Line-Routing
 **Author:** drafted from the "Future Plan's Ideas" brain-dump
 
@@ -14,6 +14,12 @@ now, remade later** ([§6](#6-scope-what-to-cut-or-defer)); the concurrency mode
 is corrected (stable IDs + server sequence, not array-index + wall-clock); and a
 new [§9 Open problems](#9-open-problems--gaps) collects the gaps the brain-dump
 did not address. Remaining human calls are in [§10](#10-open-decisions).
+
+**v3 changes:** the org is **exclusively Microsoft**, so identity is settled — the
+Windows/Entra account underpins **local attribution now** and Entra SSO + Kerberos
+relay + ADCS signing later ([§4.2](#42-identity-authn--authz), [§4.4](#44-files--bandwidth)).
+A new [§5.1](#5-data-model-changes) makes a **local, unsigned activity log** (full
+scope) the first user-visible feature — accountability now, op-log seed for later.
 
 ---
 
@@ -162,6 +168,14 @@ constraints, with file references:
   (see [§9.2](#9-open-problems--gaps)).
 - **Offline auth:** cache a refreshable token with an **offline grace window** so
   a dead link mid-shift doesn't stop work ([§9.3](#9-open-problems--gaps)).
+- **All-Microsoft environment (confirmed).** The org is exclusively Microsoft, so
+  one identity — the **Windows/Entra account** — underpins everything. It powers
+  **local attribution today** with *zero* infrastructure ([§5.1](#5-data-model-changes)),
+  and the *same* account later powers Entra **SSO**, **Kerberos delegation** for
+  the relay ([§4.4](#44-files--bandwidth)), and **certificate signing** via AD
+  Certificate Services ([§10](#10-open-decisions)). We **federate to Windows/Entra,
+  we don't build auth.** Three acts stay distinct: *authenticate* (needs the IdP,
+  periodic), *sign* (local key, offline-capable), *approve* (server-side, at merge).
 
 ### 4.3 The sync model (the core)
 
@@ -221,8 +235,13 @@ Represent a plan as **canonical state + an append-only operation log**.
   download, resumable/range transfers for flaky links.
 - **The server as a relay**: a thin client asks the server to fetch from a
   corporate source and/or push a package to a reporting site; the bulk transfer
-  happens server-side over the fat pipe. **The credential model for this is an
-  open problem** — see [§9.4](#9-open-problems--gaps).
+  happens server-side over the fat pipe. **Leading answer in an all-Microsoft
+  shop:** Kerberos Constrained Delegation (KCD/RBCD) with a **gMSA**, so the server
+  fetches *as the user* with **no stored credentials** — falling back to the gMSA
+  acting as itself ("on behalf of Jane") for store-and-forward after the user
+  disconnects; Entra-cloud connectors use OBO/Graph instead. Still open per
+  connector and **deferred until server buy-in** — see [§9.4](#9-open-problems--gaps),
+  [§10](#10-open-decisions).
 - **On the wire:** gzip everything; send deltas; make bulk transfers resumable.
 
 ### 4.5 Conflict resolution & history (Git-like)
@@ -287,6 +306,42 @@ The enabling refactor is **a headless project model, decoupled from Tk.**
 - The op log + pending changesets live **beside** the `.redline` (a small SQLite
   sidecar), keeping the plan file clean and human-readable.
 
+### 5.1 Local attribution & the activity log (near-term, no server)
+
+**Decided as the first user-visible feature.** Use the Windows identity to record
+*who did what, when* — "Kyle completed this step", "Kyle attached this document" —
+with **zero infrastructure**. It delivers accountability now and **seeds the
+op-log** the sync system needs later: when buy-in arrives, the same records simply
+start getting signed.
+
+- **Identity (local, zero new deps):** `getpass.getuser()` (stdlib) + `USERDOMAIN`
+  give `DOMAIN\login`; a one-time, user-confirmable **display name** ("Kyle Evans")
+  is remembered in the global DB (`_AppDB`) so the UI shows a name, not a login.
+- **Scope — full activity log** (user's choice): stamp completions, document
+  attach/upload, job add/edit/delete, and registry/CROW changes; **fold the
+  existing `tailboard_signons`/`safety_signons` name lists into the same actor
+  model** so "who" is captured one way everywhere.
+- **Record shape (upgrade-compatible):**
+
+  ```jsonc
+  { "ts": "2026-06-25T14:30:00", "actor": "DOMAIN\\kevans05",
+    "actor_name": "Kyle Evans", "action": "complete",
+    "target": "job:<uuid>", "sig": null }   // sig null now → ADCS cert later
+  ```
+
+  Plus inline convenience fields where shown (`completed_by`/`completed_at` on a
+  job, `added_by` on a document) so the Implementation list can render
+  "✓ Kyle Evans · Jun 25 14:30" with no lookups.
+- **Storage:** the append-only `activity` list travels **inside the `.redline`** (so
+  it reaches anyone who opens the plan) and is the same data the Phase-1 op-log
+  sidecar adopts. Targets reference **entity UUIDs** — which is why this rides on
+  the Phase-0 stable-ID work.
+- **⚠️ Honest caveat:** this is **good-faith, local, *unsigned*** attribution. It
+  trusts the Windows login and the `.redline` is editable JSON — it's
+  *accountability and history*, **not** tamper-proof non-repudiation. Real proof
+  arrives later with the ADCS signature + server verification (the `sig` field).
+  Don't lean on it for legal/safety *proof* until then.
+
 ---
 
 ## 6. Scope: what to cut or defer
@@ -314,8 +369,8 @@ growing the 12k-line monolith.
 
 | Phase | Deliverable | Server? |
 |---|---|---|
-| **0. Decouple + cut** | `core/` model; **stable IDs** + migration; **wizard removal**; **golden round-trip test** | No |
-| **1. Versioning** | Canonical hashing/checksums; `schema`/`plan_id`/`version`; local op log; history/undo | No |
+| **0. Decouple + cut** | `core/` model; **stable IDs** + migration; **wizard removal**; **golden round-trip test**; **local activity log** (Windows-identity attribution, unsigned — seeds the op-log, [§5.1](#5-data-model-changes)) | No |
+| **1. Versioning** | Canonical hashing/checksums; `schema`/`plan_id`/`version`; local op log (**adopts the §5.1 activity list**); history/undo | No |
 | **2. Server + identity** | Container server; OIDC login + **per-plan authz roles**; **offline-auth grace**; publish/clone; whole-plan push/pull with hash verify | Yes |
 | **3. Field-level sync** | Op streaming; **instant** check-offs (canonical-only); **review-gated** changesets for plan/notes; SSE/WS push; tombstones | Yes |
 | **4. File relay** | Content-addressed store; pull-on-demand; **relay credential model**; reporting-site upload; retention/compaction | Yes |
@@ -351,8 +406,11 @@ Things the brain-dump did not address. ⚠️ marks the heavyweight ones.
    re-verify on reconnect. Define the grace period and past-grace behaviour.
 4. **⚠️ Relay credential problem.** Today auth is the *user's browser cookies*
    (`_build_tailboard_headers` `:11371`); a server can't reuse a browser session.
-   Decide: per-user **delegated** creds (OAuth on-behalf-of) vs a **service
-   account** the server holds. Shapes the whole server.
+   **All-Microsoft leading answer:** Kerberos delegation (KCD/RBCD) + a **gMSA**
+   → fetch *as the user*, no stored creds (Entra-cloud connectors use OBO/Graph);
+   signing via **ADCS** certs. Open per connector: on-prem-Kerberos vs cloud-Graph,
+   and sync-vs-store-and-forward. **Deferred until server buy-in.** Shapes the
+   whole server.
 5. **Concurrency correctness (corrects v1).** Order by server `seq` + logical
    clock, not wall-clock. Instant ops apply to canonical items only. Tombstones
    for deletes. Job ordering is review-class shared data (explicit order field /
@@ -388,11 +446,15 @@ Things the brain-dump did not address. ⚠️ marks the heavyweight ones.
 
 Recommendations first; these need a human call.
 
-1. **IdP** — Entra (implied by Edge/DPAPI code) vs generic OIDC vs other. Drives
-   `msal` and the relay-credential design.
-2. **Relay credentials** — per-user delegated (on-behalf-of) vs service account.
-3. **Signing strength** — per-user PKI via `cryptography` (recommended) vs HMAC
-   server attestation.
+1. **IdP — RESOLVED: Microsoft Entra / AD** (the org is exclusively Microsoft).
+   Federate to Windows/Entra; don't build our own auth.
+2. **Relay credentials** — all-MS leaning: **KCD/RBCD + gMSA** (fetch as the user,
+   no stored creds), with **OBO/Graph** for any Entra-cloud connectors. Open per
+   connector: on-prem-vs-cloud, and sync-vs-store-and-forward. **Deferred until
+   server buy-in.**
+3. **Signing strength** — all-MS path is **ADCS** per-user certs (native PKI),
+   leaning per-user signatures over HMAC. Deferred; today's attribution is
+   **unsigned** ([§5.1](#5-data-model-changes)).
 4. **Authz & self-approval** — role model + whether authors can approve their own.
 5. **Shared scope** — which global-DB data (standards library, drawing cache)
    becomes server-shared vs stays local.
@@ -400,6 +462,9 @@ Recommendations first; these need a human call.
 7. **Hosting** — on-prem vs cloud; plus any audit/retention obligation.
 8. **Check-off semantics** — single shared bool vs per-user completion records
    (the latter shows *who* completed each step).
+9. **Attribution scope — RESOLVED: full activity log** (completions, attachments,
+   job + registry/CROW edits), captured locally from the Windows identity,
+   **unsigned for now** ([§5.1](#5-data-model-changes)).
 
 ---
 
@@ -411,4 +476,6 @@ migration**, **remove the wizard**, and add a **golden test** asserting every
 existing `.redline` round-trips unchanged (modulo the additive `id`/`schema`
 fields). That single phase unblocks versioning, history, and every later sync
 phase — and ships value (a testable model, stable IDs, less code) even if the
-server is never built.
+server is never built. Stamp the **local activity log** ([§5.1](#5-data-model-changes))
+in the same pass: the Windows identity gives "who did what, when" with no
+infrastructure, and those records are exactly what the op-log later signs.
