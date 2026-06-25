@@ -244,6 +244,20 @@ Represent a plan as **canonical state + an append-only operation log**.
   [§10](#10-open-decisions).
 - **On the wire:** gzip everything; send deltas; make bulk transfers resumable.
 
+**Observed connector auth** (2026-06, `tools/auth_probe.py --from-settings`):
+
+| Connector(s) | Verdict | Detail |
+|---|---|---|
+| Drawings · search · download | **Negotiate / Kerberos** | FileNet `filenet-search`, F5 pool **FN_16115** → KCD/gMSA |
+| Maintenance standards (telecom, transmission) | **Negotiate / Kerberos** | FileNet `filenet-es`, F5 pool **FN_16113** |
+| Engineering standards + API | **Negotiate / Kerberos** | same **FN_16113**; base URLs 200/404 (not protected paths), the `…_api_url` challenges |
+| Aspen · Relay settings | `200` open (Microsoft-IIS/10.0) | separate IIS apps, **not** FileNet — re-probe a protected path to confirm |
+| CROW | connection **reset** (WinErr 10054) | stricter — possible client-cert/mTLS or WAF; investigate (also the likely upload/reporting target) |
+
+Takeaway: the entire document/standards backbone is **uniformly Kerberos FileNet**,
+so **one KCD/gMSA model** (two F5 SPNs) covers every fetch. CROW and Aspen/relay
+are the only connectors left to characterise.
+
 ### 4.5 Conflict resolution & history (Git-like)
 - **History for free.** The op log *is* the history: who/what/when, signed.
 - **Instant fields:** converge by `seq` order; set-like state (sign-ons) unions.
@@ -420,9 +434,10 @@ Things the brain-dump did not address. ⚠️ marks the heavyweight ones.
    creds**; the `filenet-search` session cookie is the existing cookie-replay
    fallback. Cloud/Graph ruled out. Notes: F5 in front → IT scopes the SPN /
    delegation to the load-balanced name; FileNet exposes **CMIS/P8 REST APIs**, so
-   the relay could fetch via API instead of scraping search HTML. Still to sweep
-   (per-connector): CROW, relay settings, tailboard, reporting — run
-   `auth_probe.py --from-settings`.*
+   the relay could fetch via API instead of scraping search HTML. The full
+   per-connector sweep is recorded in [§4.4](#44-files--bandwidth) — all
+   document/standards systems are Kerberos FileNet; only CROW (connection reset)
+   and Aspen/relay (200 on plain IIS) remain to characterise.*
 5. **Concurrency correctness (corrects v1).** Order by server `seq` + logical
    clock, not wall-clock. Instant ops apply to canonical items only. Tombstones
    for deletes. Job ordering is review-class shared data (explicit order field /
@@ -464,8 +479,11 @@ Recommendations first; these need a human call.
    (`auth_probe.py` → 401 `WWW-Authenticate: Negotiate`; IBM FileNet behind F5).
    → **KCD + gMSA** relay (fetch as the user, no stored creds); `filenet-search`
    cookie-replay as fallback; FileNet CMIS/REST API an option. Cloud/Graph ruled
-   out. Remaining: sweep the other connectors (CROW/relay/tailboard/reporting) with
-   `--from-settings`, and sync-vs-store-and-forward. **Deferred until server buy-in.**
+   out. **All** document/standards connectors are confirmed **Kerberos FileNet**
+   (two F5 pools, FN_16115 + FN_16113) → one KCD/gMSA model. Outliers: **CROW**
+   (connection reset — client-cert/mTLS or WAF?, investigate) and **Aspen/relay**
+   (200 on plain IIS — re-probe a protected path). Remaining: those two +
+   sync-vs-store-and-forward. **Deferred until server buy-in.**
 3. **Signing strength** — all-MS path is **ADCS** per-user certs (native PKI),
    leaning per-user signatures over HMAC. Deferred; today's attribution is
    **unsigned** ([§5.1](#5-data-model-changes)).
