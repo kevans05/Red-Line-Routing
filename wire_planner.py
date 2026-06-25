@@ -48,6 +48,8 @@ import threading
 import urllib.request
 import urllib.error
 import urllib.parse
+
+from core.model import to_dict as project_to_dict, from_dict as project_from_dict
 import queue
 import glob
 import shutil
@@ -11973,17 +11975,18 @@ class RedLineApp(tk.Tk):
         try:
             tp = dict(self.title_page)
             tp["notes"] = self.title_notes.get("1.0", "end").strip()
+            state = {"project": self.project_var.get().strip(),
+                     "title_page": tp,
+                     "drawing_registry": self.drawing_registry,
+                     "relay_registry": self.relay_registry,           # on-disk key is "relay_settings"
+                     "maintenance_standards_registry": self.maintenance_standards_registry,
+                     "engineering_standards_registry": self.engineering_standards_registry,
+                     "pts_files": self.pts_files,
+                     "tailboard_refs": self.tailboard_refs,
+                     "history": self.history,
+                     "jobs": self.jobs}
             with open(path,"w",encoding="utf-8") as fh:
-                json.dump({"project":self.project_var.get().strip(),
-                           "title_page":tp,
-                           "drawing_registry":self.drawing_registry,
-                           "relay_settings":self.relay_registry,           # key kept as "relay_settings" for file compatibility
-                           "maintenance_standards":self.maintenance_standards_registry,
-                           "engineering_standards":self.engineering_standards_registry,
-                           "pts_files":self.pts_files,
-                           "tailboard_refs":self.tailboard_refs,
-                           "history":self.history,
-                           "jobs":self.jobs},fh,indent=2)
+                json.dump(project_to_dict(state),fh,indent=2)
             proj = self.project_var.get().strip() or os.path.splitext(os.path.basename(path))[0]
             self.title(f"Red-Line-Routing — {proj}")
             self._update_status()
