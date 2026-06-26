@@ -18,6 +18,32 @@ the result is stable on every subsequent round-trip.
 """
 
 
+import uuid
+
+# Current on-disk schema version. Bumped when the .redline format changes in a
+# way the loader must account for. Files written before this predate the key.
+SCHEMA = 2
+
+
+def new_id():
+    """A fresh, stable entity id (hex UUID4)."""
+    return uuid.uuid4().hex
+
+
+def ensure_ids(state):
+    """Idempotently give a loaded *state* stable identity — a ``plan_id`` and an
+    ``id`` per job — and upgrade the schema marker. Existing ids are never
+    changed, so re-running is a no-op. Mutates and returns *state*."""
+    if not state.get("plan_id"):
+        state["plan_id"] = new_id()
+    if (state.get("schema") or 0) < SCHEMA:
+        state["schema"] = SCHEMA
+    for job in state.get("jobs", []):
+        if not job.get("id"):
+            job["id"] = new_id()
+    return state
+
+
 def _default_history():
     return {"device": [], "location": [], "pin": [], "panel": [], "wire": []}
 
@@ -34,6 +60,8 @@ def _default_title_page():
 def to_dict(state):
     """In-memory state dict -> .redline JSON dict (canonical key order)."""
     return {
+        "schema":                state.get("schema", SCHEMA),
+        "plan_id":               state.get("plan_id"),
         "project":               state.get("project", ""),
         "title_page":            state.get("title_page", _default_title_page()),
         "drawing_registry":      state.get("drawing_registry", {}),
@@ -50,6 +78,8 @@ def to_dict(state):
 def from_dict(data):
     """Loaded .redline JSON dict -> in-memory state dict (attribute names)."""
     return {
+        "schema":                         data.get("schema", 1),
+        "plan_id":                        data.get("plan_id"),
         "project":                        data.get("project", ""),
         "jobs":                           data.get("jobs", []),
         "drawing_registry":               data.get("drawing_registry", {}),

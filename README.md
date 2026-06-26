@@ -177,10 +177,12 @@ Stored in `~/.redlinerouting.db` alongside the standards library and the shared 
 
 ## .redline file format
 
-The `.redline` file is plain JSON and can be inspected or edited in any text editor.
+The `.redline` file is plain JSON and can be inspected or edited in any text editor. Each plan carries a stable `plan_id` and a `schema` version, and every job a stable `id` (assigned on creation; older files are migrated automatically on open).
 
 ```json
 {
+  "schema": 2,
+  "plan_id": "9f1c0b7e…",
   "project": "Site Name Work Order 123",
   "title_page": {
     "notes": "...",
@@ -215,7 +217,8 @@ The `.redline` file is plain JSON and can be inspected or edited in any text edi
                 "drawing": "...", "drawing_rev": "", "drawing_url": "", "drawing_cell": ""},
       "end":   { "…same fields…" },
       "notes": "",
-      "completed": false
+      "completed": false,
+      "id": "a3f80c12…"
     }
   ]
 }

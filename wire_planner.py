@@ -48,7 +48,7 @@ import urllib.request
 import urllib.error
 import urllib.parse
 
-from core.model import to_dict as project_to_dict, from_dict as project_from_dict
+from core.model import to_dict as project_to_dict, from_dict as project_from_dict, new_id, ensure_ids
 import queue
 import glob
 import shutil
@@ -6642,6 +6642,7 @@ class RedLineApp(tk.Tk):
         except Exception:
             self.geometry("1080x720")
         self.jobs = []
+        self.plan_id = new_id()          # stable identity for this plan (sync/attribution)
         self.drawing_registry = {}
         self.current_file = None
         self.project_folder = None
@@ -11000,6 +11001,7 @@ class RedLineApp(tk.Tk):
                         pts_files=self.pts_files,
                         on_complete_pts=self._pts_save_completion)
         if dlg.result:
+            dlg.result["id"] = new_id()
             self._collect_history(dlg.result)
             self.jobs.append(dlg.result); self._refresh_list(); self._refresh_drawings_list()
             idx = len(self.jobs)-1; self.tree.selection_set(str(idx)); self._on_select()
@@ -11018,6 +11020,9 @@ class RedLineApp(tk.Tk):
                         pts_files=self.pts_files,
                         on_complete_pts=self._pts_save_completion)
         if dlg.result:
+            old = self.jobs[idx]                            # JobDialog rebuilds the job from scratch,
+            dlg.result["id"] = old.get("id") or new_id()    # so carry over its identity and completion
+            dlg.result["completed"] = old.get("completed", False)
             self._collect_history(dlg.result)
             self.jobs[idx]=dlg.result; self._refresh_list(); self._refresh_drawings_list()
             self.tree.selection_set(str(idx)); self._on_select()
@@ -11027,6 +11032,7 @@ class RedLineApp(tk.Tk):
         if idx is None: messagebox.showinfo("Select a Job","Please select a job to duplicate."); return
         copy = deepcopy(self.jobs[idx]); desc = copy.get("description","")
         copy["description"] = f"{desc} (copy)" if desc else "(copy)"
+        copy["id"] = new_id(); copy.pop("completed", None)   # a duplicate is a new, not-yet-done job
         self.jobs.insert(idx+1,copy); self._refresh_list(); self.tree.selection_set(str(idx+1)); self._on_select()
 
     def _delete_job(self):
@@ -11117,7 +11123,7 @@ class RedLineApp(tk.Tk):
 
     def _new_plan(self):
         if self.jobs and not messagebox.askyesno("New Plan","Discard current plan and start fresh?"): return
-        self.jobs=[]; self.drawing_registry={}; self.relay_registry={}
+        self.jobs=[]; self.plan_id=new_id(); self.drawing_registry={}; self.relay_registry={}
         self.maintenance_standards_registry={}; self.engineering_standards_registry={}
         self.pts_files={}
         self.current_file=None; self.project_folder=None
@@ -11148,21 +11154,24 @@ class RedLineApp(tk.Tk):
         if not path: return
         try:
             with open(path,encoding="utf-8") as fh: data = json.load(fh)
-            self.jobs = data.get("jobs",[]); self.project_var.set(data.get("project",""))
-            self.drawing_registry = data.get("drawing_registry",{})
-            self.relay_registry   = data.get("relay_settings",{})  # key kept as "relay_settings" for file compatibility
-            self.maintenance_standards_registry = data.get("maintenance_standards", {})
-            self.engineering_standards_registry = data.get("engineering_standards", {})
-            self.pts_files = data.get("pts_files", {})
-            self.history = data.get("history", {"device":[],"location":[],"pin":[],"panel":[],"wire":[]})
+            # Parse + migrate (idempotent): backfill plan_id and a stable id per job.
+            state = ensure_ids(project_from_dict(data))
+            self.plan_id = state["plan_id"]
+            self.jobs = state["jobs"]; self.project_var.set(state["project"])
+            self.drawing_registry = state["drawing_registry"]
+            self.relay_registry   = state["relay_registry"]  # on-disk key is "relay_settings"
+            self.maintenance_standards_registry = state["maintenance_standards_registry"]
+            self.engineering_standards_registry = state["engineering_standards_registry"]
+            self.pts_files = state["pts_files"]
+            self.history = state["history"]
             # Older files carried a per-project drawing cache — fold it
             # into the global DB so nothing is lost, then ignore it.
             legacy_cache = data.get("drawing_search_cache", {})
             if legacy_cache:
                 try: self._app_db.cache_merge_legacy(legacy_cache)
                 except sqlite3.Error: pass
-            self.title_page = data.get("title_page", {"notes": "", "crows": []})
-            self.tailboard_refs = data.get("tailboard_refs", _empty_tailboard_refs())
+            self.title_page = state["title_page"]
+            self.tailboard_refs = state["tailboard_refs"]
             self.current_file = path
             self.project_folder = os.path.dirname(path)
             self._schedule_tailboard_check()
@@ -11216,7 +11225,8 @@ class RedLineApp(tk.Tk):
         try:
             tp = dict(self.title_page)
             tp["notes"] = self.title_notes.get("1.0", "end").strip()
-            state = {"project": self.project_var.get().strip(),
+            state = {"plan_id": self.plan_id,
+                     "project": self.project_var.get().strip(),
                      "title_page": tp,
                      "drawing_registry": self.drawing_registry,
                      "relay_registry": self.relay_registry,           # on-disk key is "relay_settings"

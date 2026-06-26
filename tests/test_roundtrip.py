@@ -9,11 +9,13 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from core.model import to_dict, from_dict   # noqa: E402
+from core.model import to_dict, from_dict, ensure_ids   # noqa: E402
 
 # A complete .redline project, keys in the canonical order to_dict emits, so the
 # JSON-string comparison below is meaningful.
 FIXTURE = {
+    "schema": 2,
+    "plan_id": "0123456789abcdef0123456789abcdef",
     "project": "Demo Site Work Order 7",
     "title_page": {
         "notes": "first line\nsecond line",
@@ -40,7 +42,7 @@ FIXTURE = {
                   "drawing": "", "drawing_rev": "", "drawing_url": "", "drawing_cell": ""},
         "end": {"device": "D2", "location": "L2", "pin": "2", "panel": "P2",
                 "drawing": "", "drawing_rev": "", "drawing_url": "", "drawing_cell": ""},
-        "notes": "", "completed": False,
+        "notes": "", "completed": False, "id": "feedface00000000feedface00000000",
     }],
 }
 
@@ -71,6 +73,21 @@ class RoundTrip(unittest.TestCase):
         self.assertEqual(list(out1), list(FIXTURE))            # same canonical key order
         out2 = to_dict(from_dict(out1))
         self.assertEqual(out1, out2)
+
+    def test_migration_backfills_ids_idempotently(self):
+        # An older file with no schema/plan_id and no job ids gains them on load…
+        old = {"project": "Legacy", "jobs": [{"type": "REMOVE", "description": "x"}]}
+        s1 = ensure_ids(from_dict(old))
+        self.assertEqual(s1["schema"], 2)
+        self.assertEqual(len(s1["plan_id"]), 32)
+        self.assertEqual(len(s1["jobs"][0]["id"]), 32)
+        out1 = to_dict(s1)
+        self.assertEqual(out1["plan_id"], s1["plan_id"])
+        self.assertEqual(out1["jobs"][0]["id"], s1["jobs"][0]["id"])
+        # …and re-running never changes an existing id (idempotent).
+        s2 = ensure_ids(from_dict(out1))
+        self.assertEqual(s2["plan_id"], s1["plan_id"])
+        self.assertEqual(s2["jobs"][0]["id"], s1["jobs"][0]["id"])
 
 
 if __name__ == "__main__":
