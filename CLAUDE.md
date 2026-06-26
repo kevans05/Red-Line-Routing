@@ -54,7 +54,7 @@ Reading top-to-bottom follows the dependency order:
 | 3169 – 4170 | `ExportWizard` dialog |
 | 4176 – 4655 | Registry dialogs, drawing search, download helpers, browser cookie grabber |
 | 4660 – 5570 | `_AppDB` global database + `_GlobalDrawingCache` |
-| 5575 – 6530 | Startup flow dialogs and the project wizard |
+| 5575 – 6530 | Startup flow dialogs |
 | 6535 – end | `RedLineApp` — the main `tk.Tk` window |
 
 Shared module-level constants worth knowing: `JOB_TYPE_SHORT` (single source for treeview type labels — RESTORE displays for the `UNBLOCK` key), `_iter_project_files()` (one scanner used by PDF export, HTML embeds and the tablet zip — skips hidden files and `archive/` dirs).
@@ -162,7 +162,7 @@ In any `tk.Frame` / `ttk.Frame` that mixes `expand=True` content with footer wid
 
 ### Startup dialog sizing
 
-Call `_center_window(win)` (no w/h) to auto-size a dialog to its content. Only pass explicit dimensions for two-pane layouts like `ProjectWizard`.
+Call `_center_window(win)` (no w/h) to auto-size a dialog to its content. Only pass explicit dimensions when a dialog must not auto-size to its content.
 
 ### `_hover_btn(frame, normal_bg, hover_bg)`
 
@@ -186,8 +186,7 @@ The Safety Documents and Other Documents tabs share one implementation: `_make_d
 RedLineApp.__init__
   └── after_idle(_startup_flow)
         ├── SoftwareSetupDialog  (first run only — settings stored in ~/.redlinerouting.db)
-        ├── LandingDialog        (open existing / new quick / wizard)
-        └── ProjectWizard        (optional 5-step wizard → _apply_wizard_result)
+        └── LandingDialog        (open existing / new quick)
 ```
 
 ## Downloads
