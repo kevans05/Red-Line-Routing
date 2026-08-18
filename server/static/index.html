@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Red-Line-Routing Server — Phase 1 Demo</title>
+<link rel="stylesheet" href="/css/app.css">
+</head>
+<body>
+<h1>Red-Line-Routing Server</h1>
+<p class="subtitle">Phase 1 demo: keypair identity, enrollment, challenge/response login, a signed
+hash-chained event, and real-time broadcast — the foundations the rest of the app builds on.</p>
+
+<section>
+  <h2>1. Local identity</h2>
+  <p>Generates an Ed25519 keypair in this browser tab. The private key is stored only in this
+  browser's localStorage and is never sent to the server.</p>
+  <button id="gen-keypair">Generate Keypair</button>
+  <pre id="identity">No local identity yet.</pre>
+</section>
+
+<section>
+  <h2>2. Enroll this device</h2>
+  <p>Paste an enrollment code (the server prints a bootstrap admin code to its console on first
+  run, or an admin can mint one via <code>POST /admin/users</code>).</p>
+  <input id="enroll-code" placeholder="enrollment code" size="40">
+  <button id="enroll">Enroll</button>
+</section>
+
+<section>
+  <h2>3. Log in</h2>
+  <p>Challenge/response: the server hands out a nonce, this device signs it, the server verifies
+  the signature against the enrolled public key and issues a session token.</p>
+  <button id="login">Log in</button>
+</section>
+
+<section>
+  <h2>4. Project + real-time events</h2>
+  <input id="project-name" placeholder="new project name" size="20">
+  <button id="create-project">Create Project</button>
+  <br><br>
+  <input id="project-id" placeholder="project id" size="40">
+  <button id="connect-ws">Connect Live</button>
+  <br><br>
+  <input id="event-text" placeholder="event description" size="40">
+  <button id="send-event">Send Signed Event</button>
+  <p class="hint">Open this page in a second tab, connect both to the same project id, then send
+  an event from one tab — it should appear in the other tab's log instantly.</p>
+</section>
+
+<section>
+  <h2>Log</h2>
+  <pre id="log"></pre>
+</section>
+
+<script src="/js/ed25519.js"></script>
+<script src="/js/app.js"></script>
+</body>
+</html>
