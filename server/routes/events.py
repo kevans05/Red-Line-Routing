@@ -11,7 +11,7 @@ any other browser tabs/devices connected to that project's websocket.
 from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 
-from server import auth, chain, rbac
+from server import auth, chain, rbac, replay
 
 router = APIRouter(tags=["events"])
 
@@ -42,6 +42,11 @@ async def post_event(project_id: str, body: EventIn, request: Request):
     except chain.ChainError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
 
+    try:
+        replay.validate_payload(prepared)
+    except replay.ReplayError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
     conn.execute(
         "INSERT INTO events(id, project_id, device_fingerprint, entity_type, entity_id, op, "
         "payload_json, client_time, server_time, prev_event_id, needs_review, signature, "
@@ -52,6 +57,8 @@ async def post_event(project_id: str, body: EventIn, request: Request):
          None, prepared["needs_review"], prepared["signature"],
          prepared["signer_fingerprint"], prepared["hash"], prepared["prev_hash"]),
     )
+
+    replay.apply_event(conn, prepared)
 
     hub = request.app.state.realtime_hub
     await hub.broadcast_event(project_id, prepared)

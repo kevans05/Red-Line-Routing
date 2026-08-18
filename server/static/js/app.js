@@ -131,24 +131,32 @@ $("send-event").addEventListener("click", async () => {
     log("Need identity, login, and a project id first.");
     return;
   }
+  const result = await signAndPostEvent(projectId, "demo", "demo-entity", "demo_event",
+    { description: text, at: new Date().toISOString() });
+  if (!result.ok) { log("Send event failed: " + result.body.detail); return; }
+  log("Event accepted by server: " + result.body.id);
+});
+
+// Builds, signs, hashes, and posts one event — the same sequence any
+// registry/job mutation goes through. Real client/sync.py will keep
+// prev_hash locally instead of asking the server each time; this demo
+// asks each time to stay simple and stateless across page reloads.
+async function signAndPostEvent(projectId, entityType, entityId, op, payloadObj) {
   const fp = await ed25519.fingerprint(identity.publicKey);
-  const payload = { description: text, at: new Date().toISOString() };
   const event = {
     id: crypto.randomUUID(),
     project_id: projectId,
     device_fingerprint: fp,
-    entity_type: "demo",
-    entity_id: "demo-entity",
-    op: "demo_event",
-    payload_json: JSON.stringify(payload),
+    entity_type: entityType,
+    entity_id: entityId,
+    op,
+    payload_json: JSON.stringify(payloadObj),
     client_time: new Date().toISOString(),
     signer_fingerprint: fp,
   };
   const sig = await ed25519.sign(identity.privateKey, canonicalEventBytes(event));
   event.signature = ed25519.bytesToHex(sig);
-  // prev_hash: for this demo, ask the server for its current event list to
-  // find the last hash for our device+project. Real client/sync.py keeps
-  // this locally instead of asking each time.
+
   const existing = await (await apiFetch(`/projects/${projectId}/events`)).json();
   const mine = existing.filter((e) => e.device_fingerprint === fp);
   const prevHash = mine.length ? mine[mine.length - 1].hash : "";
@@ -161,8 +169,42 @@ $("send-event").addEventListener("click", async () => {
     body: JSON.stringify(event),
   });
   const body = await resp.json();
-  if (!resp.ok) { log("Send event failed: " + body.detail); return; }
-  log("Event accepted by server: " + body.id);
+  return { ok: resp.ok, body };
+}
+
+$("add-drawing").addEventListener("click", async () => {
+  const projectId = $("project-id").value.trim();
+  const name = $("drawing-name").value.trim();
+  if (!identity || !sessionToken || !projectId || !name) {
+    log("Need identity, login, a project id, and a drawing name first.");
+    return;
+  }
+  const payload = {
+    name,
+    title: $("drawing-title").value.trim(),
+    rev: $("drawing-rev").value.trim(),
+    url: $("drawing-url").value.trim(),
+    notes: "",
+  };
+  const result = await signAndPostEvent(projectId, "drawing", name, "registry_add", payload);
+  if (!result.ok) { log("Add drawing failed: " + JSON.stringify(result.body.detail)); return; }
+  log("Drawing registry event accepted: " + name);
+});
+
+$("list-drawings").addEventListener("click", async () => {
+  const projectId = $("project-id").value.trim();
+  if (!sessionToken || !projectId) { log("Need to be logged in with a project id first."); return; }
+  const resp = await apiFetch(`/projects/${projectId}/drawings`);
+  const rows = await resp.json();
+  if (!resp.ok) { log("List drawings failed: " + JSON.stringify(rows.detail)); return; }
+  const el = $("drawings-list");
+  el.innerHTML = "";
+  for (const row of rows) {
+    const li = document.createElement("li");
+    li.textContent = `${row.name} — ${row.title} (rev ${row.rev}) ${row.url}`;
+    el.appendChild(li);
+  }
+  log(`Loaded ${rows.length} drawing(s).`);
 });
 
 // Mirrors shared/crypto.py canonical_event_bytes / event_hash exactly —

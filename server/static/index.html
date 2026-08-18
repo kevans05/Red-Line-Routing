@@ -48,6 +48,20 @@ hash-chained event, and real-time broadcast — the foundations the rest of the 
 </section>
 
 <section>
+  <h2>5. Drawings registry</h2>
+  <p>Adding a drawing posts a signed <code>registry_add</code> event through the same pipe as
+  section 4 — the server replays it onto the drawings table, and any connected tab sees it live.</p>
+  <input id="drawing-name" placeholder="drawing name e.g. 1234-HAB-56789-1" size="26">
+  <input id="drawing-title" placeholder="title" size="20">
+  <input id="drawing-rev" placeholder="rev" size="4">
+  <input id="drawing-url" placeholder="url" size="26">
+  <br><br>
+  <button id="add-drawing">Add Drawing</button>
+  <button id="list-drawings">List Drawings</button>
+  <ul id="drawings-list"></ul>
+</section>
+
+<section>
   <h2>Log</h2>
   <pre id="log"></pre>
 </section>
