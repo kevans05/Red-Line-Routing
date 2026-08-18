@@ -62,6 +62,28 @@ hash-chained event, and real-time broadcast — the foundations the rest of the 
 </section>
 
 <section>
+  <h2>6. Jobs &amp; job steps</h2>
+  <p>Creating a job and adding/assigning/completing steps are all signed events too —
+  <code>job_created</code>, <code>step_added</code>, <code>step_assigned</code>, <code>step_completed</code>.
+  Assigning and adding need <code>editor</code>; completing only needs <code>approver</code>. After logging in,
+  your user id is logged below — use it to self-assign a step.</p>
+  <input id="job-type" placeholder="job type e.g. REMOVE" size="14" value="REMOVE">
+  <input id="job-description" placeholder="job description" size="26">
+  <button id="create-job">Create Job</button>
+  <br><br>
+  <input id="job-id" placeholder="job id" size="38">
+  <input id="step-description" placeholder="step description" size="26">
+  <button id="add-step">Add Step</button>
+  <button id="list-steps">List Steps</button>
+  <br><br>
+  <input id="step-id" placeholder="step id" size="38">
+  <input id="assign-user-id" placeholder="assign to user id" size="38">
+  <button id="assign-step">Assign Step</button>
+  <button id="complete-step">Complete Step</button>
+  <ul id="steps-list"></ul>
+</section>
+
+<section>
   <h2>Log</h2>
   <pre id="log"></pre>
 </section>

@@ -31,19 +31,28 @@ class EventIn(BaseModel):
     prev_hash: str = ""
 
 
-@router.post("/projects/{project_id}/events",
-             dependencies=[Depends(rbac.require_role("editor", project_id_param="project_id"))])
-async def post_event(project_id: str, body: EventIn, request: Request):
+@router.post("/projects/{project_id}/events")
+async def post_event(project_id: str, body: EventIn, request: Request,
+                      user_id: str = Depends(rbac.get_current_user_id)):
     if body.project_id != project_id:
         raise HTTPException(status_code=400, detail="project_id mismatch between path and body")
     conn = request.app.state.db.conn()
+
+    # Per-op RBAC: most events need `editor`, but e.g. completing a job step
+    # only needs `approver` — see replay.MIN_ROLE_FOR_OP. This has to be a
+    # dynamic check here (not a fixed route-level dependency) because the
+    # required role depends on the signed event's own entity_type/op.
+    min_role = replay.min_role_for_event(body.entity_type, body.op)
+    if not rbac.has_role(conn, user_id, min_role, project_id):
+        raise HTTPException(status_code=403, detail=f"requires role: {min_role}+")
+
     try:
         prepared = chain.verify_and_prepare(conn, body.model_dump())
     except chain.ChainError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
 
     try:
-        replay.validate_payload(prepared)
+        replay.validate_payload(conn, prepared)
     except replay.ReplayError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
 

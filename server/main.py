@@ -18,7 +18,7 @@ from fastapi.staticfiles import StaticFiles
 from server import auth
 from server.db import Database
 from server.realtime import RealtimeHub
-from server.routes import admin, auth as auth_routes, events, files, registries
+from server.routes import admin, auth as auth_routes, events, files, jobs, registries
 from server.storage import FileStorage
 
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
@@ -35,6 +35,7 @@ def create_app(db_path=None, storage_dir=None):
     app.include_router(events.router)
     app.include_router(registries.router)
     app.include_router(files.router)
+    app.include_router(jobs.router)
 
     @app.get("/healthz")
     def healthz():

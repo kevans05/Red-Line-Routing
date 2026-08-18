@@ -207,6 +207,85 @@ $("list-drawings").addEventListener("click", async () => {
   log(`Loaded ${rows.length} drawing(s).`);
 });
 
+$("create-job").addEventListener("click", async () => {
+  const projectId = $("project-id").value.trim();
+  if (!identity || !sessionToken || !projectId) {
+    log("Need identity, login, and a project id first.");
+    return;
+  }
+  const jobId = crypto.randomUUID();
+  const payload = {
+    type: $("job-type").value.trim() || "REMOVE",
+    description: $("job-description").value.trim(),
+    wire: "", start: {}, end: {}, notes: "",
+  };
+  const result = await signAndPostEvent(projectId, "job", jobId, "job_created", payload);
+  if (!result.ok) { log("Create job failed: " + JSON.stringify(result.body.detail)); return; }
+  $("job-id").value = jobId;
+  log("Job created: " + jobId);
+});
+
+$("add-step").addEventListener("click", async () => {
+  const projectId = $("project-id").value.trim();
+  const jobId = $("job-id").value.trim();
+  const description = $("step-description").value.trim();
+  if (!identity || !sessionToken || !projectId || !jobId || !description) {
+    log("Need identity, login, a project id, a job id, and a step description.");
+    return;
+  }
+  const stepId = crypto.randomUUID();
+  const result = await signAndPostEvent(projectId, "job_step", stepId, "step_added",
+    { job_id: jobId, description });
+  if (!result.ok) { log("Add step failed: " + JSON.stringify(result.body.detail)); return; }
+  $("step-id").value = stepId;
+  log("Step added: " + stepId);
+});
+
+$("assign-step").addEventListener("click", async () => {
+  const projectId = $("project-id").value.trim();
+  const stepId = $("step-id").value.trim();
+  const assignTo = $("assign-user-id").value.trim();
+  if (!identity || !sessionToken || !projectId || !stepId || !assignTo) {
+    log("Need identity, login, a project id, a step id, and a user id to assign to.");
+    return;
+  }
+  const result = await signAndPostEvent(projectId, "job_step", stepId, "step_assigned",
+    { assigned_to: assignTo });
+  if (!result.ok) { log("Assign step failed: " + JSON.stringify(result.body.detail)); return; }
+  log("Step assigned: " + stepId + " -> " + assignTo);
+});
+
+$("complete-step").addEventListener("click", async () => {
+  const projectId = $("project-id").value.trim();
+  const stepId = $("step-id").value.trim();
+  if (!identity || !sessionToken || !projectId || !stepId) {
+    log("Need identity, login, a project id, and a step id.");
+    return;
+  }
+  const result = await signAndPostEvent(projectId, "job_step", stepId, "step_completed", {});
+  if (!result.ok) { log("Complete step failed: " + JSON.stringify(result.body.detail)); return; }
+  log("Step completed: " + stepId);
+});
+
+$("list-steps").addEventListener("click", async () => {
+  const projectId = $("project-id").value.trim();
+  const jobId = $("job-id").value.trim();
+  if (!sessionToken || !projectId || !jobId) { log("Need login, a project id, and a job id."); return; }
+  const resp = await apiFetch(`/projects/${projectId}/jobs/${jobId}/steps`);
+  const rows = await resp.json();
+  if (!resp.ok) { log("List steps failed: " + JSON.stringify(rows.detail)); return; }
+  const el = $("steps-list");
+  el.innerHTML = "";
+  for (const row of rows) {
+    const li = document.createElement("li");
+    li.textContent = `[${row.status}] ${row.description} — added by ${row.added_by}` +
+      (row.assigned_to ? `, assigned to ${row.assigned_to}` : "") +
+      (row.completed_by ? `, completed by ${row.completed_by} at ${row.completed_at}` : "");
+    el.appendChild(li);
+  }
+  log(`Loaded ${rows.length} step(s) for job ${jobId}.`);
+});
+
 // Mirrors shared/crypto.py canonical_event_bytes / event_hash exactly —
 // same excluded-field list, same JSON separators, same key order (JSON
 // stringify of a JS object with insertion order matching Python's sorted
