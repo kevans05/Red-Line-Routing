@@ -22,18 +22,12 @@ On first launch you will be prompted to configure your organisation's base URLs 
 ```
 Launch → Software Settings (global URLs, once only)
        → Landing screen (open existing or create new)
-             ├── Quick Start  — blank planner, start adding jobs immediately
-             └── Wizard       — 5-step guided setup
-                   1. Project Info  (name, site, save location, notes)
-                   2. Drawings      (register drawings upfront, or search the drawing server)
-                   3. Relays        (relay devices + Aspen settings)
-                   4. CROWs         (outage records)
-                   5. Summary       (review + create project folder)
+             └── Quick Start  — blank planner, start adding jobs immediately
 ```
 
 ## Project structure on disk
 
-When you save or complete the wizard, a folder is created:
+When you save a project, a folder is created:
 
 ```
 <ProjectName>/
@@ -106,7 +100,7 @@ Site   Type    Subject  Serial  Sheet
 
 ## Drawing search
 
-Configure **Drawing Search URL** in Software Settings, then use the **🔍 Search…** button on the Project Drawings tab (also available inside the project wizard). Search by drawing number, title, facility, type, subject, serial range, and state, then multi-select results to import them into the registry.
+Configure **Drawing Search URL** in Software Settings, then use the **🔍 Search…** button on the Project Drawings tab. Search by drawing number, title, facility, type, subject, serial range, and state, then multi-select results to import them into the registry.
 
 - **Authentication** is cookie-based: paste your browser's request headers into Software Settings, or click **Grab from Browser** to extract cookies for the drawing server directly from Edge/Chrome (Windows only; reads the browser cookie database and decrypts values via DPAPI). Rotating session cookies are absorbed automatically from server responses and persisted.
 - **Caching**: categorical searches (facility/type/subject/state, no free-text) are cached in `~/.redlinerouting.db` and shared by all projects. Stale entries refresh automatically every 15 minutes (entries older than 4 hours; override with the `drawing_cache_refresh_hours` setting). Cache hits show instantly and revalidate in the background. Empty results are never cached, so an expired login can't poison the cache.
@@ -183,10 +177,12 @@ Stored in `~/.redlinerouting.db` alongside the standards library and the shared 
 
 ## .redline file format
 
-The `.redline` file is plain JSON and can be inspected or edited in any text editor.
+The `.redline` file is plain JSON and can be inspected or edited in any text editor. Each plan carries a stable `plan_id` and a `schema` version, and every job a stable `id` (assigned on creation; older files are migrated automatically on open).
 
 ```json
 {
+  "schema": 2,
+  "plan_id": "9f1c0b7e…",
   "project": "Site Name Work Order 123",
   "title_page": {
     "notes": "...",
@@ -221,7 +217,8 @@ The `.redline` file is plain JSON and can be inspected or edited in any text edi
                 "drawing": "...", "drawing_rev": "", "drawing_url": "", "drawing_cell": ""},
       "end":   { "…same fields…" },
       "notes": "",
-      "completed": false
+      "completed": false,
+      "id": "a3f80c12…"
     }
   ]
 }

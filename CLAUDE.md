@@ -20,8 +20,10 @@ python3 -c "import ast; ast.parse(open('wire_planner.py').read()); print('OK')"
 
 ```
 wire_planner.py   # main application (~10 200 lines)
+core/             # GUI-free project model: .redline (de)serialisation, stable ids, migration
 drawing_search/   # drawing search client package (parser, cache, HTTP client)
 pypdf/            # vendored pypdf 6.13.1 (patched — see below)
+tests/            # stdlib unittest suite (python3 tests/test_roundtrip.py)
 README.md         # user-facing documentation
 .gitignore        # ignores __pycache__ and *.pyc
 ```
@@ -54,7 +56,7 @@ Reading top-to-bottom follows the dependency order:
 | 3169 – 4170 | `ExportWizard` dialog |
 | 4176 – 4655 | Registry dialogs, drawing search, download helpers, browser cookie grabber |
 | 4660 – 5570 | `_AppDB` global database + `_GlobalDrawingCache` |
-| 5575 – 6530 | Startup flow dialogs and the project wizard |
+| 5575 – 6530 | Startup flow dialogs |
 | 6535 – end | `RedLineApp` — the main `tk.Tk` window |
 
 Shared module-level constants worth knowing: `JOB_TYPE_SHORT` (single source for treeview type labels — RESTORE displays for the `UNBLOCK` key), `_iter_project_files()` (one scanner used by PDF export, HTML embeds and the tablet zip — skips hidden files and `archive/` dirs).
@@ -105,6 +107,18 @@ Two archiving helpers exist — don't confuse them:
 - `_archive_revision(folder, fname)` — moves one exact file into `Archive/` **renamed with a timestamp** (`stem_YYYY-MM-DD_HH-MM-SS.ext`, counter on collision), so several same-day revisions coexist. Used by `_upload_docs_to` (all document-tab uploads), `_tb_upload_ref`, and `_download_with_progress(archive_revisions=True)`.
 
 `_iter_project_files()` skips `archive/` dirs when recursing and `_refresh_doc_listbox` lists files only, so archived revisions stay out of exports and listboxes automatically.
+
+### Serialisation, stable ids & migration
+
+`.redline` (de)serialisation lives in **`core/model.py`** (GUI-free): `to_dict` /
+`from_dict` own the canonical key order and the `relay_settings`↔`relay_registry`
+naming, and `RedLineApp._write`/`_open` delegate to them. Each plan has a `plan_id`
+and `schema` (currently 2); every job carries a stable `id`. `core.model.new_id()`
+mints ids (hex UUID4); `ensure_ids(state)` backfills `plan_id` + job ids on open
+**idempotently** (existing ids never change). Job ids are stamped at the CRUD
+boundaries — `_add_job` (new), `_edit_job` (preserved — and it re-attaches
+`completed`, which `JobDialog` otherwise rebuilds away), `_duplicate_job`
+(regenerated). Round-trip + migration are covered by `tests/test_roundtrip.py`.
 
 ### JSON key names vs Python attribute names
 
@@ -162,7 +176,7 @@ In any `tk.Frame` / `ttk.Frame` that mixes `expand=True` content with footer wid
 
 ### Startup dialog sizing
 
-Call `_center_window(win)` (no w/h) to auto-size a dialog to its content. Only pass explicit dimensions for two-pane layouts like `ProjectWizard`.
+Call `_center_window(win)` (no w/h) to auto-size a dialog to its content. Only pass explicit dimensions when a dialog must not auto-size to its content.
 
 ### `_hover_btn(frame, normal_bg, hover_bg)`
 
@@ -186,8 +200,7 @@ The Safety Documents and Other Documents tabs share one implementation: `_make_d
 RedLineApp.__init__
   └── after_idle(_startup_flow)
         ├── SoftwareSetupDialog  (first run only — settings stored in ~/.redlinerouting.db)
-        ├── LandingDialog        (open existing / new quick / wizard)
-        └── ProjectWizard        (optional 5-step wizard → _apply_wizard_result)
+        └── LandingDialog        (open existing / new quick)
 ```
 
 ## Downloads
